@@ -1,0 +1,74 @@
+Run the local provider-compatible ELIZA HTTP server
+
+Usage: eliza serve [OPTIONS]
+
+Options:
+      --host <HOST>
+          Bind address
+          
+          [default: 127.0.0.1]
+
+      --port <PORT>
+          Bind port
+          
+          [default: 8787]
+
+      --model <MODEL>
+          Provider-visible model id
+          
+          [default: eliza-doctor]
+
+      --auth <AUTH>
+          Authentication mode for provider endpoints
+
+          Possible values:
+          - none:   Do not require provider authentication
+          - bearer: Accept `Authorization: Bearer` or `x-api-key`
+          
+          [default: none]
+
+      --bearer-token <BEARER_TOKEN>
+          Required token when --auth bearer is used
+
+      --cors <CORS>
+          CORS behavior
+
+          Possible values:
+          - none:       Do not install a CORS layer
+          - permissive: Install Axum's permissive CORS layer
+          
+          [default: none]
+
+      --stream-delay-ms <STREAM_DELAY_MS>
+          Optional delay between streaming chunks
+          
+          [default: 0]
+
+      --max-input-chars <MAX_INPUT_CHARS>
+          Reject requests whose text content exceeds this character count
+          
+          [default: 8000]
+
+      --max-history-messages <MAX_HISTORY_MESSAGES>
+          Bound replay work by limiting the number of user turns accepted
+          
+          [default: 200]
+
+      --log <LOG>
+          Log rendering mode
+
+          Possible values:
+          - text: Human-readable tracing output
+          - json: JSON tracing output
+          
+          [default: text]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Provider paths:
+  OpenAI:    GET /v1/models, POST /v1/chat/completions, POST /v1/responses
+  Gemini OA: POST /v1beta/openai/chat/completions
+  Anthropic: POST /v1/messages
+  Gemini:    GET /v1beta/models, POST /v1beta/models/{model}:generateContent, POST /v1beta/models/{model}:streamGenerateContent
+  Docs:      GET /docs, GET /openapi.json

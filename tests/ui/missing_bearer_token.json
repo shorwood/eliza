@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--auth", "bearer"],
+  "code": 1
+}
