@@ -1,0 +1,19 @@
+# Keep direct rustfmt, editor integrations, and Cargo on the same syntax and style rules.
+edition = "2024"
+style_edition = "2024"
+
+# Use the conventional Rust width with platform-independent source line endings.
+max_width = 100
+newline_style = "Unix"
+use_small_heuristics = "Default"
+blank_lines_upper_bound = 1
+
+# Normalize imports while preserving dependency-aware module ordering.
+unstable_features = true
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+reorder_imports = true
+reorder_modules = false
+
+# Prefer idiomatic record construction when the binding already carries the field name.
+use_field_init_shorthand = true
