@@ -1,0 +1,2 @@
+tests/ui/*.stderr whitespace=-trailing-space
+tests/ui/*.stdout whitespace=-trailing-space

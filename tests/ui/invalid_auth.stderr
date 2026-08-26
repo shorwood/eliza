@@ -1,0 +1,4 @@
+error: invalid value 'basic' for '--auth <AUTH>'
+  [possible values: none, bearer]
+
+For more information, try '--help'.
