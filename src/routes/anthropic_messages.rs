@@ -6,6 +6,8 @@
 //! The adapter accepts only text blocks because image/tool/content-block
 //! variants have no representation in the historical ELIZA script.
 
+use aide::axum::ApiRouter;
+use aide::axum::routing::post_with;
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -16,11 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::contracts::{
+use super::context::{AppState, provider_authenticate};
+use crate::provider::contracts::{
     CompatTurnRequest, ModelId, ProviderRejection, RequestLimits, SseEvents, TextArrayKind,
     TokenUsage, optional_text_content, stream_chunks,
 };
-use crate::serve::{AppState, provider_authenticate};
 
 // -----------------------------------------------------------------------------
 // AnthropicMessage: Models one replayable input message.
@@ -70,7 +72,7 @@ const fn should_stream_by_default() -> bool {
 // -----------------------------------------------------------------------------
 
 /// Represents `TextBlock` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct TextBlock {
     /// Stores the block type value owned by this contract.
     #[serde(rename = "type")]
@@ -84,7 +86,7 @@ struct TextBlock {
 // -----------------------------------------------------------------------------
 
 /// Represents `AnthropicUsage` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct AnthropicUsage {
     /// Stores the input tokens value owned by this contract.
     input_tokens: usize,
@@ -106,7 +108,7 @@ impl From<TokenUsage> for AnthropicUsage {
 // -----------------------------------------------------------------------------
 
 /// Represents `MessagesResponse` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct MessagesResponse {
     /// Stores the id value owned by this contract.
     id: String,
@@ -132,7 +134,7 @@ struct MessagesResponse {
 // -----------------------------------------------------------------------------
 
 /// Represents `AnthropicFailureBody` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct AnthropicFailureBody {
     /// Stores the error type value owned by this contract.
     #[serde(rename = "type")]
@@ -142,7 +144,7 @@ struct AnthropicFailureBody {
 }
 
 /// Represents `AnthropicFailureResponse` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct AnthropicFailureResponse {
     /// Stores the response type value owned by this contract.
     #[serde(rename = "type")]
@@ -221,7 +223,7 @@ impl TryFrom<MessagesRequest> for AnthropicTurn {
 }
 
 // -----------------------------------------------------------------------------
-// MessageStream: Renders named Anthropic SSE events.
+// AnthropicStream: Renders named Anthropic SSE events.
 // -----------------------------------------------------------------------------
 
 /// Render Anthropic's named SSE event sequence.
@@ -229,7 +231,7 @@ impl TryFrom<MessagesRequest> for AnthropicTurn {
 /// # Panics
 ///
 /// Panics only if the locally constructed JSON event payload cannot serialize.
-fn message_stream(output: &str, model: &ModelId, output_tokens: usize, delay_ms: u64) -> Response {
+fn anthropic_stream(output: &str, model: &ModelId, output_tokens: usize) -> SseEvents {
     let id = format!("msg_{}", Uuid::now_v7().simple());
     let mut events = Vec::new();
 
@@ -307,26 +309,34 @@ fn message_stream(output: &str, model: &ModelId, output_tokens: usize, delay_ms:
             .expect("Anthropic message_stop should serialize"),
     );
 
-    SseEvents::from(events).into_response(delay_ms)
+    SseEvents::from(events)
 }
 
 // -----------------------------------------------------------------------------
-// ErrorResponse: Renders Anthropic failures.
+// AnthropicRejection: Renders Anthropic failures.
 // -----------------------------------------------------------------------------
 
-/// Performs the error response operation for this abstraction.
-fn error_response(error: ProviderRejection) -> Response {
-    (
-        error.status,
-        Json(AnthropicFailureResponse {
-            response_type: "error",
-            error: AnthropicFailureBody {
-                error_type: error.openai_type,
-                message: error.message,
-            },
-        }),
-    )
-        .into_response()
+/// Provider rejection rendered in Anthropic's error envelope.
+struct AnthropicRejection(
+    /// Rejection facts rendered by this provider.
+    ProviderRejection,
+);
+
+impl IntoResponse for AnthropicRejection {
+    fn into_response(self) -> Response {
+        let error = self.0;
+        (
+            error.status,
+            Json(AnthropicFailureResponse {
+                response_type: "error",
+                error: AnthropicFailureBody {
+                    error_type: error.openai_type,
+                    message: error.message,
+                },
+            }),
+        )
+            .into_response()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -334,14 +344,14 @@ fn error_response(error: ProviderRejection) -> Response {
 // -----------------------------------------------------------------------------
 
 /// Performs the messages operation for this abstraction.
-pub(crate) async fn messages(
+async fn messages(
     headers: HeaderMap,
     State(state): State<AppState>,
     Json(payload): Json<MessagesRequest>,
 ) -> Response {
     // Render authentication failures in Anthropic's envelope immediately.
     if let Err(error) = provider_authenticate(&headers, &state.config) {
-        return error_response(error);
+        return AnthropicRejection(error).into_response();
     }
 
     // Capture the stream preference before lowering consumes the payload.
@@ -349,7 +359,7 @@ pub(crate) async fn messages(
     let request = match AnthropicTurn::try_from(payload) {
         Ok(request) => request.0,
         // Invalid payloads stop before the ELIZA engine is invoked.
-        Err(error) => return error_response(error),
+        Err(error) => return AnthropicRejection(error).into_response(),
     };
     let limits = RequestLimits::new(
         state.config.max_input_chars,
@@ -358,16 +368,13 @@ pub(crate) async fn messages(
     let response = match request.complete(limits) {
         Ok(response) => response,
         // Engine rejections retain Anthropic's error shape.
-        Err(error) => return error_response(error),
+        Err(error) => return AnthropicRejection(error).into_response(),
     };
 
     if stream {
-        message_stream(
-            &response.output,
-            &response.model,
-            response.usage.completion,
-            state.config.stream_delay_ms,
-        )
+        anthropic_stream(&response.output, &response.model, response.usage.completion)
+            .with_delay(state.config.stream_delay_ms)
+            .into_response()
     } else {
         Json(MessagesResponse {
             id: format!("msg_{}", Uuid::now_v7().simple()),
@@ -383,5 +390,28 @@ pub(crate) async fn messages(
             usage: AnthropicUsage::from(response.usage),
         })
         .into_response()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// AnthropicMessages: Mounts the typed Messages contract into Aide.
+// -----------------------------------------------------------------------------
+
+/// Anthropic Messages endpoint and contract.
+pub(super) struct AnthropicMessages;
+
+impl AnthropicMessages {
+    /// Mount the Anthropic Messages route from its owning contracts.
+    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
+        router.api_route(
+            "/v1/messages",
+            post_with(messages, |operation| {
+                operation
+                    .summary("Anthropic message")
+                    .tag("anthropic")
+                    .response::<200, Json<MessagesResponse>>()
+                    .default_response::<Json<AnthropicFailureResponse>>()
+            }),
+        )
     }
 }

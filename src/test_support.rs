@@ -31,6 +31,27 @@ pub(crate) struct TestResponse {
     pub(crate) body: String,
 }
 
+/// Sends one GET request through the in-process server router.
+pub(crate) async fn get(config: ServerConfig, uri: &str) -> TestResponse {
+    let response = run_server_test_router(config)
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("router should respond");
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 1_048_576)
+        .await
+        .expect("body should collect");
+    TestResponse {
+        status,
+        body: String::from_utf8(body.to_vec()).expect("body should be utf8"),
+    }
+}
+
 /// Sends one JSON request through the in-process server router.
 pub(crate) async fn post_json_with(
     config: ServerConfig,

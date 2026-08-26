@@ -3,6 +3,7 @@
 mod errors;
 mod eliza;
 mod provider;
+mod routes;
 mod serve;
 mod cli;
 
