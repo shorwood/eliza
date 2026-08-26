@@ -1,0 +1,5 @@
+error: unrecognized subcommand 'wat'
+
+Usage: eliza <COMMAND>
+
+For more information, try '--help'.

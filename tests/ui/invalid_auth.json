@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--auth", "basic"],
+  "code": 2
+}

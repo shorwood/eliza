@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--max-history-messages", "0"],
+  "code": 1
+}
