@@ -13,23 +13,39 @@ use axum::http::{Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 
-use crate::serve::{ServerConfig, router};
+use crate::serve::{ServerConfig, run_server_test_router};
+
+/// One additional HTTP header supplied by a provider compatibility test.
+pub(crate) struct TestHeader<'a> {
+    /// Case-insensitive HTTP field name.
+    pub(crate) name: &'a str,
+    /// Textual field value.
+    pub(crate) value: &'a str,
+}
+
+/// Collected status and UTF-8 response body from an in-process request.
+pub(crate) struct TestResponse {
+    /// HTTP status returned by the router.
+    pub(crate) status: StatusCode,
+    /// Fully collected UTF-8 response body.
+    pub(crate) body: String,
+}
 
 /// Sends one JSON request through the in-process server router.
 pub(crate) async fn post_json_with(
     config: ServerConfig,
     uri: &str,
     body: Value,
-    headers: &[(&str, &str)],
-) -> (StatusCode, String) {
+    headers: &[TestHeader<'_>],
+) -> TestResponse {
     let mut request = Request::builder()
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json");
-    for (name, value) in headers {
-        request = request.header(*name, *value);
+    for header in headers {
+        request = request.header(header.name, header.value);
     }
-    let response = router(config)
+    let response = run_server_test_router(config)
         .oneshot(
             request
                 .body(Body::from(body.to_string()))
@@ -41,8 +57,8 @@ pub(crate) async fn post_json_with(
     let body = to_bytes(response.into_body(), 1_048_576)
         .await
         .expect("body should collect");
-    (
+    TestResponse {
         status,
-        String::from_utf8(body.to_vec()).expect("body should be utf8"),
-    )
+        body: String::from_utf8(body.to_vec()).expect("body should be utf8"),
+    }
 }
