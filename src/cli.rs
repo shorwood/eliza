@@ -9,34 +9,42 @@ use std::str::FromStr;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::ModelId;
 use crate::errors::AppError;
+use crate::provider::contracts::ModelId;
 
 // -----------------------------------------------------------------------------
-// CLI value enums: stable operator vocabulary for server behavior.
+// AuthMode: Controls provider endpoint authentication.
 // -----------------------------------------------------------------------------
 
 /// Authentication mode for provider-compatible endpoints.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
-pub enum AuthMode {
+pub(super) enum AuthMode {
     /// Do not require provider authentication.
     None,
     /// Accept `Authorization: Bearer` or `x-api-key`.
     Bearer,
 }
 
+// -----------------------------------------------------------------------------
+// CorsMode: Controls browser cross-origin access.
+// -----------------------------------------------------------------------------
+
 /// CORS policy for browser clients.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
-pub enum CorsMode {
+pub(super) enum CorsMode {
     /// Do not install a CORS layer.
     None,
     /// Install Axum's permissive CORS layer.
     Permissive,
 }
 
+// -----------------------------------------------------------------------------
+// LogFormat: Controls tracing event rendering.
+// -----------------------------------------------------------------------------
+
 /// Log rendering mode.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
-pub enum LogFormat {
+pub(super) enum LogFormat {
     /// Human-readable tracing output.
     Text,
     /// JSON tracing output.
@@ -44,32 +52,35 @@ pub enum LogFormat {
 }
 
 // -----------------------------------------------------------------------------
-// Bearer token: semantic CLI value that validates once and redacts debug output.
+// BearerToken: Semantic CLI value that validates once and redacts debug output.
 // -----------------------------------------------------------------------------
 
 /// Shared bearer/API-key token used when bearer auth is enabled.
 ///
 /// ```
-/// use eliza::serve::BearerToken;
+/// use eliza::cli::BearerToken;
 ///
 /// let token: BearerToken = "secret".parse().unwrap();
 /// assert_eq!(token.as_str(), "secret");
 /// assert_eq!(format!("{token:?}"), "BearerToken(<redacted>)");
 /// ```
 #[derive(Clone, Eq, PartialEq)]
-pub struct BearerToken(String);
+pub(super) struct BearerToken(
+    /// Validated nonempty secret value.
+    String,
+);
 
 impl BearerToken {
     /// Return the raw token value for constant-time-equivalent header comparison.
     ///
     /// ```
-    /// use eliza::serve::BearerToken;
+    /// use eliza::cli::BearerToken;
     ///
     /// let token: BearerToken = "local-dev".parse().unwrap();
     /// assert_eq!(token.as_str(), "local-dev");
     /// ```
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub(super) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -107,7 +118,7 @@ impl std::fmt::Debug for BearerToken {
 }
 
 // -----------------------------------------------------------------------------
-// Command graph: one binary command exposes all provider-compatible routes.
+// ServeArgs: Captures CLI-visible server options.
 // -----------------------------------------------------------------------------
 
 /// CLI-visible server options.
@@ -120,54 +131,65 @@ Provider paths:
   Gemini:    GET /v1beta/models, POST /v1beta/models/{model}:generateContent, POST /v1beta/models/{model}:streamGenerateContent
   Docs:      GET /docs, GET /openapi.json
 ")]
-pub struct ServeArgs {
+pub(super) struct ServeArgs {
     /// Bind address.
     #[arg(long, default_value = "127.0.0.1")]
-    pub host: IpAddr,
+    pub(super) host: IpAddr,
 
     /// Bind port.
-    #[arg(long, default_value_t = 8787)]
-    pub port: u16,
+    #[arg(long, default_value = "8787")]
+    pub(super) port: u16,
 
     /// Provider-visible model id.
     #[arg(long, default_value = "eliza-doctor")]
-    pub model: ModelId,
+    pub(super) model: ModelId,
 
     /// Authentication mode for provider endpoints.
-    #[arg(long, value_enum, default_value_t = AuthMode::None)]
-    pub auth: AuthMode,
+    #[arg(long, value_enum, default_value = "none")]
+    pub(super) auth: AuthMode,
 
     /// Required token when --auth bearer is used.
     #[arg(long)]
-    pub bearer_token: Option<BearerToken>,
+    pub(super) bearer_token: Option<BearerToken>,
 
     /// CORS behavior.
-    #[arg(long, value_enum, default_value_t = CorsMode::None)]
-    pub cors: CorsMode,
+    #[arg(long, value_enum, default_value = "none")]
+    pub(super) cors: CorsMode,
 
     /// Optional delay between streaming chunks.
-    #[arg(long, default_value_t = 0)]
-    pub stream_delay_ms: u64,
+    #[arg(long, default_value = "0")]
+    pub(super) stream_delay_ms: u64,
 
     /// Reject requests whose text content exceeds this character count.
-    #[arg(long, default_value_t = 8000)]
-    pub max_input_chars: usize,
+    #[arg(long, default_value = "8000")]
+    pub(super) max_input_chars: usize,
 
     /// Bound replay work by limiting the number of user turns accepted.
-    #[arg(long, default_value_t = 200)]
-    pub max_history_messages: usize,
+    #[arg(long, default_value = "200")]
+    pub(super) max_history_messages: usize,
 
     /// Log rendering mode.
-    #[arg(long, value_enum, default_value_t = LogFormat::Text)]
-    pub log: LogFormat,
+    #[arg(long, value_enum, default_value = "text")]
+    pub(super) log: LogFormat,
 }
+
+// -----------------------------------------------------------------------------
+// Commands: Selects the standalone binary operation.
+// -----------------------------------------------------------------------------
 
 /// Available binary commands.
 #[derive(Debug, Subcommand)]
-pub enum Commands {
+pub(super) enum Commands {
     /// Run the local provider-compatible ELIZA HTTP server.
-    Serve(ServeArgs),
+    Serve(
+        /// Validated server command arguments.
+        ServeArgs,
+    ),
 }
+
+// -----------------------------------------------------------------------------
+// Cli: Owns top-level command parsing.
+// -----------------------------------------------------------------------------
 
 /// Top-level ELIZA CLI.
 ///
@@ -183,14 +205,14 @@ pub enum Commands {
 #[command(
     about = "Serve classic ELIZA through OpenAI, Anthropic, and Gemini-compatible HTTP APIs."
 )]
-pub struct Cli {
+pub(super) struct Cli {
     /// Selected command.
     #[command(subcommand)]
-    pub command: Commands,
+    pub(super) command: Commands,
 }
 
 // -----------------------------------------------------------------------------
-// Tests
+// Tests: Verify CLI parsing and configuration lowering.
 // -----------------------------------------------------------------------------
 
 /// Checks ELIZA command parsing behavior at its source owner.
@@ -200,24 +222,17 @@ pub struct Cli {
     reason = "test rationales replace public panic contracts"
 )]
 mod tests {
-    /// Holds request drivers and setup without copying production logic.
-    mod support {
-        /// Supplies setup for the commands checks.
-        pub(super) mod commands {
-            #![allow(
-                clippy::missing_panics_doc,
-                reason = "test assertions panic to report failures"
-            )]
-            pub(crate) use crate::ModelId;
-            pub(crate) use crate::cli::{Cli, Commands};
-            pub(crate) use crate::serve::ServerConfig;
-            pub(crate) use clap::Parser;
-        }
-    }
+    // -------------------------------------------------------------------------
+    // Commands: Verifies command parsing and configuration lowering.
+    // -------------------------------------------------------------------------
 
     /// Checks the commands contract.
     mod commands {
-        use super::support::commands::*;
+        use clap::Parser;
+
+        use crate::cli::{Cli, Commands};
+        use crate::provider::contracts::ModelId;
+        use crate::serve::ServerConfig;
 
         #[test]
         fn it_should_help_succeeds() {

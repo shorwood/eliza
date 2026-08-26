@@ -2,7 +2,7 @@ fmt:
     cargo fmt --all
 
 rlib-library:
-    cargo build --manifest-path ../rlib/Cargo.toml -p rlib-lint --no-default-features --features miette,serde,thiserror --locked
+    cargo build --manifest-path ../rlib/Cargo.toml -p rlib-lint --no-default-features --features bon,derive_more,miette,serde,strum,thiserror --locked
     host=$(rustc --version --verbose | sed -n 's/^host: //p'); case "$host" in *darwin*) extension=dylib ;; *) extension=so ;; esac; source="../rlib/target/debug/librlib_lint.$extension"; target="../rlib/target/debug/librlib_lint@nightly-$host.$extension"; test -f "$source"; cp "$source" "$target"
 
 lint: rlib-library
