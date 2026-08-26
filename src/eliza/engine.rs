@@ -31,37 +31,15 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+use super::parser::Parser;
+use super::syntax::{Sexp, SexpList, SexpListSplit};
 use crate::errors::AppError;
 
 /// Defines the DOCTOR SCRIPT value used by this module.
-const DOCTOR_SCRIPT: &str = include_str!("../fixtures/eliza/doctor.script");
+const DOCTOR_SCRIPT: &str = include_str!("../../fixtures/eliza/doctor.script");
 
 /// Lazily parsed bundled script shared by all fresh sessions.
 static DOCTOR: OnceLock<Script> = OnceLock::new();
-
-// -----------------------------------------------------------------------------
-// Span: Retains source positions for diagnostics.
-// -----------------------------------------------------------------------------
-
-/// Represents `Span` state within this module.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-struct Span {
-    /// Stores the line value owned by this contract.
-    line: usize,
-    /// Stores the column value owned by this contract.
-    column: usize,
-}
-
-impl Span {
-    /// Performs the expected operation for this abstraction.
-    const fn expected(self, expected: &'static str) -> AppError {
-        AppError::ScriptExpected {
-            expected,
-            line: self.line,
-            column: self.column,
-        }
-    }
-}
 
 // -----------------------------------------------------------------------------
 // Text: Normalizes input and formats assembled words.
@@ -99,477 +77,6 @@ fn text_format_words(words: &[String]) -> String {
 
     text = text.replace("( ", "(").replace(" )", ")");
     text.trim().to_owned()
-}
-
-// -----------------------------------------------------------------------------
-// TokenKind: Recognizes the compact S-expression vocabulary.
-// -----------------------------------------------------------------------------
-
-/// Enumerates the supported `TokenKind` cases.
-#[derive(Debug, Clone, Eq, PartialEq)]
-enum TokenKind {
-    /// Represents the `OpenParen` case.
-    OpenParen,
-    /// Represents the `CloseParen` case.
-    CloseParen,
-    /// Stores the wrapped value owned by this declaration.
-    Atom(
-        /// Raw non-parenthesis token text.
-        String,
-    ),
-}
-
-// -----------------------------------------------------------------------------
-// Token: Retains one lexeme and its source position.
-// -----------------------------------------------------------------------------
-
-/// Represents `Token` state within this module.
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct Token {
-    /// Raw script token before ELIZA-specific meaning is attached.
-    kind: TokenKind,
-    /// Start position used for diagnostics after later lowering failures.
-    span: Span,
-}
-
-// -----------------------------------------------------------------------------
-// LexedScript: Owns the token stream and EOF position.
-// -----------------------------------------------------------------------------
-
-/// Represents `LexedScript` state within this module.
-#[derive(Debug, Clone)]
-struct LexedScript {
-    /// Complete token stream without comments or whitespace.
-    tokens: Vec<Token>,
-    /// Final position used when EOF appears inside an open list.
-    eof: Span,
-}
-
-impl From<&str> for LexedScript {
-    fn from(input: &str) -> Self {
-        let mut lexer = Lexer::for_script(input);
-        let mut tokens = Vec::new();
-
-        // Keep token positions while discarding comments and whitespace.
-        while let Some(token) = lexer.next_token() {
-            tokens.push(token);
-        }
-        Self {
-            tokens,
-            eof: Span {
-                line: lexer.line,
-                column: lexer.column,
-            },
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Lexer: Scans source into positioned tokens.
-// -----------------------------------------------------------------------------
-
-/// Represents `Lexer` state within this module.
-struct Lexer<'a> {
-    /// Stores the input value owned by this contract.
-    input: &'a str,
-    /// Stores the offset value owned by this contract.
-    offset: usize,
-    /// Stores the line value owned by this contract.
-    line: usize,
-    /// Stores the column value owned by this contract.
-    column: usize,
-}
-
-impl<'a> Lexer<'a> {
-    /// Create a lexer over one script source.
-    fn for_script(input: &'a str) -> Self {
-        Self {
-            input,
-            offset: 0,
-            line: 1,
-            column: 1,
-        }
-    }
-
-    /// Performs the peek operation for this abstraction.
-    fn peek(&self) -> Option<char> {
-        self.input[self.offset..].chars().next()
-    }
-
-    /// Performs the bump operation for this abstraction.
-    fn bump(&mut self) -> Option<char> {
-        let character = self.peek()?;
-        self.offset += character.len_utf8();
-        if character == '\n' {
-            self.line += 1;
-            self.column = 1;
-        } else {
-            self.column += 1;
-        }
-        Some(character)
-    }
-
-    /// Consume one source comment through its terminating newline.
-    fn skip_comment(&mut self) {
-        while let Some(character) = self.peek() {
-            self.bump();
-            if character == '\n' {
-                break;
-            }
-        }
-    }
-
-    /// Performs the skip whitespace and comments operation for this abstraction.
-    fn skip_whitespace_and_comments(&mut self) {
-        loop {
-            match self.peek() {
-                Some(';') => {
-                    // Script comments run to the end of the current line.
-                    self.skip_comment();
-                }
-                Some(character) if character.is_whitespace() => {
-                    self.bump();
-                }
-                _ => break,
-            }
-        }
-    }
-
-    /// Performs the atom operation for this abstraction.
-    fn read_atom_token(&mut self) -> Token {
-        let span = Span {
-            line: self.line,
-            column: self.column,
-        };
-        let mut atom = String::new();
-
-        while let Some(character) = self.peek() {
-            if character.is_whitespace() || character == '(' || character == ')' || character == ';'
-            {
-                break;
-            }
-            atom.push(character);
-            self.bump();
-        }
-
-        Token {
-            kind: TokenKind::Atom(atom),
-            span,
-        }
-    }
-
-    /// Performs the next token operation for this abstraction.
-    fn next_token(&mut self) -> Option<Token> {
-        self.skip_whitespace_and_comments();
-        let span = Span {
-            line: self.line,
-            column: self.column,
-        };
-        let character = self.peek()?;
-
-        match character {
-            '(' => {
-                self.bump();
-                Some(Token {
-                    kind: TokenKind::OpenParen,
-                    span,
-                })
-            }
-            ')' => {
-                self.bump();
-                Some(Token {
-                    kind: TokenKind::CloseParen,
-                    span,
-                })
-            }
-            _ => Some(self.read_atom_token()),
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// SexpKind: Models atoms and lists before lowering.
-// -----------------------------------------------------------------------------
-
-/// Enumerates the supported `SexpKind` cases.
-#[derive(Debug, Clone, Eq, PartialEq)]
-enum SexpKind {
-    /// Stores the wrapped value owned by this declaration.
-    Atom(
-        /// Atom text preserved from the token stream.
-        String,
-    ),
-    /// Stores the wrapped value owned by this declaration.
-    List(
-        /// Child expressions enclosed by the list.
-        Vec<Sexp>,
-    ),
-}
-
-// -----------------------------------------------------------------------------
-// Sexp: Retains one expression and its position.
-// -----------------------------------------------------------------------------
-
-/// Represents `Sexp` state within this module.
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct Sexp {
-    /// Recursive syntax node produced before script forms are interpreted.
-    kind: SexpKind,
-    /// Span of the opening token or atom that introduced this node.
-    span: Span,
-}
-
-impl Sexp {
-    /// Performs the atom operation for this abstraction.
-    fn atom(&self) -> Option<&str> {
-        match &self.kind {
-            SexpKind::Atom(atom) => Some(atom),
-            SexpKind::List(_) => None,
-        }
-    }
-
-    /// Performs the list operation for this abstraction.
-    fn list(&self) -> Option<SexpList<'_>> {
-        match &self.kind {
-            SexpKind::Atom(_) => None,
-            SexpKind::List(items) => Some(SexpList::new(items, self.span)),
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// SexpList: Provides validated list access.
-// -----------------------------------------------------------------------------
-
-/// Two list regions separated by a required atom.
-struct SexpListSplit<'a> {
-    /// Items preceding the separator.
-    before: SexpList<'a>,
-    /// Items following the separator.
-    after: SexpList<'a>,
-}
-
-/// Represents `SexpList` state within this module.
-#[derive(Debug, Clone, Copy)]
-struct SexpList<'a> {
-    /// Borrowed child nodes; list helpers never allocate unless lowering does.
-    items: &'a [Sexp],
-    /// Parent list span used when a required child is missing.
-    span: Span,
-}
-
-impl<'a> SexpList<'a> {
-    /// Performs the new operation for this abstraction.
-    fn new(items: &'a [Sexp], span: Span) -> Self {
-        Self { items, span }
-    }
-
-    /// Read one S-expression as a list.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::ScriptExpected`] when the S-expression is an atom.
-    fn from_sexp(sexp: &'a Sexp, expected: &'static str) -> Result<Self, AppError> {
-        sexp.list().ok_or(sexp.span.expected(expected))
-    }
-
-    /// Return all expressions in this validated list.
-    fn as_slice(self) -> &'a [Sexp] {
-        self.items
-    }
-
-    /// Performs the atom at operation for this abstraction.
-    fn atom_at(self, index: usize) -> Option<&'a str> {
-        self.items.get(index).and_then(Sexp::atom)
-    }
-
-    /// Return the list item at `index`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::ScriptExpected`] when the requested item is missing.
-    fn expect(self, index: usize, expected: &'static str) -> Result<&'a Sexp, AppError> {
-        self.items.get(index).ok_or(self.span.expected(expected))
-    }
-
-    /// Return the list item at `index` as an atom.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::ScriptExpected`] when the item is missing or is a
-    /// nested list.
-    fn expect_atom(self, index: usize, expected: &'static str) -> Result<&'a str, AppError> {
-        let item = self.expect(index, expected)?;
-        item.atom().ok_or(item.span.expected(expected))
-    }
-
-    /// Performs the tail operation for this abstraction.
-    fn tail(self, index: usize) -> Self {
-        Self::new(self.items.get(index..).unwrap_or_default(), self.span)
-    }
-
-    /// Performs the get operation for this abstraction.
-    fn get(self, index: usize) -> Option<&'a Sexp> {
-        self.items.get(index)
-    }
-
-    /// Performs the iter operation for this abstraction.
-    fn iter(self) -> impl Iterator<Item = &'a Sexp> + 'a {
-        self.items.iter()
-    }
-
-    /// Performs the atoms operation for this abstraction.
-    fn atoms(self) -> impl Iterator<Item = &'a str> + 'a {
-        self.items.iter().filter_map(Sexp::atom)
-    }
-
-    /// Performs the split once atom operation for this abstraction.
-    fn split_once_atom(self, atom: &str) -> Option<SexpListSplit<'a>> {
-        let separator = self
-            .items
-            .iter()
-            .position(|item| item.atom() == Some(atom))?;
-        Some(SexpListSplit {
-            before: Self::new(&self.items[..separator], self.span),
-            after: Self::new(&self.items[separator + 1..], self.span),
-        })
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Parser: Builds expressions from positioned tokens.
-// -----------------------------------------------------------------------------
-
-/// Represents `Parser` state within this module.
-struct Parser {
-    /// Token stream produced by the lexer.
-    tokens: Vec<Token>,
-    /// Current parser position into `tokens`.
-    cursor: usize,
-    /// Span returned when a list reaches EOF before a close paren.
-    eof: Span,
-}
-
-impl Parser {
-    /// Return the token at the current parser position.
-    fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.cursor)
-    }
-
-    /// Parse one atom or list at the current cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] when the cursor is at EOF or an unexpected close
-    /// paren.
-    fn parse_one(&mut self) -> Result<Sexp, AppError> {
-        let token = self.peek().ok_or(AppError::ScriptUnexpectedEnd {
-            line: self.eof.line,
-            column: self.eof.column,
-        })?;
-
-        // Dispatch the positioned token into its expression representation.
-        match &token.kind {
-            TokenKind::OpenParen => self.parse_list(),
-            TokenKind::CloseParen => Err(AppError::ScriptUnexpectedClose {
-                line: token.span.line,
-                column: token.span.column,
-            }),
-            TokenKind::Atom(atom) => {
-                let atom = atom.clone();
-                let span = token.span;
-                self.cursor += 1;
-                Ok(Sexp {
-                    kind: SexpKind::Atom(atom),
-                    span,
-                })
-            }
-        }
-    }
-
-    /// Parse one list starting at an open paren.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::ScriptUnexpectedEnd`] when EOF appears before the
-    /// closing paren.
-    fn parse_list(&mut self) -> Result<Sexp, AppError> {
-        let open = self.next().ok_or(AppError::ScriptUnexpectedEnd {
-            line: self.eof.line,
-            column: self.eof.column,
-        })?;
-        let mut items = Vec::new();
-
-        loop {
-            match self.peek() {
-                Some(Token {
-                    kind: TokenKind::CloseParen,
-                    ..
-                }) => {
-                    self.cursor += 1;
-                    return Ok(Sexp {
-                        kind: SexpKind::List(items),
-                        span: open.span,
-                    });
-                }
-                Some(_) => items.push(self.parse_one()?),
-                None => {
-                    return Err(AppError::ScriptUnexpectedEnd {
-                        line: self.eof.line,
-                        column: self.eof.column,
-                    });
-                }
-            }
-        }
-    }
-
-    /// Report whether every lexed token has been consumed.
-    fn is_eof(&self) -> bool {
-        self.cursor >= self.tokens.len()
-    }
-
-    /// Parse every token from the lexer.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] from the first malformed S-expression.
-    fn parse_all(mut self) -> Result<Vec<Sexp>, AppError> {
-        let mut sexps = Vec::new();
-
-        // Lower each independent top-level source form in sequence.
-        while !self.is_eof() {
-            sexps.push(self.parse_one()?);
-        }
-        Ok(sexps)
-    }
-
-    /// Parse a full script source into S-expressions.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] when parentheses are unbalanced or the parser sees
-    /// a close paren without a matching open paren.
-    fn parse(input: &str) -> Result<Vec<Sexp>, AppError> {
-        let lexed = LexedScript::from(input);
-        Self {
-            tokens: lexed.tokens,
-            cursor: 0,
-            eof: lexed.eof,
-        }
-        .parse_all()
-    }
-}
-
-impl Iterator for Parser {
-    type Item = Token;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let token = self.tokens.get(self.cursor).cloned();
-        if token.is_some() {
-            self.cursor += 1;
-        }
-        token
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1196,7 +703,7 @@ impl ReassemblyItem {
 // -----------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub(super) struct Script {
+pub(crate) struct Script {
     /// Stores the substitutions value owned by this contract.
     substitutions: HashMap<Keyword, Keyword>,
     /// Stores the tags value owned by this contract.
@@ -1345,12 +852,12 @@ const MAX_LINK_DEPTH: usize = 12;
 
 /// Result of one ELIZA response operation.
 #[derive(Debug, Clone)]
-pub struct ElizaTurn {
+pub(crate) struct ElizaTurn {
     /// Canonical input after source-script substitutions were applied.
     #[cfg(test)]
     normalized_input: String,
     /// Provider-ready response text produced by reassembly.
-    pub(super) output: String,
+    pub(crate) output: String,
     /// Keyword whose transform produced the output, when one matched directly.
     #[cfg(test)]
     matched_keyword: Option<String>,
@@ -1530,7 +1037,7 @@ fn pattern_captures(
 /// assert_eq!(turn.output, "I AM SORRY TO HEAR YOU ARE SAD");
 /// ```
 #[derive(Debug)]
-pub(super) struct ElizaSession<'script> {
+pub(crate) struct ElizaSession<'script> {
     /// Stores the script value owned by this contract.
     script: &'script Script,
     /// Stores the state value owned by this contract.
@@ -1712,7 +1219,7 @@ impl ElizaSession<'_> {
     /// assert_eq!(turn.matched_keyword.as_deref(), Some("COMPUTERS"));
     /// assert_eq!(turn.output, "DO COMPUTERS WORRY YOU");
     /// ```
-    pub(super) fn respond(&mut self, input: &str) -> ElizaTurn {
+    pub(crate) fn respond(&mut self, input: &str) -> ElizaTurn {
         let analyzed = self.script.analyze(input);
 
         // Memory is recorded before normal response selection so the turn
@@ -1780,7 +1287,7 @@ mod tests {
 
     /// Checks the script contract.
     mod script {
-        use crate::eliza::{ElizaSession, Script, doctor_script};
+        use super::super::{ElizaSession, Script, doctor_script};
 
         /// A change here must not alter the accepted DOCTOR script behavior.
         #[test]
@@ -1919,7 +1426,7 @@ mod tests {
     clippy::items_after_test_module,
     reason = "rlib requires dependency-first declaration order for test modules"
 )]
-pub(super) fn doctor_script() -> &'static Script {
+pub(crate) fn doctor_script() -> &'static Script {
     DOCTOR.get_or_init(|| {
         DOCTOR_SCRIPT
             .parse()

@@ -2,14 +2,14 @@
 //!
 //! `OpenAI`, Anthropic, and Gemini all arrive with different JSON envelopes,
 //! but the engine only needs a bounded transcript and a model id. Provider
-//! modules lower into this middle contract, then render their own success or
+//! routes lower into this middle contract, then render their own success or
 //! failure shape after ELIZA produces one turn.
 //! The shared contract deliberately avoids provider-specific concepts such as
 //! choices, content blocks, candidates, and event names; those stay in the
-//! adapter that owns the public wire shape.
+//! route that owns the public wire shape.
 //!
 //! ```text
-//! provider handler
+//! route handler
 //!   -> CompatTurnRequest { model, system_text, user_turns }
 //!   -> complete_eliza
 //!   -> CompatTurnResponse { model, output, usage }
@@ -29,7 +29,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 
-use crate::eliza::{ElizaSession, doctor_script};
+use crate::eliza::engine::{ElizaSession, doctor_script};
 use crate::errors::AppError;
 
 // -----------------------------------------------------------------------------
@@ -67,7 +67,7 @@ impl ModelId {
     /// assert_eq!(model.as_str(), "custom-eliza");
     /// ```
     #[must_use]
-    pub(super) fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -143,7 +143,7 @@ impl TranscriptText {
 
 /// Represents `CompatTurnRequest` state within this module.
 #[derive(Debug)]
-pub(super) struct CompatTurnRequest {
+pub(crate) struct CompatTurnRequest {
     /// Provider-visible model id echoed by the selected adapter.
     model: ModelId,
     /// Non-user instructions accepted for accounting and future inspection.
@@ -157,7 +157,7 @@ pub(super) struct CompatTurnRequest {
 
 impl CompatTurnRequest {
     /// Performs the new operation for this abstraction.
-    pub(super) fn new(model: ModelId, system_text: Vec<String>, user_turns: Vec<String>) -> Self {
+    pub(crate) fn new(model: ModelId, system_text: Vec<String>, user_turns: Vec<String>) -> Self {
         Self {
             model,
             system_text: system_text.into_iter().map(TranscriptText::from).collect(),
@@ -171,7 +171,7 @@ impl CompatTurnRequest {
     ///
     /// Returns [`ProviderRejection`] when no user turn exists or configured
     /// transcript limits are exceeded.
-    pub(super) fn complete(
+    pub(crate) fn complete(
         self,
         limits: RequestLimits,
     ) -> Result<CompatTurnResponse, ProviderRejection> {
@@ -235,17 +235,17 @@ impl CompatTurnRequest {
 // -----------------------------------------------------------------------------
 
 /// Represents `TokenUsage` state within this module.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
-pub(super) struct TokenUsage {
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, JsonSchema)]
+pub(crate) struct TokenUsage {
     /// Approximate input token count derived from whitespace-separated text.
     #[serde(rename = "prompt_tokens")]
-    pub(super) prompt: usize,
+    pub(crate) prompt: usize,
     /// Approximate output token count derived from the final ELIZA response.
     #[serde(rename = "completion_tokens")]
-    pub(super) completion: usize,
+    pub(crate) completion: usize,
     /// Prompt plus completion tokens.
     #[serde(rename = "total_tokens")]
-    pub(super) total: usize,
+    pub(crate) total: usize,
 }
 
 // -----------------------------------------------------------------------------
@@ -254,13 +254,13 @@ pub(super) struct TokenUsage {
 
 /// Represents `CompatTurnResponse` state within this module.
 #[derive(Debug)]
-pub(super) struct CompatTurnResponse {
+pub(crate) struct CompatTurnResponse {
     /// Model id copied from the request so adapters can echo provider shape.
-    pub(super) model: ModelId,
+    pub(crate) model: ModelId,
     /// Final ELIZA output from the last replayed user turn.
-    pub(super) output: String,
+    pub(crate) output: String,
     /// Approximate usage rendered into provider-specific counters.
-    pub(super) usage: TokenUsage,
+    pub(crate) usage: TokenUsage,
 }
 
 impl CompatTurnResponse {
@@ -289,7 +289,7 @@ pub(crate) struct RequestLimits {
 
 impl RequestLimits {
     /// Build limits from validated positive bounds.
-    pub(super) const fn new(
+    pub(crate) const fn new(
         max_input_chars: NonZeroUsize,
         max_history_messages: NonZeroUsize,
     ) -> Self {
@@ -308,20 +308,20 @@ impl RequestLimits {
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderRejection {
     /// Stores the status value owned by this contract.
-    pub(super) status: StatusCode,
+    pub(crate) status: StatusCode,
     /// Stores the openai type value owned by this contract.
-    pub(super) openai_type: &'static str,
+    pub(crate) openai_type: &'static str,
     /// Stores the gemini status value owned by this contract.
-    pub(super) gemini_status: &'static str,
+    pub(crate) gemini_status: &'static str,
     /// Stores the message value owned by this contract.
-    pub(super) message: String,
+    pub(crate) message: String,
     /// Stores the param value owned by this contract.
-    pub(super) param: Option<&'static str>,
+    pub(crate) param: Option<&'static str>,
 }
 
 impl ProviderRejection {
     /// Build a provider validation rejection for malformed input.
-    pub(super) fn invalid(param: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(param: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             openai_type: "invalid_request_error",
@@ -332,7 +332,7 @@ impl ProviderRejection {
     }
 
     /// Build a provider validation rejection for unsupported features.
-    pub(super) fn unsupported(param: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn unsupported(param: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             openai_type: "unsupported_request_error",
@@ -449,7 +449,7 @@ impl JoinedText {
 ///
 /// Returns [`ProviderRejection`] when any part is non-textual or the resulting
 /// text is empty.
-pub(super) fn required_text_parts(
+pub(crate) fn required_text_parts(
     parts: &[Value],
     param: &'static str,
 ) -> Result<String, ProviderRejection> {
@@ -507,7 +507,7 @@ fn join_typed_text_items(
 ///
 /// Returns [`ProviderRejection`] when the content shape is not textual or a
 /// typed text array item is malformed.
-pub(super) fn optional_text_content(
+pub(crate) fn optional_text_content(
     content: &Value,
     param: &'static str,
     kind: TextArrayKind,
@@ -526,7 +526,7 @@ pub(super) fn optional_text_content(
 // -----------------------------------------------------------------------------
 
 /// Performs the stream chunks operation for this abstraction.
-pub(super) fn stream_chunks(text: &str) -> Vec<String> {
+pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
 
@@ -550,26 +550,31 @@ pub(super) fn stream_chunks(text: &str) -> Vec<String> {
 }
 
 // -----------------------------------------------------------------------------
-// SseEvents: Owns optionally paced server-sent events.
+// Sse: Owns optionally paced server-sent events.
 // -----------------------------------------------------------------------------
 
-/// Owned SSE events ready for optional paced delivery.
-#[derive(derive_more::From)]
-pub(super) struct SseEvents(
+/// SSE response with delivery pacing owned by its response type.
+pub(crate) struct SseResponse {
     /// Events delivered in insertion order.
-    Vec<Event>,
-);
+    events: Vec<Event>,
+    /// Delay inserted before each event.
+    delay_ms: u64,
+}
 
-impl SseEvents {
-    /// Convert these events into an Axum SSE response with optional pacing.
-    pub(super) fn into_response(self, delay_ms: u64) -> Response {
-        let base = stream::iter(self.0.into_iter().map(Ok::<_, std::convert::Infallible>));
-        if delay_ms == 0 {
+impl IntoResponse for SseResponse {
+    fn into_response(self) -> Response {
+        let base = stream::iter(
+            self.events
+                .into_iter()
+                .map(Ok::<_, std::convert::Infallible>),
+        );
+        if self.delay_ms == 0 {
             Sse::new(base)
                 .keep_alive(KeepAlive::default())
                 .into_response()
         } else {
             // Serialize pacing through the stream so dropped responses cancel it.
+            let delay_ms = self.delay_ms;
             Sse::new(base.then(move |event| async move {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 event
@@ -580,8 +585,25 @@ impl SseEvents {
     }
 }
 
+/// Owned SSE events ready for optional paced delivery.
+#[derive(derive_more::From)]
+pub(crate) struct SseEvents(
+    /// Events delivered in insertion order.
+    Vec<Event>,
+);
+
+impl SseEvents {
+    /// Attach optional pacing before rendering these events.
+    pub(crate) fn with_delay(self, delay_ms: u64) -> SseResponse {
+        SseResponse {
+            events: self.0,
+            delay_ms,
+        }
+    }
+}
+
 /// Performs the unix timestamp operation for this abstraction.
-pub(super) fn unix_timestamp() -> u64 {
+pub(crate) fn unix_timestamp() -> u64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
         Err(_) => 0,
