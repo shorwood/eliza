@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--bearer-token", ""],
+  "code": 2
+}

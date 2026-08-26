@@ -1,0 +1,4 @@
+Error: eliza::serve::zero_limit
+
+  × --max-input-chars must be greater than zero
+
