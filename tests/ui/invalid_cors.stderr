@@ -1,0 +1,4 @@
+error: invalid value 'strict' for '--cors <CORS>'
+  [possible values: none, permissive]
+
+For more information, try '--help'.

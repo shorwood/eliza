@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--wat"],
+  "code": 2
+}

@@ -1,0 +1,4 @@
+error: invalid value 'yaml' for '--log <LOG>'
+  [possible values: text, json]
+
+For more information, try '--help'.
