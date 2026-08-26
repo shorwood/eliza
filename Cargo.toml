@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "eliza"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+
+[dependencies]
+aide = { version = "0.15.1", features = ["axum", "scalar"] }
+axum = "0.8.9"
+clap = { version = "4.6.1", features = ["derive"] }
+futures-util = "0.3"
+miette = { version = "7.6.0", features = ["derive"] }
+schemars = "0.9.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tower-http = { version = "0.7.0", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1.23.4", features = ["v7", "serde"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[lints.clippy]
+pedantic = "warn"
+arbitrary_source_item_ordering = "warn"
