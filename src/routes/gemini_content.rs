@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use aide::axum::ApiRouter;
+use aide::axum::routing::post_with;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -18,11 +20,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::contracts::{
+use super::context::{AppState, provider_authenticate};
+use crate::provider::contracts::{
     CompatTurnRequest, CompatTurnResponse, ModelId, ProviderRejection, RequestLimits, SseEvents,
     TokenUsage, required_text_parts, stream_chunks,
 };
-use crate::serve::{AppState, provider_authenticate};
 
 // -----------------------------------------------------------------------------
 // GeminiContent: Captures one textual content entry.
@@ -134,42 +136,11 @@ impl FromStr for GeminiAction {
 }
 
 // -----------------------------------------------------------------------------
-// GeminiModel: Models the native Gemini model catalog.
-// -----------------------------------------------------------------------------
-
-/// Represents `GeminiModel` state within this module.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GeminiModel {
-    /// Stores the name value owned by this contract.
-    name: String,
-    /// Stores the version value owned by this contract.
-    version: &'static str,
-    /// Stores the display name value owned by this contract.
-    display_name: &'static str,
-    /// Stores the description value owned by this contract.
-    description: &'static str,
-    /// Stores the supported generation methods value owned by this contract.
-    supported_generation_methods: Vec<&'static str>,
-    /// Stores the input token limit value owned by this contract.
-    input_token_limit: usize,
-    /// Stores the output token limit value owned by this contract.
-    output_token_limit: usize,
-}
-
-/// Represents `GeminiModelsResponse` state within this module.
-#[derive(Debug, Serialize)]
-struct GeminiModelsResponse {
-    /// Stores the models value owned by this contract.
-    models: Vec<GeminiModel>,
-}
-
-// -----------------------------------------------------------------------------
 // GeminiTextPart: Models one generated text part.
 // -----------------------------------------------------------------------------
 
 /// Represents `GeminiTextPart` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct GeminiTextPart {
     /// Stores the text value owned by this contract.
     text: String,
@@ -180,7 +151,7 @@ struct GeminiTextPart {
 // -----------------------------------------------------------------------------
 
 /// Represents `GeminiContentResponse` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct GeminiContentResponse {
     /// Stores the role value owned by this contract.
     role: &'static str,
@@ -193,7 +164,7 @@ struct GeminiContentResponse {
 // -----------------------------------------------------------------------------
 
 /// Represents `GeminiCandidate` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct GeminiCandidate {
     /// Stores the content value owned by this contract.
     content: GeminiContentResponse,
@@ -209,7 +180,7 @@ struct GeminiCandidate {
 // -----------------------------------------------------------------------------
 
 /// Represents `GeminiUsageMetadata` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct GeminiUsageMetadata {
     /// Stores the prompt value owned by this contract.
     #[serde(rename = "promptTokenCount")]
@@ -237,7 +208,7 @@ impl From<TokenUsage> for GeminiUsageMetadata {
 // -----------------------------------------------------------------------------
 
 /// Represents `GeminiGenerateResponse` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct GeminiGenerateResponse {
     /// Stores the candidates value owned by this contract.
@@ -266,8 +237,16 @@ impl GeminiGenerateResponse {
     }
 }
 
+impl From<GeminiGenerateResponse> for Event {
+    fn from(response: GeminiGenerateResponse) -> Self {
+        Event::default()
+            .json_data(response)
+            .expect("Gemini stream chunk should serialize")
+    }
+}
+
 /// Ordered Gemini response chunks rendered as JSON or SSE.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(transparent)]
 struct GeminiGenerateResponseList(
     /// Chunks delivered in insertion order.
@@ -300,24 +279,6 @@ impl GeminiGenerateResponseList {
         ));
         Self(chunks)
     }
-
-    /// Render these chunks as Gemini SSE data events.
-    ///
-    /// # Panics
-    ///
-    /// Panics only if a locally constructed chunk cannot serialize.
-    fn into_sse_response(self, delay_ms: u64) -> Response {
-        let events = self
-            .0
-            .into_iter()
-            .map(|chunk| {
-                Event::default()
-                    .json_data(chunk)
-                    .expect("Gemini stream chunk should serialize")
-            })
-            .collect::<Vec<_>>();
-        SseEvents::from(events).into_response(delay_ms)
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -325,7 +286,7 @@ impl GeminiGenerateResponseList {
 // -----------------------------------------------------------------------------
 
 /// Represents `GeminiFailureBody` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct GeminiFailureBody {
     /// Stores the code value owned by this contract.
     code: u16,
@@ -336,7 +297,7 @@ struct GeminiFailureBody {
 }
 
 /// Represents `GeminiFailureResponse` state within this module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 struct GeminiFailureResponse {
     /// Stores the error value owned by this contract.
     error: GeminiFailureBody,
@@ -389,48 +350,30 @@ fn lower_generate_content(
 }
 
 // -----------------------------------------------------------------------------
-// ErrorResponse: Renders Gemini failures.
+// GeminiRejection: Renders Gemini failures.
 // -----------------------------------------------------------------------------
 
-/// Performs the error response operation for this abstraction.
-fn error_response(error: ProviderRejection) -> Response {
-    (
-        error.status,
-        Json(GeminiFailureResponse {
-            error: GeminiFailureBody {
-                code: error.status.as_u16(),
-                message: error.message,
-                status: error.gemini_status,
-            },
-        }),
-    )
-        .into_response()
-}
+/// Provider rejection rendered in Gemini's error envelope.
+struct GeminiRejection(
+    /// Rejection facts rendered by this provider.
+    ProviderRejection,
+);
 
-// -----------------------------------------------------------------------------
-// Models: Lists the configured Gemini model.
-// -----------------------------------------------------------------------------
-
-/// Performs the models operation for this abstraction.
-pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    // Render authentication failures in Gemini's envelope immediately.
-    if let Err(error) = provider_authenticate(&headers, &state.config) {
-        return error_response(error);
+impl IntoResponse for GeminiRejection {
+    fn into_response(self) -> Response {
+        let error = self.0;
+        (
+            error.status,
+            Json(GeminiFailureResponse {
+                error: GeminiFailureBody {
+                    code: error.status.as_u16(),
+                    message: error.message,
+                    status: error.gemini_status,
+                },
+            }),
+        )
+            .into_response()
     }
-
-    // Prefix native Gemini model names for discovery responses.
-    Json(GeminiModelsResponse {
-        models: vec![GeminiModel {
-            name: format!("models/{}", state.config.model),
-            version: "1966-doctor",
-            display_name: "ELIZA DOCTOR",
-            description: "Classic ELIZA DOCTOR script served through Gemini-compatible JSON.",
-            supported_generation_methods: vec!["generateContent", "streamGenerateContent"],
-            input_token_limit: state.config.max_input_chars.get(),
-            output_token_limit: 512,
-        }],
-    })
-    .into_response()
 }
 
 // -----------------------------------------------------------------------------
@@ -438,11 +381,11 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
 // -----------------------------------------------------------------------------
 
 /// Axum handler owner for Gemini model actions encoded in request paths.
-pub(crate) struct GeminiActionHandler;
+struct GeminiActionHandler;
 
 impl GeminiActionHandler {
     /// Authenticate, lower, execute, and render one Gemini model action.
-    pub(crate) async fn handle(
+    async fn handle(
         State(state): State<AppState>,
         headers: HeaderMap,
         Path(model_action): Path<String>,
@@ -453,20 +396,20 @@ impl GeminiActionHandler {
 
         // Render authentication failures in Gemini's envelope immediately.
         if let Err(error) = provider_authenticate(&headers, &state.config) {
-            return error_response(error);
+            return GeminiRejection(error).into_response();
         }
 
         // The path chooses both model id and generation mode.
         let action = match model_action.parse::<GeminiAction>() {
             Ok(action) => action,
             // Invalid model actions stop before request lowering.
-            Err(error) => return error_response(error),
+            Err(error) => return GeminiRejection(error).into_response(),
         };
 
         let request = match lower_generate_content(action.model.clone(), payload) {
             Ok(request) => request,
             // Invalid payloads stop before the ELIZA engine is invoked.
-            Err(error) => return error_response(error),
+            Err(error) => return GeminiRejection(error).into_response(),
         };
         let limits = RequestLimits::new(
             state.config.max_input_chars,
@@ -475,7 +418,7 @@ impl GeminiActionHandler {
         let response = match request.complete(limits) {
             Ok(response) => response,
             // Engine rejections retain Gemini's error shape.
-            Err(error) => return error_response(error),
+            Err(error) => return GeminiRejection(error).into_response(),
         };
 
         if action.kind.is_stream() {
@@ -484,7 +427,9 @@ impl GeminiActionHandler {
             // Gemini supports SSE through an `alt=sse` query flag; otherwise
             // return the same chunks as a JSON array for simple raw REST clients.
             if query.get("alt").is_some_and(|value| value == "sse") {
-                chunks.into_sse_response(state.config.stream_delay_ms)
+                SseEvents::from(chunks.0.into_iter().map(Event::from).collect::<Vec<_>>())
+                    .with_delay(state.config.stream_delay_ms)
+                    .into_response()
             } else {
                 Json(chunks).into_response()
             }
@@ -496,5 +441,28 @@ impl GeminiActionHandler {
             ))
             .into_response()
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// GeminiContentRoute: Mounts typed Gemini contracts into Aide.
+// -----------------------------------------------------------------------------
+
+/// Gemini content generation endpoint and contract.
+pub(super) struct GeminiContentRoute;
+
+impl GeminiContentRoute {
+    /// Mount the native Gemini content route from its owning contracts.
+    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
+        router.api_route(
+            "/v1beta/models/{model_action}",
+            post_with(GeminiActionHandler::handle, |operation| {
+                operation
+                    .summary("Gemini content")
+                    .tag("gemini")
+                    .response::<200, Json<GeminiGenerateResponse>>()
+                    .default_response::<Json<GeminiFailureResponse>>()
+            }),
+        )
     }
 }
