@@ -1,7 +1,19 @@
+//! Standalone classic ELIZA compatibility server.
+
+mod errors;
+mod eliza;
+mod provider;
+mod serve;
+mod cli;
+
+#[cfg(test)]
+mod test_support;
+
 use clap::Parser;
-use eliza::cli::{Cli, Commands};
-use eliza::serve::{ServerConfig, serve};
 use miette::Result;
+
+use crate::cli::{Cli, Commands};
+use crate::serve::{ServerConfig, run_server};
 
 /// Run the standalone ELIZA CLI.
 ///
@@ -15,8 +27,7 @@ use miette::Result;
 /// Panics if Tokio cannot initialize the async runtime for the process.
 #[tokio::main]
 async fn main() -> Result<()> {
-    match Cli::parse().command {
-        Commands::Serve(args) => serve(ServerConfig::try_from(args)?).await?,
-    }
+    let Commands::Serve(args) = Cli::parse().command;
+    run_server(ServerConfig::try_from(args)?).await?;
     Ok(())
 }

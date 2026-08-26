@@ -17,110 +17,182 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{
-    CompatTurnRequest, ModelId, ProviderRejection, TextArrayKind, TokenUsage, complete_eliza,
-    optional_text_content, sse_response, stream_chunks, unix_timestamp,
+use super::contracts::{
+    CompatTurnRequest, CompatTurnResponse, ModelId, ProviderRejection, RequestLimits, SseEvents,
+    TextArrayKind, TokenUsage, optional_text_content, stream_chunks, unix_timestamp,
 };
-use crate::serve::{AppState, require_provider_auth};
+use crate::serve::{AppState, provider_authenticate};
 
 // -----------------------------------------------------------------------------
-// OpenAI request contracts: model only the text-bearing fields needed for replay.
+// OpenAiMessage: Models one accepted chat message.
 // -----------------------------------------------------------------------------
 
+/// Represents `OpenAiMessage` state within this module.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct OpenAiMessage {
+    /// Stores the role value owned by this contract.
     role: String,
-    #[serde(default)]
+    /// Stores the content value owned by this contract.
+    #[serde(default = "missing_content_is_null")]
     content: Value,
 }
 
+// -----------------------------------------------------------------------------
+// ChatCompletionRequest: Models the accepted chat request.
+// -----------------------------------------------------------------------------
+
+/// Represents `ChatCompletionRequest` state within this module.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ChatCompletionRequest {
+    /// Stores the model value owned by this contract.
     model: ModelId,
+    /// Stores the messages value owned by this contract.
     messages: Vec<OpenAiMessage>,
-    #[serde(default)]
-    stream: bool,
+    /// Stores the stream value owned by this contract.
+    #[serde(default = "should_stream_by_default", rename = "stream")]
+    should_stream: bool,
 }
 
+// -----------------------------------------------------------------------------
+// ResponsesRequest: Models the accepted Responses request.
+// -----------------------------------------------------------------------------
+
+/// Represents `ResponsesRequest` state within this module.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ResponsesRequest {
+    /// Stores the model value owned by this contract.
     model: ModelId,
+    /// Stores the input value owned by this contract.
     input: Value,
-    #[serde(default)]
-    stream: bool,
+    /// Stores the stream value owned by this contract.
+    #[serde(default = "should_stream_by_default", rename = "stream")]
+    should_stream: bool,
+}
+
+/// Preserve provider compatibility by treating omitted content as JSON null.
+fn missing_content_is_null() -> Value {
+    Value::Null
+}
+
+/// Preserve non-streaming behavior when clients omit the stream flag.
+const fn should_stream_by_default() -> bool {
+    false
 }
 
 // -----------------------------------------------------------------------------
-// OpenAI response contracts: local structs mirror the Chat Completions,
-// Responses, model-list, and error envelopes emitted by this adapter.
+// Model: Models the OpenAI model catalog.
 // -----------------------------------------------------------------------------
 
+/// Represents `ModelDescriptor` state within this module.
 #[derive(Debug, Serialize)]
 struct ModelDescriptor {
+    /// Stores the id value owned by this contract.
     id: ModelId,
+    /// Stores the object value owned by this contract.
     object: &'static str,
+    /// Stores the created value owned by this contract.
     created: u64,
+    /// Stores the owned by value owned by this contract.
     owned_by: &'static str,
 }
 
+/// Represents `ModelListResponse` state within this module.
 #[derive(Debug, Serialize)]
 struct ModelListResponse {
+    /// Stores the object value owned by this contract.
     object: &'static str,
+    /// Stores the data value owned by this contract.
     data: Vec<ModelDescriptor>,
 }
 
+// -----------------------------------------------------------------------------
+// Chat: Models successful Chat Completions output.
+// -----------------------------------------------------------------------------
+
+/// Represents `ChatMessage` state within this module.
 #[derive(Debug, Serialize)]
 struct ChatMessage {
+    /// Stores the role value owned by this contract.
     role: &'static str,
+    /// Stores the content value owned by this contract.
     content: String,
 }
 
+/// Represents `ChatChoice` state within this module.
 #[derive(Debug, Serialize)]
 struct ChatChoice {
+    /// Stores the index value owned by this contract.
     index: usize,
+    /// Stores the message value owned by this contract.
     message: ChatMessage,
+    /// Stores the finish reason value owned by this contract.
     finish_reason: &'static str,
 }
 
+/// Represents `ChatCompletionResponse` state within this module.
 #[derive(Debug, Serialize)]
 struct ChatCompletionResponse {
+    /// Stores the id value owned by this contract.
     id: String,
+    /// Stores the object value owned by this contract.
     object: &'static str,
+    /// Stores the created value owned by this contract.
     created: u64,
+    /// Stores the model value owned by this contract.
     model: ModelId,
+    /// Stores the choices value owned by this contract.
     choices: Vec<ChatChoice>,
+    /// Stores the usage value owned by this contract.
     usage: TokenUsage,
 }
 
+// -----------------------------------------------------------------------------
+// Response: Models successful Responses output.
+// -----------------------------------------------------------------------------
+
+/// Represents `ResponseContent` state within this module.
 #[derive(Debug, Serialize)]
 struct ResponseContent {
+    /// Stores the content type value owned by this contract.
     #[serde(rename = "type")]
     content_type: &'static str,
+    /// Stores the text value owned by this contract.
     text: String,
+    /// Stores the annotations value owned by this contract.
     annotations: Vec<serde_json::Value>,
 }
 
+/// Represents `ResponseOutput` state within this module.
 #[derive(Debug, Serialize)]
 struct ResponseOutput {
+    /// Stores the id value owned by this contract.
     id: String,
+    /// Stores the output type value owned by this contract.
     #[serde(rename = "type")]
     output_type: &'static str,
+    /// Stores the status value owned by this contract.
     status: &'static str,
+    /// Stores the role value owned by this contract.
     role: &'static str,
+    /// Stores the content value owned by this contract.
     content: Vec<ResponseContent>,
 }
 
+/// Represents `ResponsesUsage` state within this module.
 #[derive(Debug, Serialize)]
-struct ResponsesUsage {
+struct ResponseUsage {
+    /// Stores the input value owned by this contract.
     #[serde(rename = "input_tokens")]
     input: usize,
+    /// Stores the output value owned by this contract.
     #[serde(rename = "output_tokens")]
     output: usize,
+    /// Stores the total value owned by this contract.
     #[serde(rename = "total_tokens")]
     total: usize,
 }
 
-impl From<TokenUsage> for ResponsesUsage {
+impl From<TokenUsage> for ResponseUsage {
     fn from(usage: TokenUsage) -> Self {
         Self {
             input: usage.prompt,
@@ -130,35 +202,81 @@ impl From<TokenUsage> for ResponsesUsage {
     }
 }
 
+/// Represents `ResponsesResponse` state within this module.
 #[derive(Debug, Serialize)]
-struct ResponsesResponse {
+struct ResponseEnvelope {
+    /// Stores the id value owned by this contract.
     id: String,
+    /// Stores the object value owned by this contract.
     object: &'static str,
+    /// Stores the created at value owned by this contract.
     created_at: u64,
+    /// Stores the status value owned by this contract.
     status: &'static str,
+    /// Stores the model value owned by this contract.
     model: ModelId,
+    /// Stores the output value owned by this contract.
     output: Vec<ResponseOutput>,
+    /// Stores the output text value owned by this contract.
     output_text: String,
-    usage: ResponsesUsage,
+    /// Stores the usage value owned by this contract.
+    usage: ResponseUsage,
 }
 
+impl From<CompatTurnResponse> for ResponseEnvelope {
+    fn from(response: CompatTurnResponse) -> Self {
+        let output_id = format!("msg_{}", Uuid::now_v7().simple());
+        let output_text = response.output;
+        Self {
+            id: format!("resp_{}", Uuid::now_v7().simple()),
+            object: "response",
+            created_at: unix_timestamp(),
+            status: "completed",
+            model: response.model,
+            output: vec![ResponseOutput {
+                id: output_id,
+                output_type: "message",
+                status: "completed",
+                role: "assistant",
+                content: vec![ResponseContent {
+                    content_type: "output_text",
+                    text: output_text.clone(),
+                    annotations: Vec::new(),
+                }],
+            }],
+            output_text,
+            usage: ResponseUsage::from(response.usage),
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// OpenAiFailure: Models OpenAI error envelopes.
+// -----------------------------------------------------------------------------
+
+/// Represents `OpenAiFailureBody` state within this module.
 #[derive(Debug, Serialize)]
 struct OpenAiFailureBody {
+    /// Stores the message value owned by this contract.
     message: String,
+    /// Stores the error type value owned by this contract.
     #[serde(rename = "type")]
     error_type: &'static str,
+    /// Stores the param value owned by this contract.
     param: Option<&'static str>,
+    /// Stores the code value owned by this contract.
     code: Option<&'static str>,
 }
 
+/// Represents `OpenAiFailureResponse` state within this module.
 #[derive(Debug, Serialize)]
 struct OpenAiFailureResponse {
+    /// Stores the error value owned by this contract.
     error: OpenAiFailureBody,
 }
 
 // -----------------------------------------------------------------------------
-// OpenAI lowering: accepted roles and content arrays become one bounded replay
-// transcript for the historical engine.
+// OpenAiChatTurn: Lowers chat roles into bounded replay turns.
 // -----------------------------------------------------------------------------
 
 /// Lower an `OpenAI` Chat Completions request into the replay shape.
@@ -167,57 +285,95 @@ struct OpenAiFailureResponse {
 ///
 /// Returns [`ProviderRejection`] when message roles are unsupported or message
 /// content is not textual.
-fn lower_chat(payload: ChatCompletionRequest) -> Result<CompatTurnRequest, ProviderRejection> {
-    let mut system_text = Vec::new();
-    let mut user_turns = Vec::new();
+struct OpenAiChatTurn(
+    /// Provider-neutral request produced from Chat Completions input.
+    CompatTurnRequest,
+);
 
-    for message in payload.messages {
-        match message.role.as_str() {
-            // --- System/developer text is counted but not replayed; ELIZA has
-            // no instruction channel distinct from the conversation text.
-            "system" | "developer" => {
-                if let Some(text) = optional_text_content(
-                    &message.content,
-                    "messages.content",
-                    TextArrayKind::Parts,
-                )? {
-                    system_text.push(text);
+impl TryFrom<ChatCompletionRequest> for OpenAiChatTurn {
+    type Error = ProviderRejection;
+
+    fn try_from(payload: ChatCompletionRequest) -> Result<Self, Self::Error> {
+        let mut system_text = Vec::new();
+        let mut user_turns = Vec::new();
+
+        for message in payload.messages {
+            match message.role.as_str() {
+                // System/developer text is counted but not replayed; ELIZA has
+                // no instruction channel distinct from the conversation text.
+                "system" | "developer" => {
+                    if let Some(text) = optional_text_content(
+                        &message.content,
+                        "messages.content",
+                        TextArrayKind::Parts,
+                    )? {
+                        system_text.push(text);
+                    }
+                }
+                // User turns are the only inputs that become historical ELIZA
+                // conversation state.
+                "user" => {
+                    // User turns must contain text that ELIZA can replay.
+                    let Some(text) = optional_text_content(
+                        &message.content,
+                        "messages.content",
+                        TextArrayKind::Parts,
+                    )?
+                    else {
+                        return Err(ProviderRejection::invalid(
+                            "messages",
+                            "user message content must contain text",
+                        ));
+                    };
+                    user_turns.push(text);
+                }
+                // Assistant/tool messages are already transcript history from
+                // the client side; replaying them would make ELIZA answer itself.
+                "assistant" | "tool" => {}
+                // Other roles cannot be represented in the shared transcript.
+                _ => {
+                    return Err(ProviderRejection::unsupported(
+                        "messages.role",
+                        format!("unsupported message role `{}`", message.role),
+                    ));
                 }
             }
-            // --- User turns are the only inputs that become historical ELIZA
-            // conversation state.
-            "user" => {
-                let Some(text) = optional_text_content(
-                    &message.content,
-                    "messages.content",
-                    TextArrayKind::Parts,
-                )?
-                else {
-                    return Err(ProviderRejection::invalid(
-                        "messages",
-                        "user message content must contain text",
-                    ));
-                };
-                user_turns.push(text);
-            }
-            // --- Assistant/tool messages are already transcript history from
-            // the client side; replaying them would make ELIZA answer itself.
-            "assistant" | "tool" => {}
-            _ => {
-                return Err(ProviderRejection::unsupported(
-                    "messages.role",
-                    format!("unsupported message role `{}`", message.role),
-                ));
-            }
         }
-    }
 
-    Ok(CompatTurnRequest::new(
-        payload.model,
-        system_text,
-        user_turns,
-    ))
+        Ok(Self(CompatTurnRequest::new(
+            payload.model,
+            system_text,
+            user_turns,
+        )))
+    }
 }
+
+// -----------------------------------------------------------------------------
+// ResponseItemText: Extracts user-authored Responses history.
+// -----------------------------------------------------------------------------
+
+/// Extract one user-authored text item from Responses history.
+/// Extract text from one Responses API input item.
+///
+/// # Errors
+///
+/// Returns [`ProviderRejection`] when user content is missing or non-textual.
+fn response_item_text(item: &Value) -> Result<Option<String>, ProviderRejection> {
+    let role = item.get("role").and_then(Value::as_str).unwrap_or("user");
+
+    // Prior assistant output is context, not a new ELIZA turn.
+    if role != "user" {
+        return Ok(None);
+    }
+    let content = item.get("content").ok_or_else(|| {
+        ProviderRejection::invalid("input.content", "input item is missing content")
+    })?;
+    optional_text_content(content, "input.content", TextArrayKind::Parts)
+}
+
+// -----------------------------------------------------------------------------
+// OpenAiResponsesTurn: Lowers Responses input into replay turns.
+// -----------------------------------------------------------------------------
 
 /// Lower an `OpenAI` Responses request into the replay shape.
 ///
@@ -225,46 +381,49 @@ fn lower_chat(payload: ChatCompletionRequest) -> Result<CompatTurnRequest, Provi
 ///
 /// Returns [`ProviderRejection`] when the input shape is unsupported or message
 /// content is not textual.
-fn lower_responses(payload: ResponsesRequest) -> Result<CompatTurnRequest, ProviderRejection> {
-    let mut user_turns = Vec::new();
+struct OpenAiResponsesTurn(
+    /// Provider-neutral request produced from Responses input.
+    CompatTurnRequest,
+);
 
-    match payload.input {
-        // --- The compact Responses form is one direct user turn.
-        Value::String(text) => user_turns.push(text),
-        // --- The array form is treated like message history and only user
-        // entries are replayed.
-        Value::Array(items) => {
-            for item in items {
-                let role = item.get("role").and_then(Value::as_str).unwrap_or("user");
-                if role == "user" {
-                    let content = item.get("content").ok_or_else(|| {
-                        ProviderRejection::invalid("input.content", "input item is missing content")
-                    })?;
-                    if let Some(text) =
-                        optional_text_content(content, "input.content", TextArrayKind::Parts)?
-                    {
-                        user_turns.push(text);
-                    }
+impl TryFrom<ResponsesRequest> for OpenAiResponsesTurn {
+    type Error = ProviderRejection;
+
+    fn try_from(payload: ResponsesRequest) -> Result<Self, Self::Error> {
+        let mut user_turns = Vec::new();
+
+        match payload.input {
+            // The compact Responses form is one direct user turn.
+            Value::String(text) => user_turns.push(text),
+            // The array form is treated like message history and only user
+            // entries are replayed.
+            Value::Array(items) => {
+                for item in items {
+                    let Some(text) = response_item_text(&item)? else {
+                        continue;
+                    };
+                    user_turns.push(text);
                 }
             }
+            // Other JSON shapes cannot represent a Responses transcript.
+            _ => {
+                return Err(ProviderRejection::unsupported(
+                    "input",
+                    "Responses input must be a string or an array of message-like objects",
+                ));
+            }
         }
-        _ => {
-            return Err(ProviderRejection::unsupported(
-                "input",
-                "Responses input must be a string or an array of message-like objects",
-            ));
-        }
-    }
 
-    Ok(CompatTurnRequest::new(
-        payload.model,
-        Vec::new(),
-        user_turns,
-    ))
+        Ok(Self(CompatTurnRequest::new(
+            payload.model,
+            Vec::new(),
+            user_turns,
+        )))
+    }
 }
 
 // -----------------------------------------------------------------------------
-// OpenAI streaming and failures: chunks and errors stay OpenAI-shaped here.
+// OpenAi: Chunks, errors, and routes stay OpenAI-shaped here.
 // -----------------------------------------------------------------------------
 
 /// Render `OpenAI` Chat Completions streaming chunks.
@@ -272,11 +431,12 @@ fn lower_responses(payload: ResponsesRequest) -> Result<CompatTurnRequest, Provi
 /// # Panics
 ///
 /// Panics only if the locally constructed JSON chunk payload cannot serialize.
-fn chat_stream(output: &str, model: &ModelId, delay_ms: u64) -> Response {
+fn open_ai_chat_stream(output: &str, model: &ModelId, delay_ms: u64) -> Response {
     let id = format!("chatcmpl-{}", Uuid::now_v7().simple());
     let created = unix_timestamp();
     let mut events = Vec::new();
-    // --- OpenAI streams begin by announcing the assistant role before any
+
+    // OpenAI streams begin by announcing the assistant role before any
     // content deltas.
     events.push(
         Event::default()
@@ -294,7 +454,7 @@ fn chat_stream(output: &str, model: &ModelId, delay_ms: u64) -> Response {
             .expect("OpenAI role chunk should serialize"),
     );
 
-    // --- ELIZA emits one complete sentence; split it into deterministic text
+    // ELIZA emits one complete sentence; split it into deterministic text
     // deltas for SDK stream compatibility.
     for chunk in stream_chunks(output) {
         events.push(
@@ -314,7 +474,7 @@ fn chat_stream(output: &str, model: &ModelId, delay_ms: u64) -> Response {
         );
     }
 
-    // --- Finish with an empty delta and the `[DONE]` sentinel used by OpenAI
+    // Finish with an empty delta and the `[DONE]` sentinel used by OpenAI
     // clients to close the stream.
     events.push(
         Event::default()
@@ -333,10 +493,11 @@ fn chat_stream(output: &str, model: &ModelId, delay_ms: u64) -> Response {
     );
     events.push(Event::default().data("[DONE]"));
 
-    sse_response(events, delay_ms)
+    SseEvents::from(events).into_response(delay_ms)
 }
 
-fn error_response(error: ProviderRejection) -> Response {
+/// Performs the error response operation for this abstraction.
+fn open_ai_error_response(error: ProviderRejection) -> Response {
     (
         error.status,
         Json(OpenAiFailureResponse {
@@ -352,16 +513,20 @@ fn error_response(error: ProviderRejection) -> Response {
 }
 
 // -----------------------------------------------------------------------------
-// OpenAI routes: authenticate, lower the body, execute ELIZA, then render the
-// OpenAI-compatible response shape.
+// OpenAiRoute: Authenticates and renders compatible responses.
 // -----------------------------------------------------------------------------
 
-pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(error) = require_provider_auth(&headers, &state.config) {
-        return error_response(error);
+/// Performs the models operation for this abstraction.
+pub(crate) async fn open_ai_route_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    // Render authentication failures in OpenAI's envelope immediately.
+    if let Err(error) = provider_authenticate(&headers, &state.config) {
+        return open_ai_error_response(error);
     }
 
-    // --- The server exposes exactly one configured model id.
+    // The server exposes exactly one configured model id.
     Json(ModelListResponse {
         object: "list",
         data: vec![ModelDescriptor {
@@ -374,28 +539,36 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     .into_response()
 }
 
-pub(crate) async fn chat_completions(
+/// Performs the chat completions operation for this abstraction.
+pub(crate) async fn open_ai_route_chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(payload): Json<ChatCompletionRequest>,
 ) -> Response {
-    if let Err(error) = require_provider_auth(&headers, &state.config) {
-        return error_response(error);
+    // Render authentication failures in OpenAI's envelope immediately.
+    if let Err(error) = provider_authenticate(&headers, &state.config) {
+        return open_ai_error_response(error);
     }
 
-    // --- Capture the stream flag before lowering consumes the request body.
-    let stream = payload.stream;
-    let request = match lower_chat(payload) {
-        Ok(request) => request,
-        Err(error) => return error_response(error),
+    // Capture the stream flag before lowering consumes the request body.
+    let stream = payload.should_stream;
+    let request = match OpenAiChatTurn::try_from(payload) {
+        Ok(request) => request.0,
+        // Invalid chat payloads stop before the ELIZA engine is invoked.
+        Err(error) => return open_ai_error_response(error),
     };
-    let response = match complete_eliza(request, state.config.limits()) {
+    let limits = RequestLimits::new(
+        state.config.max_input_chars,
+        state.config.max_history_messages,
+    );
+    let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return error_response(error),
+        // Engine rejections retain OpenAI's error shape.
+        Err(error) => return open_ai_error_response(error),
     };
 
     if stream {
-        chat_stream(
+        open_ai_chat_stream(
             &response.output,
             &response.model,
             state.config.stream_delay_ms,
@@ -420,54 +593,39 @@ pub(crate) async fn chat_completions(
     }
 }
 
-pub(crate) async fn responses(
+/// Performs the responses operation for this abstraction.
+pub(crate) async fn open_ai_route_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(payload): Json<ResponsesRequest>,
 ) -> Response {
-    if let Err(error) = require_provider_auth(&headers, &state.config) {
-        return error_response(error);
+    // Render authentication failures in OpenAI's envelope immediately.
+    if let Err(error) = provider_authenticate(&headers, &state.config) {
+        return open_ai_error_response(error);
     }
 
-    // --- Responses streaming has a different event contract; keep the supported
+    // Responses streaming has a different event contract; keep the supported
     // streaming surface on Chat Completions until that shape earns its place.
-    if payload.stream {
-        return error_response(ProviderRejection::unsupported(
+    if payload.should_stream {
+        return open_ai_error_response(ProviderRejection::unsupported(
             "stream",
             "OpenAI Responses streaming is not implemented; use /v1/chat/completions streaming",
         ));
     }
 
-    let request = match lower_responses(payload) {
-        Ok(request) => request,
-        Err(error) => return error_response(error),
+    let request = match OpenAiResponsesTurn::try_from(payload) {
+        Ok(request) => request.0,
+        // Invalid Responses payloads stop before the ELIZA engine is invoked.
+        Err(error) => return open_ai_error_response(error),
     };
-    let response = match complete_eliza(request, state.config.limits()) {
+    let limits = RequestLimits::new(
+        state.config.max_input_chars,
+        state.config.max_history_messages,
+    );
+    let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return error_response(error),
+        // Engine rejections retain OpenAI's error shape.
+        Err(error) => return open_ai_error_response(error),
     };
-    let output_id = format!("msg_{}", Uuid::now_v7().simple());
-    let output_text = response.output;
-
-    Json(ResponsesResponse {
-        id: format!("resp_{}", Uuid::now_v7().simple()),
-        object: "response",
-        created_at: unix_timestamp(),
-        status: "completed",
-        model: response.model,
-        output: vec![ResponseOutput {
-            id: output_id,
-            output_type: "message",
-            status: "completed",
-            role: "assistant",
-            content: vec![ResponseContent {
-                content_type: "output_text",
-                text: output_text.clone(),
-                annotations: Vec::new(),
-            }],
-        }],
-        output_text,
-        usage: ResponsesUsage::from(response.usage),
-    })
-    .into_response()
+    Json(ResponseEnvelope::from(response)).into_response()
 }
