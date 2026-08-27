@@ -47,7 +47,16 @@ static DOCTOR: OnceLock<Script> = OnceLock::new();
 
 // TODO: Refactor into a clean API. Something like `Token` and `TokenStream` so that the normalization
 // and formatting can be done at the compiler level. And runtime never needs to deal with raw strings.
-/// Performs the tokenize input operation for this abstraction.
+/// Normalize user input into the words used by script matching.
+///
+/// # Examples
+///
+/// ```rust
+/// let words = text_tokenize_input("I’m worried—really!");
+///
+/// // Curly apostrophes survive as ASCII while other punctuation separates words.
+/// assert_eq!(words, ["I'M", "WORRIED", "REALLY"]);
+/// ```
 fn text_tokenize_input(input: &str) -> Vec<String> {
     let punctuation_normalized = input.replace(['\u{2018}', '\u{2019}'], "'");
     let normalized = punctuation_normalized
@@ -67,7 +76,17 @@ fn text_tokenize_input(input: &str) -> Vec<String> {
         .collect()
 }
 
-/// Performs the format words operation for this abstraction.
+/// Join reassembled words without spaces before punctuation or inside parens.
+///
+/// # Examples
+///
+/// ```rust
+/// let words = ["WHY", "(", "NOW", ")", "?"].map(str::to_owned);
+/// let output = text_format_words(&words);
+///
+/// // Reassembly tokens become natural response text.
+/// assert_eq!(output, "WHY (NOW)?");
+/// ```
 fn text_format_words(words: &[String]) -> String {
     let mut text = words.join(" ");
 
@@ -715,7 +734,17 @@ pub(crate) struct Script {
 }
 
 impl Script {
-    /// Performs the analyze operation for this abstraction.
+    /// Preserve original words while applying the script's substitutions.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let analyzed = doctor_script().analyze("I am sad");
+    ///
+    /// // Keyword ranking sees the original input; matching sees canonical words.
+    /// assert_eq!(analyzed.original, ["I", "AM", "SAD"]);
+    /// assert_eq!(analyzed.canonical, ["YOU", "ARE", "SAD"]);
+    /// ```
     fn analyze(&self, input: &str) -> AnalyzedInput {
         let original = text_tokenize_input(input);
 
@@ -1035,6 +1064,12 @@ fn pattern_captures(
 ///
 /// assert_eq!(turn.normalized_input, "YOU ARE SAD");
 /// assert_eq!(turn.output, "I AM SORRY TO HEAR YOU ARE SAD");
+///
+/// session.respond("My mother is kind");
+/// let recalled = session.respond("Boring words without a keyword");
+///
+/// // A session can recall memory recorded by an earlier turn.
+/// assert_eq!(recalled.output, "LETS DISCUSS FURTHER WHY YOUR MOTHER IS KIND");
 /// ```
 #[derive(Debug)]
 pub(crate) struct ElizaSession<'script> {

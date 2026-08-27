@@ -8,7 +8,7 @@ use crate::errors::AppError;
 // Parser: Builds expressions from positioned tokens.
 // -----------------------------------------------------------------------------
 
-/// Represents `Parser` state within this module.
+/// Cursor that turns positioned tokens into nested S-expressions.
 pub(super) struct Parser {
     /// Token stream produced by the lexer.
     tokens: Vec<Token>,
@@ -117,6 +117,24 @@ impl Parser {
     ///
     /// Returns [`AppError`] when parentheses are unbalanced or the parser sees
     /// a close paren without a matching open paren.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use eliza::eliza::parser::Parser;
+    ///
+    /// let expressions = Parser::parse("(RULE (0 TEST 0))").unwrap();
+    /// let outer = expressions[0].list().unwrap();
+    ///
+    /// // Parsing preserves nesting instead of flattening the rule.
+    /// assert_eq!(outer.atom_at(0), Some("RULE"));
+    /// assert_eq!(outer.get(1).unwrap().list().unwrap().atom_at(1), Some("TEST"));
+    ///
+    /// let error = Parser::parse("(RULE").unwrap_err();
+    ///
+    /// // EOF diagnostics point just after the final source character.
+    /// assert_eq!(error.to_string(), "unexpected end of script at 1:6");
+    /// ```
     pub(super) fn parse(input: &str) -> Result<Vec<Sexp>, AppError> {
         let lexed = LexedScript::from(input);
         Self {
