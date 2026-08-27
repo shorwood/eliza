@@ -21,10 +21,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::context::{AppState, provider_authenticate};
-use crate::provider::contracts::{
-    CompatTurnRequest, CompatTurnResponse, ModelId, ProviderRejection, RequestLimits, SseEvents,
-    TokenUsage, required_text_parts, stream_chunks,
-};
+use crate::types::http::{ProviderRejection, SseEvents, required_text_parts, stream_chunks};
+use crate::types::model::ModelId;
+use crate::types::turn::{CompatTurnRequest, CompatTurnResponse, RequestLimits, TokenUsage};
 
 // -----------------------------------------------------------------------------
 // GeminiContent: Captures one textual content entry.
