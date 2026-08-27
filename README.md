@@ -22,6 +22,38 @@ nix develop -c just chat
 Runnable Vercel AI and Rig compatibility examples live in
 [examples](examples/README.md).
 
+The flake also publishes the server as a Nix package. Run it directly from a
+published flake reference with:
+
+```sh
+nix run <flake-url> -- serve --port 8787
+```
+
+To add ELIZA to another flake, declare it as an input and select its package for
+the consuming system:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    eliza = {
+      url = "<flake-url>";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { nixpkgs, eliza, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [ eliza.packages.${system}.default ];
+      };
+    };
+}
+```
+
 All provider-compatible routes are always available; choose the path that
 matches the client you are testing. Runtime configuration is CLI-only; inspect
 the current contract with:
