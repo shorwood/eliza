@@ -19,10 +19,12 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::context::{AppState, provider_authenticate};
-use crate::provider::contracts::{
-    CompatTurnRequest, ModelId, ProviderRejection, RequestLimits, SseEvents, TextArrayKind,
-    TokenUsage, optional_text_content, stream_chunks, unix_timestamp,
+use crate::types::http::{
+    ProviderRejection, SseEvents, TextArrayKind, optional_text_content, stream_chunks,
+    unix_timestamp,
 };
+use crate::types::model::ModelId;
+use crate::types::turn::{CompatTurnRequest, RequestLimits, TokenUsage};
 
 // -----------------------------------------------------------------------------
 // OpenAiMessage: Models one accepted chat message.
