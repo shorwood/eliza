@@ -37,7 +37,24 @@ pub(super) struct Token {
 // LexedScript: Owns the token stream and EOF position.
 // -----------------------------------------------------------------------------
 
-/// Represents `LexedScript` state within this module.
+/// Tokens and final source position produced from one script.
+///
+/// Comments and whitespace disappear, but every real token keeps the line and
+/// column at which it started.
+///
+/// # Examples
+///
+/// ```rust
+/// use eliza::eliza::lexer::{LexedScript, TokenKind};
+///
+/// let lexed = LexedScript::from("; greeting\n(HELLO)");
+///
+/// // The comment is absent and the opening parenthesis starts on line two.
+/// assert_eq!(lexed.tokens.len(), 3);
+/// assert_eq!(lexed.tokens[0].kind, TokenKind::OpenParen);
+/// assert_eq!((lexed.tokens[0].span.line, lexed.tokens[0].span.column), (2, 1));
+/// assert_eq!(lexed.tokens[1].kind, TokenKind::Atom("HELLO".to_owned()));
+/// ```
 #[derive(Debug, Clone)]
 pub(super) struct LexedScript {
     /// Complete token stream without comments or whitespace.
@@ -83,6 +100,16 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     /// Create a lexer over one script source.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let lexer = Lexer::for_script("(A)");
+    ///
+    /// // A fresh lexer points at the first byte and first source position.
+    /// assert_eq!(lexer.offset, 0);
+    /// assert_eq!((lexer.line, lexer.column), (1, 1));
+    /// ```
     fn for_script(input: &'a str) -> Self {
         Self {
             input,
@@ -159,7 +186,19 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Performs the next token operation for this abstraction.
+    /// Return the next positioned token after skipping trivia.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let mut lexer = Lexer::for_script("  ; ignored\nWORD");
+    /// let token = lexer.next_token().expect("WORD should be present");
+    ///
+    /// // Trivia advances the source position without becoming a token.
+    /// assert_eq!(token.kind, TokenKind::Atom("WORD".to_owned()));
+    /// assert_eq!((token.span.line, token.span.column), (2, 1));
+    /// assert!(lexer.next_token().is_none());
+    /// ```
     fn next_token(&mut self) -> Option<Token> {
         self.skip_whitespace_and_comments();
         let span = Span {
