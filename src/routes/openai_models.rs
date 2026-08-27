@@ -10,7 +10,8 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::context::{AppState, provider_authenticate};
-use crate::provider::contracts::{ModelId, ProviderRejection};
+use crate::types::http::ProviderRejection;
+use crate::types::model::ModelId;
 
 // -----------------------------------------------------------------------------
 // Model: Models the OpenAI model catalog.
