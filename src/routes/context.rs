@@ -6,7 +6,8 @@ use std::sync::Arc;
 use axum::http::HeaderMap;
 
 use crate::cli::{AuthMode, BearerToken};
-use crate::provider::contracts::{ModelId, ProviderRejection};
+use crate::types::http::ProviderRejection;
+use crate::types::model::ModelId;
 
 // -----------------------------------------------------------------------------
 // RouteConfig: Stores behavior consumed by HTTP routes.
