@@ -1,8 +1,3 @@
-#![allow(
-    clippy::items_after_test_module,
-    reason = "rlib requires dependency-first declaration order for test modules"
-)]
-
 //! HTTP serving boundary.
 //!
 //! `ServeArgs` are the only runtime configuration input. They lower into
@@ -27,17 +22,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::cli::{AuthMode, BearerToken, CorsMode, LogFormat, ServeArgs};
 use crate::errors::AppError;
-use crate::provider::contracts::ModelId;
 use crate::routes;
-
-/// Runtime operations owned by a validated server configuration.
-pub(super) trait ServerRuntime {
-    /// Build the complete provider-compatible router.
-    fn router(self) -> Router;
-
-    /// Bind and serve until the listener fails or the task is cancelled.
-    async fn serve(self) -> Result<(), AppError>;
-}
+use crate::types::model::ModelId;
 
 // -----------------------------------------------------------------------------
 // ServerConfig: CLI-visible options converted into typed runtime facts.
@@ -131,14 +117,6 @@ impl TryFrom<ServeArgs> for ServerConfig {
 }
 
 impl ServerConfig {
-    /// Enable bearer authentication for an in-process server test.
-    #[cfg(test)]
-    pub(crate) fn with_bearer_token(mut self, token: BearerToken) -> Self {
-        self.auth = AuthMode::Bearer;
-        self.bearer_token = Some(token);
-        self
-    }
-
     /// Build the complete provider-compatible router.
     fn into_router(self) -> Router {
         let route_config = routes::context::RouteConfig::new(
@@ -158,46 +136,17 @@ impl ServerConfig {
     /// # Errors
     ///
     /// Returns [`AppError`] when binding or serving fails.
-    async fn serve_http(self) -> Result<(), AppError> {
+    pub(super) async fn run(self) -> Result<(), AppError> {
         init_tracing(self.log);
         let addr = SocketAddr::new(self.host, self.port);
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|source| AppError::Bind { addr, source })?;
         tracing::info!(%addr, "serving ELIZA compatibility server");
-        axum::serve(listener, ServerRuntime::router(self))
+        axum::serve(listener, self.into_router())
             .await
             .map_err(AppError::Serve)
     }
-}
-
-impl ServerRuntime for ServerConfig {
-    fn router(self) -> Router {
-        self.into_router()
-    }
-
-    async fn serve(self) -> Result<(), AppError> {
-        self.serve_http().await
-    }
-}
-
-// -----------------------------------------------------------------------------
-// RunServer: Runs any validated server runtime.
-// -----------------------------------------------------------------------------
-
-/// Run any validated server runtime.
-///
-/// # Errors
-///
-/// Returns an application error when binding or serving fails.
-pub(super) async fn run_server(runtime: impl ServerRuntime) -> Result<(), AppError> {
-    runtime.serve().await
-}
-
-/// Build a router from any testable server runtime.
-#[cfg(test)]
-pub(super) fn run_server_test_router(runtime: impl ServerRuntime) -> Router {
-    runtime.router()
 }
 
 // -----------------------------------------------------------------------------

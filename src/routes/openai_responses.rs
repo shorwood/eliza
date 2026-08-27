@@ -12,10 +12,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::context::{AppState, provider_authenticate};
-use crate::provider::contracts::{
-    CompatTurnRequest, CompatTurnResponse, ModelId, ProviderRejection, RequestLimits,
-    TextArrayKind, TokenUsage, optional_text_content, unix_timestamp,
-};
+use crate::types::http::{ProviderRejection, TextArrayKind, optional_text_content, unix_timestamp};
+use crate::types::model::ModelId;
+use crate::types::turn::{CompatTurnRequest, CompatTurnResponse, RequestLimits, TokenUsage};
 
 // -----------------------------------------------------------------------------
 // ResponsesRequest: Models the accepted Responses request.

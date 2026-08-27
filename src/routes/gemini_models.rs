@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::context::{AppState, provider_authenticate};
-use crate::provider::contracts::ProviderRejection;
+use crate::types::http::ProviderRejection;
 
 // -----------------------------------------------------------------------------
 // Gemini: Models the native Gemini model catalog.

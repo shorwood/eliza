@@ -2,19 +2,16 @@
 
 mod errors;
 mod eliza;
-mod provider;
 mod routes;
 mod serve;
 mod cli;
-
-#[cfg(test)]
-mod test_support;
+mod types;
 
 use clap::Parser;
 use miette::Result;
 
 use crate::cli::{Cli, Commands};
-use crate::serve::{ServerConfig, run_server};
+use crate::serve::ServerConfig;
 
 /// Run the standalone ELIZA CLI.
 ///
@@ -29,6 +26,6 @@ use crate::serve::{ServerConfig, run_server};
 #[tokio::main]
 async fn main() -> Result<()> {
     let Commands::Serve(args) = Cli::parse().command;
-    run_server(ServerConfig::try_from(args)?).await?;
+    ServerConfig::try_from(args)?.run().await?;
     Ok(())
 }

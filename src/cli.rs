@@ -10,7 +10,7 @@ use std::str::FromStr;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::errors::AppError;
-use crate::provider::contracts::ModelId;
+use crate::types::model::ModelId;
 
 // -----------------------------------------------------------------------------
 // AuthMode: Controls provider endpoint authentication.
