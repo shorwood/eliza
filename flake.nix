@@ -37,6 +37,10 @@
           };
         in pkgs.mkShell {
           packages = [
+            pkgs.aichat
+            pkgs.curl
+            pkgs.nodejs_22
+            pkgs.pnpm
             rust.toolchain
             dylintTools
             pkgs.just

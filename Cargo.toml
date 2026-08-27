@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+members = ["examples/rust-rig"]
+default-members = ["."]
 
 [package]
 name = "eliza"
