@@ -1,6 +1,19 @@
 fmt:
     cargo fmt --all
 
+chat:
+    AICHAT_CONFIG_FILE="$PWD/fixtures/aichat.yaml" aichat
+
+example-vercel-ai:
+    pnpm --dir examples/vercel-ai install --frozen-lockfile
+    pnpm --dir examples/vercel-ai run check
+    cargo build --bin eliza --locked
+    sh examples/with-eliza.sh pnpm --dir examples/vercel-ai start
+
+example-rust-rig:
+    cargo build --bin eliza --locked
+    sh examples/with-eliza.sh cargo run -p example-rust-rig --locked
+
 rlib-library:
     cargo build --manifest-path ../rlib/Cargo.toml -p rlib-lint --no-default-features --features bon,derive_more,miette,serde,strum,thiserror --locked
     host=$(rustc --version --verbose | sed -n 's/^host: //p'); case "$host" in *darwin*) extension=dylib ;; *) extension=so ;; esac; source="../rlib/target/debug/librlib_lint.$extension"; target="../rlib/target/debug/librlib_lint@nightly-$host.$extension"; test -f "$source"; cp "$source" "$target"

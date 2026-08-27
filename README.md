@@ -12,6 +12,16 @@ ELIZAGEN, not a BASIC-port rewrite.
 nix develop -c cargo run -- serve --port 8787
 ```
 
+The development shell includes AIChat, an interactive terminal client configured
+for this server. With the server running, start it in another terminal:
+
+```sh
+nix develop -c just chat
+```
+
+Runnable Vercel AI and Rig compatibility examples live in
+[examples](examples/README.md).
+
 All provider-compatible routes are always available; choose the path that
 matches the client you are testing. Runtime configuration is CLI-only; inspect
 the current contract with:

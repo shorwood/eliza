@@ -1,0 +1,25 @@
+{
+  "name": "example-vercel-ai",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "start": "node --experimental-strip-types src/main.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.44",
+    "@ai-sdk/google": "4.0.54",
+    "@ai-sdk/openai": "4.0.50",
+    "@ai-sdk/openai-compatible": "3.0.39",
+    "ai": "7.0.83"
+  },
+  "devDependencies": {
+    "@types/json-schema": "7.0.15",
+    "@types/node": "22.18.3",
+    "typescript": "5.9.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.28.0"
+}
