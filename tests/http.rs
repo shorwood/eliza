@@ -70,6 +70,7 @@ impl TestServer {
             .port();
         drop(listener);
 
+        // Spawn the compiled server with the ephemeral port and any extra arguments.
         let mut command = Command::new(env!("CARGO_BIN_EXE_eliza"));
         command.args(["serve", "--host", "127.0.0.1", "--port"]);
         command.arg(port.to_string());
@@ -77,14 +78,17 @@ impl TestServer {
         command.stdout(Stdio::null());
         command.stderr(Stdio::piped());
         let mut child = command.spawn().expect("ELIZA server should spawn");
+
         let agent = Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(TEST_TIMEOUT))
             .build()
             .new_agent();
+
+        // The server may take a short time to start, so probe its health
+        // endpoint until it responds or the timeout expires.
         let base_url = format!("http://127.0.0.1:{port}");
         let deadline = Instant::now() + TEST_TIMEOUT;
-
         loop {
             // A successful health response proves the listener and router are ready.
             if agent.get(format!("{base_url}/healthz")).call().is_ok() {
