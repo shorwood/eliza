@@ -70,8 +70,8 @@ struct UiCase {
 impl UiCase {
     /// Load one command-line interaction from a JSON fixture.
     fn from_fixture(path: &Path) -> Self {
-        serde_json::from_str(&fs::read_to_string(path).expect("UI case should be readable"))
-            .expect("UI case should be valid JSON")
+        let content = fs::read_to_string(path).expect("UI case should be readable");
+        serde_json::from_str(&content).expect("UI case should be valid JSON")
     }
 }
 
