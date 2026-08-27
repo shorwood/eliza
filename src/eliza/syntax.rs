@@ -16,7 +16,16 @@ pub(super) struct Span {
 }
 
 impl Span {
-    /// Performs the expected operation for this abstraction.
+    /// Attach this source position to an expectation failure.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let error = Span { line: 4, column: 7 }.expected("pattern atom");
+    ///
+    /// // Later lowering errors still identify the original script location.
+    /// assert_eq!(error.to_string(), "expected pattern atom at 4:7");
+    /// ```
     pub(super) const fn expected(self, expected: &'static str) -> AppError {
         AppError::ScriptExpected {
             expected,
@@ -166,7 +175,18 @@ impl<'a> SexpList<'a> {
         self.items.iter().filter_map(Sexp::atom)
     }
 
-    /// Performs the split once atom operation for this abstraction.
+    /// Split a list around the first matching separator atom.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let expression = Parser::parse("(I = YOU)").unwrap().remove(0);
+    /// let parts = expression.list().unwrap().split_once_atom("=").unwrap();
+    ///
+    /// // The separator itself belongs to neither returned region.
+    /// assert_eq!(parts.before.atoms().collect::<Vec<_>>(), ["I"]);
+    /// assert_eq!(parts.after.atoms().collect::<Vec<_>>(), ["YOU"]);
+    /// ```
     pub(super) fn split_once_atom(self, atom: &str) -> Option<SexpListSplit<'a>> {
         let separator = self
             .items
@@ -178,5 +198,3 @@ impl<'a> SexpList<'a> {
         })
     }
 }
-
-// -----------------------------------------------------------------------------
