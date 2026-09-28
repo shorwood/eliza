@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::context::{AppState, provider_authenticate};
+use super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::ProviderRejection;
 use crate::types::model::ModelId;
 
@@ -99,7 +99,7 @@ impl IntoResponse for OpenAiRejection {
 /// Performs the models operation for this abstraction.
 async fn open_ai_route_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Render authentication failures in OpenAI's envelope immediately.
-    if let Err(error) = provider_authenticate(&headers, &state.config) {
+    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
         return OpenAiRejection(error).into_response();
     }
 
@@ -127,7 +127,7 @@ impl OpenAiModels {
     /// Mount the `OpenAI` model catalog route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/v1/models",
+            "/openai/v1/models",
             get_with(open_ai_route_models, |operation| {
                 operation
                     .summary("OpenAI models")

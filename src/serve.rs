@@ -8,7 +8,7 @@
 //! eliza serve CLI
 //!   -> ServerConfig
 //!   -> router + AppState
-//!   -> routes::{openai_chat_completions, anthropic_messages, gemini_content}
+//!   -> provider route adapters
 //!   -> OpenAPI / Scalar from the same mounted routes
 //! ```
 
