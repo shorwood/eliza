@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--stream-delay-ms", "nope"],
+  "code": 2
+}
