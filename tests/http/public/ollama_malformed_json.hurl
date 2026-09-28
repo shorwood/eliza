@@ -7,5 +7,7 @@ Content-Type: application/json
 ```
 HTTP 400
 [Asserts]
+header "Content-Type" startsWith "application/json"
 header "x-eliza-error-code" == "eliza::extract::json_syntax"
-jsonpath "$.error" isString
+jsonpath "$" isObject
+jsonpath "$.error" startsWith "invalid JSON syntax:"
