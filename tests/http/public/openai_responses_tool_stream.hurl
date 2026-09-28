@@ -12,5 +12,14 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-body contains "response.function_call_arguments.delta"
-body contains "response.function_call_arguments.done"
+header "Content-Type" startsWith "text/event-stream"
+body contains "\"type\":\"response.created\""
+body contains "\"model\":\"eliza-doctor\""
+body contains "\"type\":\"response.output_item.added\""
+body contains "\"type\":\"response.function_call_arguments.delta\""
+body contains "\"type\":\"response.function_call_arguments.done\""
+body contains "\"name\":\"echo\""
+body contains "\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\""
+body contains "\"type\":\"response.output_item.done\""
+body contains "\"type\":\"response.completed\""
+body contains "\"status\":\"completed\""

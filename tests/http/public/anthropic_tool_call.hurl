@@ -12,6 +12,18 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
+header "Content-Type" startsWith "application/json"
+jsonpath "$.*" count == 8
+jsonpath "$.id" startsWith "msg_"
+jsonpath "$.type" == "message"
+jsonpath "$.role" == "assistant"
+jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.content" count == 1
 jsonpath "$.content[0].type" == "tool_use"
+jsonpath "$.content[0].id" startsWith "toolu_"
+jsonpath "$.content[0].name" == "echo"
 jsonpath "$.content[0].input.value" == "hello"
 jsonpath "$.stop_reason" == "tool_use"
+jsonpath "$.stop_sequence" == null
+jsonpath "$.usage.input_tokens" isInteger
+jsonpath "$.usage.output_tokens" isInteger
