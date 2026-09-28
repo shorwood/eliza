@@ -11,19 +11,23 @@ use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
 use super::types::{
-    AssistantRole, OpenAiFailureResponse, OpenAiRejection, ResponseIds, ResponseProgress,
-    ResponseStatus, ResponsesContent, ResponsesContentPart, ResponsesEnvelope, ResponsesInput,
-    ResponsesInputItem, ResponsesOutput, ResponsesRequest, ResponsesRole, ResponsesStreamEvent,
-    ResponsesTextConfig, ResponsesTextFormat, ToolOutput, response_output_text,
+    AssistantRole, ResponseIds, ResponseProgress, ResponseStatus, ResponsesContent,
+    ResponsesContentPart, ResponsesEnvelope, ResponsesInput, ResponsesInputItem, ResponsesOutput,
+    ResponsesRequest, ResponsesRole, ResponsesStreamEvent, ResponsesTextConfig,
+    ResponsesTextFormat, ToolOutput, response_output_text,
 };
-use crate::types::http::{ProviderRejection, SseEvents, json_event, stream_chunks, unix_timestamp};
+use crate::routes::errors::ExtractionError;
+use crate::types::errors::EncodingError;
+use crate::types::http::{SseEvents, json_event, stream_chunks, unix_timestamp};
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
 };
@@ -31,7 +35,7 @@ use crate::types::turn::{
 struct OpenAiResponsesTurn(CompatTurnRequest);
 
 impl TryFrom<ResponsesRequest> for OpenAiResponsesTurn {
-    type Error = ProviderRejection;
+    type Error = OpenAiError;
 
     fn try_from(payload: ResponsesRequest) -> Result<Self, Self::Error> {
         validate_text_config(payload.text)?;
@@ -50,20 +54,19 @@ impl TryFrom<ResponsesRequest> for OpenAiResponsesTurn {
     }
 }
 
-fn validate_text_config(config: Option<ResponsesTextConfig>) -> Result<(), ProviderRejection> {
+fn validate_text_config(config: Option<ResponsesTextConfig>) -> Result<(), OpenAiError> {
     match config.and_then(|config| config.format) {
         None | Some(ResponsesTextFormat::Text) => Ok(()),
-        Some(ResponsesTextFormat::Unsupported) => Err(ProviderRejection::unsupported(
-            "text.format",
-            "structured output is not supported",
-        )),
+        Some(ResponsesTextFormat::Unsupported) => Err(OpenAiError::StructuredOutputUnsupported {
+            param: "text.format",
+        }),
     }
 }
 
 fn lower_input(
     input: ResponsesInput,
     system: &mut Vec<String>,
-) -> Result<Vec<CompatTurn>, ProviderRejection> {
+) -> Result<Vec<CompatTurn>, OpenAiError> {
     match input {
         ResponsesInput::Text(text) => Ok(vec![CompatTurn::User(text)]),
         ResponsesInput::Items(items) => {
@@ -80,7 +83,7 @@ fn lower_item(
     item: ResponsesInputItem,
     system: &mut Vec<String>,
     turns: &mut Vec<CompatTurn>,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), OpenAiError> {
     match item {
         ResponsesInputItem::Message { role, content } => {
             let text = text_content(content, "input.content")?;
@@ -89,49 +92,33 @@ fn lower_item(
                 ResponsesRole::System | ResponsesRole::Developer => system.push(text),
                 ResponsesRole::Assistant => turns.push(CompatTurn::Assistant(text)),
                 ResponsesRole::Unsupported => {
-                    return Err(ProviderRejection::unsupported(
-                        "input.role",
-                        "unsupported Responses role",
-                    ));
+                    return Err(OpenAiError::UnsupportedResponsesRole);
                 }
             }
         }
         ResponsesInputItem::FunctionCall { name, arguments } => {
             let name = required_name(name, "input.name")?;
-            let arguments = arguments.ok_or_else(|| {
-                ProviderRejection::invalid(
-                    "input.arguments",
-                    "function_call is missing its arguments",
-                )
-            })?;
+            let arguments = arguments.ok_or(OpenAiError::MissingFunctionCallArguments)?;
             turns.push(CompatTurn::ToolCall(FunctionCall {
                 name,
                 arguments: arguments.into_object("input.arguments")?,
             }));
         }
         ResponsesInputItem::FunctionCallOutput { output } => {
-            let output = output.ok_or_else(|| {
-                ProviderRejection::invalid("input.output", "function_call_output is missing output")
-            })?;
+            let output = output.ok_or(OpenAiError::MissingFunctionOutput)?;
             turns.push(CompatTurn::ToolResult(match output {
                 ToolOutput::Text(text) => text,
                 ToolOutput::Object(object) => object.serialized(),
             }));
         }
         ResponsesInputItem::Unsupported => {
-            return Err(ProviderRejection::unsupported(
-                "input.type",
-                "unsupported Responses input item",
-            ));
+            return Err(OpenAiError::UnsupportedInputItem);
         }
     }
     Ok(())
 }
 
-fn text_content(
-    content: ResponsesContent,
-    param: &'static str,
-) -> Result<String, ProviderRejection> {
+fn text_content(content: ResponsesContent, param: &'static str) -> Result<String, OpenAiError> {
     match content {
         ResponsesContent::Text(text) => Ok(text),
         ResponsesContent::Parts(parts) => {
@@ -142,10 +129,7 @@ fn text_content(
                     | ResponsesContentPart::OutputText { text: part }
                     | ResponsesContentPart::Text { text: part } => text.push(part),
                     ResponsesContentPart::Unsupported => {
-                        return Err(ProviderRejection::unsupported(
-                            param,
-                            "only text content parts are supported",
-                        ));
+                        return Err(OpenAiError::UnsupportedContentPart { param });
                     }
                 }
             }
@@ -154,14 +138,15 @@ fn text_content(
     }
 }
 
-fn required_name(name: Option<String>, param: &'static str) -> Result<String, ProviderRejection> {
+fn required_name(name: Option<String>, param: &'static str) -> Result<String, OpenAiError> {
     name.filter(|name| !name.is_empty())
-        .ok_or_else(|| ProviderRejection::invalid(param, "function is missing its name"))
+        .ok_or(OpenAiError::MissingFunctionName { param })
 }
 
 struct ResponseContext {
     item_id: String,
     call_id: String,
+    final_output: ResponsesOutput,
     envelope: ResponsesEnvelope,
 }
 
@@ -183,6 +168,7 @@ impl From<&CompatTurnResponse> for ResponseContext {
         Self {
             item_id,
             call_id,
+            final_output: output.clone(),
             envelope: ResponsesEnvelope {
                 id: format!("resp_{}", Uuid::now_v7().simple()),
                 object: "response",
@@ -210,7 +196,7 @@ impl Sequence {
     }
 }
 
-fn response_stream(response: &CompatTurnResponse) -> Result<SseEvents, ProviderRejection> {
+fn response_stream(response: &CompatTurnResponse) -> Result<SseEvents, EncodingError> {
     let context = ResponseContext::from(response);
     let mut sequence = Sequence::default();
     let mut events = Vec::new();
@@ -231,15 +217,12 @@ fn response_stream(response: &CompatTurnResponse) -> Result<SseEvents, ProviderR
         },
     )?;
     push_output_events(&mut events, &mut sequence, &context, &response.output)?;
-    let final_output = context.envelope.output.first().cloned().ok_or_else(|| {
-        ProviderRejection::internal("Responses envelope is missing its output item")
-    })?;
     push_event(
         &mut events,
         &ResponsesStreamEvent::OutputItemDone {
             sequence_number: sequence.next(),
             output_index: 0,
-            item: final_output,
+            item: context.final_output,
         },
     )?;
     push_event(
@@ -257,7 +240,7 @@ fn push_output_events(
     sequence: &mut Sequence,
     context: &ResponseContext,
     output: &CompatOutput,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), EncodingError> {
     match output {
         CompatOutput::Text(text) => push_text_events(events, sequence, context, text),
         CompatOutput::ToolCall(call) => push_tool_events(events, sequence, context, call),
@@ -269,7 +252,7 @@ fn push_text_events(
     sequence: &mut Sequence,
     context: &ResponseContext,
     text: &str,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), EncodingError> {
     push_event(
         events,
         &ResponsesStreamEvent::OutputItemAdded {
@@ -312,7 +295,7 @@ fn push_tool_events(
     sequence: &mut Sequence,
     context: &ResponseContext,
     call: &FunctionCall,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), EncodingError> {
     push_event(
         events,
         &ResponsesStreamEvent::OutputItemAdded {
@@ -351,10 +334,7 @@ fn push_tool_events(
     )
 }
 
-fn push_event(
-    events: &mut Vec<Event>,
-    event: &ResponsesStreamEvent,
-) -> Result<(), ProviderRejection> {
+fn push_event(events: &mut Vec<Event>, event: &ResponsesStreamEvent) -> Result<(), EncodingError> {
     events.push(json_event(event)?);
     Ok(())
 }
@@ -362,16 +342,22 @@ fn push_event(
 async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<ResponsesRequest>,
+    payload: Result<Json<ResponsesRequest>, JsonRejection>,
 ) -> Response {
     if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-        return OpenAiRejection::from(error).into_response();
+        return OpenAiRejection::from_error(&error).into_response();
     }
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
 
     let should_stream = payload.should_stream.unwrap_or(false);
     let request = match OpenAiResponsesTurn::try_from(payload) {
         Ok(request) => request.0,
-        Err(error) => return OpenAiRejection::from(error).into_response(),
+        Err(error) => return OpenAiRejection::from_error(&error).into_response(),
     };
     let limits = RequestLimits::new(
         state.config.max_input_chars,
@@ -379,7 +365,7 @@ async fn responses(
     );
     let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return OpenAiRejection::from(error).into_response(),
+        Err(error) => return OpenAiRejection::from_error(&error).into_response(),
     };
 
     if should_stream {
@@ -387,7 +373,7 @@ async fn responses(
             Ok(events) => events
                 .with_delay(state.config.stream_delay_ms)
                 .into_response(),
-            Err(error) => OpenAiRejection::from(error).into_response(),
+            Err(error) => OpenAiRejection::from_error(&error).into_response(),
         }
     } else {
         Json(ResponseContext::from(&response).envelope).into_response()

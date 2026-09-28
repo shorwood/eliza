@@ -6,13 +6,11 @@
     reason = "private Serde fields mirror Gemini's published wire names"
 )]
 
-use axum::Json;
-use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::types::http::{ProviderRejection, ProviderRejectionKind};
+use super::errors::GeminiError;
 use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{CompatOutput, CompatTurnResponse, FunctionTool, TokenUsage, ToolChoice};
@@ -100,23 +98,18 @@ impl FunctionDeclaration {
 pub(super) struct ToolGroupList(Vec<ToolGroup>);
 
 impl ToolGroupList {
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, ProviderRejection> {
+    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, GeminiError> {
         let mut functions = Vec::new();
         for group in self.0 {
-            let declarations = group.function_declarations.ok_or_else(|| {
-                ProviderRejection::unsupported(
-                    "tools",
-                    "only client function declarations are supported",
-                )
-            })?;
+            let declarations = group
+                .function_declarations
+                .ok_or(GeminiError::MissingFunctionDeclarations)?;
             for declaration in declarations {
                 let definition_chars = declaration.char_count();
                 let name = declaration
                     .name
                     .filter(|name| !name.is_empty())
-                    .ok_or_else(|| {
-                        ProviderRejection::invalid("tools", "function declaration is missing name")
-                    })?;
+                    .ok_or(GeminiError::MissingFunctionName)?;
                 functions.push(FunctionTool::new(name, definition_chars));
             }
         }
@@ -143,7 +136,7 @@ pub(super) struct FunctionCallingConfig {
 }
 
 impl FunctionCallingConfig {
-    fn lower(self, param: &'static str) -> Result<ToolChoice, ProviderRejection> {
+    fn lower(self, param: &'static str) -> Result<ToolChoice, GeminiError> {
         match self.mode.unwrap_or(FunctionCallingMode::Auto) {
             FunctionCallingMode::Auto | FunctionCallingMode::Validated => Ok(ToolChoice::Auto),
             FunctionCallingMode::None => Ok(ToolChoice::None),
@@ -155,10 +148,7 @@ impl FunctionCallingConfig {
                     _ => ToolChoice::Allowed(names),
                 })
             }
-            FunctionCallingMode::Unsupported => Err(ProviderRejection::invalid(
-                param,
-                "unsupported function calling mode",
-            )),
+            FunctionCallingMode::Unsupported => Err(GeminiError::UnsupportedCallingMode { param }),
         }
     }
 }
@@ -173,7 +163,7 @@ impl ToolConfig {
     pub(super) fn into_domain(
         config: Option<Self>,
         param: &'static str,
-    ) -> Result<ToolChoice, ProviderRejection> {
+    ) -> Result<ToolChoice, GeminiError> {
         match config.and_then(|config| config.function_calling_config) {
             Some(config) => config.lower(param),
             None => Ok(ToolChoice::Auto),
@@ -316,58 +306,4 @@ pub(super) struct GeminiModel {
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct GeminiModelsResponse {
     pub(super) models: Vec<GeminiModel>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-enum GeminiErrorStatus {
-    InvalidArgument,
-    Unauthenticated,
-    ResourceExhausted,
-    Internal,
-}
-
-impl From<ProviderRejectionKind> for GeminiErrorStatus {
-    fn from(kind: ProviderRejectionKind) -> Self {
-        match kind {
-            ProviderRejectionKind::Invalid | ProviderRejectionKind::Unsupported => {
-                Self::InvalidArgument
-            }
-            ProviderRejectionKind::Unauthorized => Self::Unauthenticated,
-            ProviderRejectionKind::TooLarge => Self::ResourceExhausted,
-            ProviderRejectionKind::Internal => Self::Internal,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-struct GeminiFailureBody {
-    code: u16,
-    message: String,
-    status: GeminiErrorStatus,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct GeminiFailureResponse {
-    error: GeminiFailureBody,
-}
-
-#[derive(derive_more::From)]
-pub(super) struct GeminiRejection(ProviderRejection);
-
-impl IntoResponse for GeminiRejection {
-    fn into_response(self) -> Response {
-        let rejection = self.0;
-        (
-            rejection.status,
-            Json(GeminiFailureResponse {
-                error: GeminiFailureBody {
-                    code: rejection.status.as_u16(),
-                    message: rejection.message,
-                    status: rejection.kind.into(),
-                },
-            }),
-        )
-            .into_response()
-    }
 }

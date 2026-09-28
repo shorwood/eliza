@@ -12,6 +12,7 @@ use std::str::FromStr;
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
@@ -19,12 +20,14 @@ use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::errors::{GeminiError, GeminiFailureResponse, GeminiRejection};
 use super::types::{
     Candidate, ContentRole, FinishReason, FunctionCallOutput, FunctionResponseValue, GeminiContent,
-    GeminiFailureResponse, GeminiRejection, GenerateContentRequest, GenerateContentResponse,
-    GenerateQuery, OutputContent, OutputPart, Part, StreamFormat, ToolConfig,
+    GenerateContentRequest, GenerateContentResponse, GenerateQuery, OutputContent, OutputPart,
+    Part, StreamFormat, ToolConfig,
 };
-use crate::types::http::{ProviderRejection, SseEvents, json_event, stream_chunks};
+use crate::routes::errors::ExtractionError;
+use crate::types::http::{SseEvents, json_event, stream_chunks};
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
@@ -43,16 +46,15 @@ impl GeminiActionKind {
 }
 
 impl FromStr for GeminiActionKind {
-    type Err = ProviderRejection;
+    type Err = GeminiError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "generateContent" => Ok(Self::Generate),
             "streamGenerateContent" => Ok(Self::Stream),
-            action => Err(ProviderRejection::unsupported(
-                "model",
-                format!("unsupported Gemini model action `{action}`"),
-            )),
+            action => Err(GeminiError::UnsupportedModelAction {
+                action: action.to_owned(),
+            }),
         }
     }
 }
@@ -63,18 +65,13 @@ struct GeminiAction {
 }
 
 impl FromStr for GeminiAction {
-    type Err = ProviderRejection;
+    type Err = GeminiError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let Some((model, action)) = value.split_once(':') else {
-            return Err(ProviderRejection::invalid(
-                "model",
-                "Gemini model path must include a generation action",
-            ));
+            return Err(GeminiError::MissingModelAction);
         };
-        let model = model.parse().map_err(|_| {
-            ProviderRejection::invalid("model", "Gemini model id must not be empty")
-        })?;
+        let model = model.parse().map_err(|_| GeminiError::EmptyModel)?;
         Ok(Self {
             model,
             kind: action.parse()?,
@@ -85,7 +82,7 @@ impl FromStr for GeminiAction {
 fn lower_request(
     model: ModelId,
     payload: GenerateContentRequest,
-) -> Result<CompatTurnRequest, ProviderRejection> {
+) -> Result<CompatTurnRequest, GeminiError> {
     let mut system = Vec::new();
     if let Some(instruction) = payload.system_instruction {
         system.push(text_parts(
@@ -107,30 +104,18 @@ fn lower_request(
     ))
 }
 
-fn lower_content(
-    content: GeminiContent,
-    turns: &mut Vec<CompatTurn>,
-) -> Result<(), ProviderRejection> {
+fn lower_content(content: GeminiContent, turns: &mut Vec<CompatTurn>) -> Result<(), GeminiError> {
     let parts = content.parts.unwrap_or_default();
     match content.role.unwrap_or(ContentRole::User) {
         ContentRole::User | ContentRole::Function => lower_user_parts(parts, turns),
         ContentRole::Model => lower_model_parts(parts, turns),
-        ContentRole::Unsupported => Err(ProviderRejection::unsupported(
-            "contents.role",
-            "unsupported Gemini role",
-        )),
+        ContentRole::Unsupported => Err(GeminiError::UnsupportedRole),
     }
 }
 
-fn lower_user_parts(
-    parts: Vec<Part>,
-    turns: &mut Vec<CompatTurn>,
-) -> Result<(), ProviderRejection> {
+fn lower_user_parts(parts: Vec<Part>, turns: &mut Vec<CompatTurn>) -> Result<(), GeminiError> {
     if parts.is_empty() {
-        return Err(ProviderRejection::invalid(
-            "contents.parts",
-            "content parts are required",
-        ));
+        return Err(GeminiError::MissingContentParts);
     }
     let mut text = Vec::new();
     for part in parts {
@@ -138,22 +123,16 @@ fn lower_user_parts(
             Part::Text { text: part } => text.push(part),
             Part::FunctionResponse { function_response } => {
                 flush_user_text(&mut text, turns);
-                let response = function_response.response.ok_or_else(|| {
-                    ProviderRejection::invalid(
-                        "contents.parts",
-                        "functionResponse is missing response",
-                    )
-                })?;
+                let response = function_response
+                    .response
+                    .ok_or(GeminiError::MissingFunctionResponse)?;
                 turns.push(CompatTurn::ToolResult(match response {
                     FunctionResponseValue::Text(text) => text,
                     FunctionResponseValue::Object(object) => object.serialized(),
                 }));
             }
             Part::FunctionCall { .. } | Part::Unsupported { .. } => {
-                return Err(ProviderRejection::unsupported(
-                    "contents.parts",
-                    "only text and functionResponse parts are supported",
-                ));
+                return Err(GeminiError::UnsupportedUserPart);
             }
         }
     }
@@ -168,10 +147,7 @@ fn flush_user_text(text: &mut Vec<String>, turns: &mut Vec<CompatTurn>) {
     turns.push(CompatTurn::User(std::mem::take(text).join("\n")));
 }
 
-fn lower_model_parts(
-    parts: Vec<Part>,
-    turns: &mut Vec<CompatTurn>,
-) -> Result<(), ProviderRejection> {
+fn lower_model_parts(parts: Vec<Part>, turns: &mut Vec<CompatTurn>) -> Result<(), GeminiError> {
     for part in parts {
         match part {
             Part::Text { text } => turns.push(CompatTurn::Assistant(text)),
@@ -179,28 +155,23 @@ fn lower_model_parts(
                 let name = function_call
                     .name
                     .filter(|name| !name.is_empty())
-                    .ok_or_else(|| {
-                        ProviderRejection::invalid("contents.parts", "functionCall is missing name")
-                    })?;
+                    .ok_or(GeminiError::MissingFunctionCallName)?;
                 turns.push(CompatTurn::ToolCall(FunctionCall {
                     name,
                     arguments: function_call.args.unwrap_or_default(),
                 }));
             }
             Part::FunctionResponse { .. } | Part::Unsupported { .. } => {
-                return Err(ProviderRejection::unsupported(
-                    "contents.parts",
-                    "only text and functionCall parts are supported",
-                ));
+                return Err(GeminiError::UnsupportedModelPart);
             }
         }
     }
     Ok(())
 }
 
-fn text_parts(parts: Vec<Part>, param: &'static str) -> Result<String, ProviderRejection> {
+fn text_parts(parts: Vec<Part>, param: &'static str) -> Result<String, GeminiError> {
     if parts.is_empty() {
-        return Err(ProviderRejection::invalid(param, "text parts are required"));
+        return Err(GeminiError::MissingTextParts { param });
     }
     parts
         .into_iter()
@@ -208,10 +179,7 @@ fn text_parts(parts: Vec<Part>, param: &'static str) -> Result<String, ProviderR
             Part::Text { text } => Ok(text),
             Part::FunctionCall { .. }
             | Part::FunctionResponse { .. }
-            | Part::Unsupported { .. } => Err(ProviderRejection::unsupported(
-                param,
-                "only text parts are supported",
-            )),
+            | Part::Unsupported { .. } => Err(GeminiError::UnsupportedTextPart { param }),
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|parts| parts.join("\n"))
@@ -277,28 +245,48 @@ fn text_stream_records(response: &CompatTurnResponse, text: &str) -> Vec<Generat
 async fn generate(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(model_action): Path<String>,
-    Query(query): Query<GenerateQuery>,
-    Json(payload): Json<GenerateContentRequest>,
+    model_action: Result<Path<String>, PathRejection>,
+    query: Result<Query<GenerateQuery>, QueryRejection>,
+    payload: Result<Json<GenerateContentRequest>, JsonRejection>,
 ) -> Response {
     if let Err(error) = provider_authenticate(
         &headers,
         &state.config,
         ProviderAuth::ApiKey("x-goog-api-key"),
     ) {
-        return GeminiRejection::from(error).into_response();
+        return GeminiRejection::from_error(&error).into_response();
     }
+
+    // Normalize transport extraction before interpreting provider semantics.
+    let Path(model_action) = match model_action {
+        Ok(model_action) => model_action,
+        Err(error) => {
+            return GeminiRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(error) => {
+            return GeminiRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            return GeminiRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
 
     // Decode the model and generation action carried by Gemini's path grammar.
     let action = match model_action.parse::<GeminiAction>() {
         Ok(action) => action,
-        Err(error) => return GeminiRejection::from(error).into_response(),
+        Err(error) => return GeminiRejection::from_error(&error).into_response(),
     };
 
     // Lower and execute the provider request under shared resource limits.
     let request = match lower_request(action.model.clone(), payload) {
         Ok(request) => request,
-        Err(error) => return GeminiRejection::from(error).into_response(),
+        Err(error) => return GeminiRejection::from_error(&error).into_response(),
     };
     let limits = RequestLimits::new(
         state.config.max_input_chars,
@@ -306,7 +294,7 @@ async fn generate(
     );
     let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return GeminiRejection::from(error).into_response(),
+        Err(error) => return GeminiRejection::from_error(&error).into_response(),
     };
 
     if !action.kind.is_stream() {
@@ -322,7 +310,7 @@ async fn generate(
             Ok(events) => SseEvents::from(events)
                 .with_delay(state.config.stream_delay_ms)
                 .into_response(),
-            Err(error) => GeminiRejection::from(error).into_response(),
+            Err(error) => GeminiRejection::from_error(&error).into_response(),
         };
     }
     Json(records).into_response()

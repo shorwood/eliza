@@ -8,9 +8,8 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
-use super::types::{
-    AnthropicFailureResponse, AnthropicRejection, ModelDescriptor, ModelListResponse,
-};
+use super::errors::{AnthropicFailureResponse, AnthropicRejection};
+use super::types::{ModelDescriptor, ModelListResponse};
 
 /// List the configured model in Anthropic's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -18,7 +17,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(error) =
         provider_authenticate(&headers, &state.config, ProviderAuth::ApiKey("x-api-key"))
     {
-        return AnthropicRejection::from(error).into_response();
+        return AnthropicRejection::from_error(&error).into_response();
     }
 
     let model = state.config.model.clone();

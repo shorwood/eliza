@@ -11,19 +11,22 @@ use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
 use super::types::{
     AssistantRole, ChatChunk, ChatChunkChoice, ChatCompletionRequest, ChatCompletionResponse,
     ChatContent, ChatContentPart, ChatDelta, ChatToolCall, ChatToolCallDelta, FinishReason,
-    FunctionCallDelta, FunctionKind, MessageRole, OpenAiFailureResponse, OpenAiRejection,
-    StreamOptions,
+    FunctionCallDelta, FunctionKind, MessageRole, StreamOptions,
 };
-use crate::types::http::{ProviderRejection, SseEvents, json_event, stream_chunks, unix_timestamp};
+use crate::routes::errors::ExtractionError;
+use crate::types::errors::EncodingError;
+use crate::types::http::{SseEvents, json_event, stream_chunks, unix_timestamp};
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
 };
@@ -31,14 +34,13 @@ use crate::types::turn::{
 struct OpenAiChatTurn(CompatTurnRequest);
 
 impl TryFrom<ChatCompletionRequest> for OpenAiChatTurn {
-    type Error = ProviderRejection;
+    type Error = OpenAiError;
 
     fn try_from(payload: ChatCompletionRequest) -> Result<Self, Self::Error> {
         if payload.response_format.is_some() {
-            return Err(ProviderRejection::unsupported(
-                "response_format",
-                "structured output is not supported",
-            ));
+            return Err(OpenAiError::StructuredOutputUnsupported {
+                param: "response_format",
+            });
         }
 
         let mut system = Vec::new();
@@ -68,7 +70,7 @@ fn lower_message(
     tool_calls: Vec<ChatToolCall>,
     system: &mut Vec<String>,
     turns: &mut Vec<CompatTurn>,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), OpenAiError> {
     match role {
         MessageRole::System | MessageRole::Developer => {
             if let Some(content) = content {
@@ -76,9 +78,7 @@ fn lower_message(
             }
         }
         MessageRole::User => {
-            let content = content.ok_or_else(|| {
-                ProviderRejection::invalid("messages", "user message content is required")
-            })?;
+            let content = content.ok_or(OpenAiError::MissingUserContent)?;
             turns.push(CompatTurn::User(text_content(content, "messages.content")?));
         }
         MessageRole::Assistant => {
@@ -93,52 +93,41 @@ fn lower_message(
             }
         }
         MessageRole::Tool => {
-            let content = content.ok_or_else(|| {
-                ProviderRejection::invalid("messages.content", "tool result content is required")
-            })?;
+            let content = content.ok_or(OpenAiError::MissingToolResultContent)?;
             turns.push(CompatTurn::ToolResult(tool_result_text(content)?));
         }
         MessageRole::Unsupported => {
-            return Err(ProviderRejection::unsupported(
-                "messages.role",
-                "unsupported message role",
-            ));
+            return Err(OpenAiError::UnsupportedMessageRole);
         }
     }
     Ok(())
 }
 
-fn text_content(content: ChatContent, param: &'static str) -> Result<String, ProviderRejection> {
+fn text_content(content: ChatContent, param: &'static str) -> Result<String, OpenAiError> {
     match content {
         ChatContent::Text(text) => Ok(text),
         ChatContent::Parts(parts) => join_text_parts(parts, param),
-        ChatContent::Object(_) => Err(ProviderRejection::unsupported(
-            param,
-            "content must be a string or text parts",
-        )),
+        ChatContent::Object(_) => Err(OpenAiError::UnsupportedContentShape { param }),
     }
 }
 
 fn join_text_parts(
     parts: Vec<ChatContentPart>,
     param: &'static str,
-) -> Result<String, ProviderRejection> {
+) -> Result<String, OpenAiError> {
     let mut text = Vec::with_capacity(parts.len());
     for part in parts {
         match part {
             ChatContentPart::Text { text: part } => text.push(part),
             ChatContentPart::Unsupported => {
-                return Err(ProviderRejection::unsupported(
-                    param,
-                    "only text content parts are supported",
-                ));
+                return Err(OpenAiError::UnsupportedContentPart { param });
             }
         }
     }
     Ok(text.join("\n"))
 }
 
-fn tool_result_text(content: ChatContent) -> Result<String, ProviderRejection> {
+fn tool_result_text(content: ChatContent) -> Result<String, OpenAiError> {
     match content {
         ChatContent::Text(text) => Ok(text),
         ChatContent::Parts(parts) => join_text_parts(parts, "messages.content"),
@@ -170,7 +159,7 @@ impl UsageStream {
 fn stream(
     response: &CompatTurnResponse,
     usage_stream: UsageStream,
-) -> Result<SseEvents, ProviderRejection> {
+) -> Result<SseEvents, EncodingError> {
     let context = StreamContext {
         id: format!("chatcmpl-{}", Uuid::now_v7().simple()),
         created: unix_timestamp(),
@@ -209,7 +198,7 @@ fn push_text_events(
     events: &mut Vec<Event>,
     context: &StreamContext<'_>,
     text: &str,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), EncodingError> {
     for chunk in stream_chunks(text) {
         push_chunk(
             events,
@@ -235,7 +224,7 @@ fn push_tool_events(
     events: &mut Vec<Event>,
     context: &StreamContext<'_>,
     call: &FunctionCall,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), EncodingError> {
     push_chunk(
         events,
         context,
@@ -287,7 +276,7 @@ fn push_chunk(
     delta: ChatDelta,
     finish_reason: Option<FinishReason>,
     usage: Option<super::types::ChatUsage>,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), EncodingError> {
     events.push(json_event(&ChatChunk {
         id: &context.id,
         object: "chat.completion.chunk",
@@ -315,11 +304,17 @@ impl OpenAiChatCompletions {
     pub(crate) async fn handle(
         State(state): State<AppState>,
         headers: HeaderMap,
-        Json(payload): Json<ChatCompletionRequest>,
+        payload: Result<Json<ChatCompletionRequest>, JsonRejection>,
     ) -> Response {
         if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-            return OpenAiRejection::from(error).into_response();
+            return OpenAiRejection::from_error(&error).into_response();
         }
+        let Json(payload) = match payload {
+            Ok(payload) => payload,
+            Err(error) => {
+                return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
+            }
+        };
 
         // Capture transport options before lowering consumes the request body.
         let should_stream = payload.should_stream.unwrap_or(false);
@@ -328,7 +323,7 @@ impl OpenAiChatCompletions {
         // Lower and execute the provider request under shared resource limits.
         let request = match OpenAiChatTurn::try_from(payload) {
             Ok(request) => request.0,
-            Err(error) => return OpenAiRejection::from(error).into_response(),
+            Err(error) => return OpenAiRejection::from_error(&error).into_response(),
         };
         let limits = RequestLimits::new(
             state.config.max_input_chars,
@@ -336,7 +331,7 @@ impl OpenAiChatCompletions {
         );
         let response = match request.complete(limits) {
             Ok(response) => response,
-            Err(error) => return OpenAiRejection::from(error).into_response(),
+            Err(error) => return OpenAiRejection::from_error(&error).into_response(),
         };
 
         if should_stream {
@@ -344,7 +339,7 @@ impl OpenAiChatCompletions {
                 Ok(events) => events
                     .with_delay(state.config.stream_delay_ms)
                     .into_response(),
-                Err(error) => OpenAiRejection::from(error).into_response(),
+                Err(error) => OpenAiRejection::from_error(&error).into_response(),
             }
         } else {
             Json(ChatCompletionResponse::from(response)).into_response()

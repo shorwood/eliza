@@ -6,12 +6,10 @@
     reason = "private Serde fields mirror Ollama's published wire names"
 )]
 
-use axum::Json;
-use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::types::http::ProviderRejection;
+use super::errors::OllamaError;
 use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{CompatOutput, CompatTurnResponse, FunctionTool, ToolChoice};
@@ -69,21 +67,18 @@ impl ToolCall {
     pub(super) fn lower(
         self,
         param: &'static str,
-    ) -> Result<crate::types::turn::FunctionCall, ProviderRejection> {
+    ) -> Result<crate::types::turn::FunctionCall, OllamaError> {
         // Reject extension calls before reading function-only fields.
         if matches!(self.kind, FunctionKind::Unsupported) {
-            return Err(ProviderRejection::unsupported(
-                param,
-                "only function tool calls are supported",
-            ));
+            return Err(OllamaError::UnsupportedToolCallKind { param });
         }
         let function = self
             .function
-            .ok_or_else(|| ProviderRejection::invalid(param, "tool call is missing function"))?;
+            .ok_or(OllamaError::MissingToolCallFunction { param })?;
         let name = function
             .name
             .filter(|name| !name.is_empty())
-            .ok_or_else(|| ProviderRejection::invalid(param, "tool call is missing name"))?;
+            .ok_or(OllamaError::MissingToolCallName { param })?;
         Ok(crate::types::turn::FunctionCall {
             name,
             arguments: function.arguments.unwrap_or_default(),
@@ -128,27 +123,20 @@ impl FunctionDefinition {
 pub(super) struct ToolList(Vec<Tool>);
 
 impl ToolList {
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, ProviderRejection> {
+    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, OllamaError> {
         self.0
             .into_iter()
             .map(|tool| {
                 // A function list cannot normalize provider extension tools.
                 if matches!(tool.kind, FunctionKind::Unsupported) {
-                    return Err(ProviderRejection::unsupported(
-                        "tools",
-                        "only client function tools are supported",
-                    ));
+                    return Err(OllamaError::UnsupportedToolDefinition);
                 }
-                let function = tool.function.ok_or_else(|| {
-                    ProviderRejection::invalid("tools", "function tool is missing function")
-                })?;
+                let function = tool.function.ok_or(OllamaError::MissingToolDefinition)?;
                 let definition_chars = function.char_count();
                 let name = function
                     .name
                     .filter(|name| !name.is_empty())
-                    .ok_or_else(|| {
-                        ProviderRejection::invalid("tools", "function tool is missing name")
-                    })?;
+                    .ok_or(OllamaError::MissingFunctionName)?;
                 Ok(FunctionTool::new(name, definition_chars))
             })
             .collect()
@@ -183,24 +171,22 @@ pub(super) enum OllamaToolChoice {
 }
 
 impl TryFrom<Option<OllamaToolChoice>> for ToolChoice {
-    type Error = ProviderRejection;
+    type Error = OllamaError;
 
     fn try_from(choice: Option<OllamaToolChoice>) -> Result<Self, Self::Error> {
         match choice {
             None | Some(OllamaToolChoice::Mode(ToolChoiceMode::Auto)) => Ok(Self::Auto),
             Some(OllamaToolChoice::Mode(ToolChoiceMode::None)) => Ok(Self::None),
             Some(OllamaToolChoice::Mode(ToolChoiceMode::Required)) => Ok(Self::Required),
-            Some(OllamaToolChoice::Mode(ToolChoiceMode::Unsupported)) => Err(
-                ProviderRejection::invalid("tool_choice", "unsupported tool_choice mode"),
-            ),
+            Some(OllamaToolChoice::Mode(ToolChoiceMode::Unsupported)) => {
+                Err(OllamaError::UnsupportedToolChoiceMode)
+            }
             Some(OllamaToolChoice::Named(choice)) => choice
                 .function
                 .name
                 .filter(|name| !name.is_empty())
                 .map(Self::Named)
-                .ok_or_else(|| {
-                    ProviderRejection::invalid("tool_choice", "named tool_choice is missing name")
-                }),
+                .ok_or(OllamaError::MissingNamedToolChoice),
         }
     }
 }
@@ -350,25 +336,4 @@ pub(super) struct ModelDescriptor {
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct TagsResponse {
     pub(super) models: Vec<ModelDescriptor>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct OllamaFailureResponse {
-    error: String,
-}
-
-#[derive(derive_more::From)]
-pub(super) struct OllamaRejection(ProviderRejection);
-
-impl IntoResponse for OllamaRejection {
-    fn into_response(self) -> Response {
-        let rejection = self.0;
-        (
-            rejection.status,
-            Json(OllamaFailureResponse {
-                error: rejection.message,
-            }),
-        )
-            .into_response()
-    }
 }
