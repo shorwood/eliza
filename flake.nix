@@ -38,6 +38,7 @@
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;
+          nativeCheckInputs = [ pkgs.hurl ];
           meta = {
             description = "Standalone classic ELIZA server with provider-compatible HTTP APIs";
             license = {
@@ -74,6 +75,7 @@
           packages = [
             pkgs.aichat
             pkgs.curl
+            pkgs.hurl
             pkgs.nodejs_22
             pkgs.pnpm
             rust.toolchain
