@@ -8,7 +8,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-use super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 
 /// List the configured model in Anthropic's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -41,7 +41,7 @@ impl AnthropicModels {
     /// Mount the model-list route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/anthropic/v1/models",
+            "/v1/models",
             get_with(models, |operation| {
                 operation
                     .summary("Anthropic models")

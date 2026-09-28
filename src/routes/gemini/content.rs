@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{JsonEventExt, ProviderRejection, SseEvents, stream_chunks};
 use crate::types::model::ModelId;
 use crate::types::turn::{
@@ -461,7 +461,7 @@ impl Route {
     /// Mount unary and streaming model actions.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/gemini/v1beta/models/{model_action}",
+            "/v1beta/models/{model_action}",
             post_with(generate, |operation| {
                 operation
                     .summary("Gemini content")

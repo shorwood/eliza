@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::ProviderRejection;
 
 // -----------------------------------------------------------------------------
@@ -133,7 +133,7 @@ impl GeminiModels {
     /// Mount the native Gemini model catalog route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/gemini/v1beta/models",
+            "/v1beta/models",
             get_with(models, |operation| {
                 operation
                     .summary("Gemini models")
