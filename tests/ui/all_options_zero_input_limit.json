@@ -1,0 +1,16 @@
+{
+  "args": [
+    "serve",
+    "--host", "127.0.0.1",
+    "--port", "0",
+    "--model", "ui-doctor",
+    "--auth", "bearer",
+    "--bearer-token", "must-not-leak",
+    "--cors", "permissive",
+    "--stream-delay-ms", "1",
+    "--max-input-chars", "0",
+    "--max-history-messages", "1",
+    "--log", "json"
+  ],
+  "code": 1
+}
