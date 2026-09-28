@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::ProviderRejection;
 use crate::types::model::ModelId;
 
@@ -127,7 +127,7 @@ impl OpenAiModels {
     /// Mount the `OpenAI` model catalog route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/openai/v1/models",
+            "/v1/models",
             get_with(open_ai_route_models, |operation| {
                 operation
                     .summary("OpenAI models")
