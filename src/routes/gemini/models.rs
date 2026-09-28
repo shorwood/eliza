@@ -84,7 +84,17 @@ impl IntoResponse for GeminiRejection {
                 error: GeminiFailureBody {
                     code: error.status.as_u16(),
                     message: error.message,
-                    status: error.gemini_status,
+                    status: match error.kind {
+                        crate::types::http::ProviderRejectionKind::Invalid
+                        | crate::types::http::ProviderRejectionKind::Unsupported => {
+                            "INVALID_ARGUMENT"
+                        }
+                        crate::types::http::ProviderRejectionKind::Unauthorized => {
+                            "UNAUTHENTICATED"
+                        }
+                        crate::types::http::ProviderRejectionKind::TooLarge => "RESOURCE_EXHAUSTED",
+                        crate::types::http::ProviderRejectionKind::Internal => "INTERNAL",
+                    },
                 },
             }),
         )
