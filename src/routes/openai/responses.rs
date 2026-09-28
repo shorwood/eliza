@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{
     JsonEventExt, ProviderRejection, SseEvents, TextArrayKind, optional_text_content,
     stream_chunks, unix_timestamp,
@@ -571,7 +571,7 @@ impl OpenAiResponses {
     /// Mount the Responses route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/openai/v1/responses",
+            "/v1/responses",
             post_with(responses, |operation| {
                 operation
                     .summary("OpenAI response")
