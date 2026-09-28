@@ -10,5 +10,7 @@ Content-Type: application/json
 }
 HTTP 400
 [Asserts]
-jsonpath "$.error.type" == "unsupported_request_error"
+header "x-eliza-error-code" == "eliza::openai::unsupported_content_part"
+jsonpath "$.error.type" == "invalid_request_error"
 jsonpath "$.error.param" == "input.content"
+jsonpath "$.error.code" == "eliza::openai::unsupported_content_part"

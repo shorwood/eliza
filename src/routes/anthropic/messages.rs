@@ -11,18 +11,22 @@ use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::errors::{AnthropicError, AnthropicFailureResponse, AnthropicRejection};
 use super::types::{
-    AnthropicFailureResponse, AnthropicRejection, Content, ContentBlock, MessageDelta, MessageRole,
-    MessagesRequest, MessagesResponse, OutputBlock, OutputUsage, StopReason, StreamDelta,
-    StreamEvent, StreamMessage, ToolResultContent, ToolResultTextBlock, Usage,
+    Content, ContentBlock, MessageDelta, MessageRole, MessagesRequest, MessagesResponse,
+    OutputBlock, OutputUsage, StopReason, StreamDelta, StreamEvent, StreamMessage,
+    ToolResultContent, ToolResultTextBlock, Usage,
 };
-use crate::types::http::{ProviderRejection, SseEvents, json_event, stream_chunks};
+use crate::routes::errors::ExtractionError;
+use crate::types::errors::EncodingError;
+use crate::types::http::{SseEvents, json_event, stream_chunks};
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
 };
@@ -30,7 +34,7 @@ use crate::types::turn::{
 struct AnthropicTurn(CompatTurnRequest);
 
 impl TryFrom<MessagesRequest> for AnthropicTurn {
-    type Error = ProviderRejection;
+    type Error = AnthropicError;
 
     fn try_from(payload: MessagesRequest) -> Result<Self, Self::Error> {
         let mut system = Vec::new();
@@ -44,10 +48,7 @@ impl TryFrom<MessagesRequest> for AnthropicTurn {
                 MessageRole::User => lower_user_content(message.content, &mut turns)?,
                 MessageRole::Assistant => lower_assistant_content(message.content, &mut turns)?,
                 MessageRole::Unsupported => {
-                    return Err(ProviderRejection::unsupported(
-                        "messages.role",
-                        "unsupported Anthropic role",
-                    ));
+                    return Err(AnthropicError::UnsupportedRole);
                 }
             }
         }
@@ -62,7 +63,7 @@ impl TryFrom<MessagesRequest> for AnthropicTurn {
     }
 }
 
-fn system_text(content: Content) -> Result<String, ProviderRejection> {
+fn system_text(content: Content) -> Result<String, AnthropicError> {
     match content {
         Content::Text(text) => Ok(text),
         Content::Blocks(blocks) => {
@@ -73,10 +74,7 @@ fn system_text(content: Content) -> Result<String, ProviderRejection> {
                     ContentBlock::ToolUse { .. }
                     | ContentBlock::ToolResult { .. }
                     | ContentBlock::Unsupported => {
-                        return Err(ProviderRejection::unsupported(
-                            "system",
-                            "only text system blocks are supported",
-                        ));
+                        return Err(AnthropicError::UnsupportedSystemBlock);
                     }
                 }
             }
@@ -85,10 +83,7 @@ fn system_text(content: Content) -> Result<String, ProviderRejection> {
     }
 }
 
-fn lower_user_content(
-    content: Content,
-    turns: &mut Vec<CompatTurn>,
-) -> Result<(), ProviderRejection> {
+fn lower_user_content(content: Content, turns: &mut Vec<CompatTurn>) -> Result<(), AnthropicError> {
     let blocks = match content {
         Content::Text(text) => {
             turns.push(CompatTurn::User(text));
@@ -97,10 +92,7 @@ fn lower_user_content(
         Content::Blocks(blocks) => blocks,
     };
     if blocks.is_empty() {
-        return Err(ProviderRejection::invalid(
-            "messages.content",
-            "user content blocks are required",
-        ));
+        return Err(AnthropicError::MissingUserContent);
     }
 
     let mut text = Vec::new();
@@ -112,10 +104,7 @@ fn lower_user_content(
                 turns.push(CompatTurn::ToolResult(tool_result_text(content)?));
             }
             ContentBlock::ToolUse { .. } | ContentBlock::Unsupported => {
-                return Err(ProviderRejection::unsupported(
-                    "messages.content",
-                    "only text and tool_result blocks are supported",
-                ));
+                return Err(AnthropicError::UnsupportedUserBlock);
             }
         }
     }
@@ -133,7 +122,7 @@ fn flush_user_text(text: &mut Vec<String>, turns: &mut Vec<CompatTurn>) {
 fn lower_assistant_content(
     content: Content,
     turns: &mut Vec<CompatTurn>,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), AnthropicError> {
     match content {
         Content::Text(text) => turns.push(CompatTurn::Assistant(text)),
         Content::Blocks(blocks) => lower_assistant_blocks(blocks, turns)?,
@@ -144,34 +133,26 @@ fn lower_assistant_content(
 fn lower_assistant_blocks(
     blocks: Vec<ContentBlock>,
     turns: &mut Vec<CompatTurn>,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), AnthropicError> {
     for block in blocks {
         match block {
             ContentBlock::Text { text } => turns.push(CompatTurn::Assistant(text)),
             ContentBlock::ToolUse { name, input } => {
-                let name = name.filter(|name| !name.is_empty()).ok_or_else(|| {
-                    ProviderRejection::invalid("messages.content", "tool_use block is missing name")
-                })?;
-                let arguments = input.ok_or_else(|| {
-                    ProviderRejection::invalid(
-                        "messages.content",
-                        "tool_use block is missing input",
-                    )
-                })?;
+                let name = name
+                    .filter(|name| !name.is_empty())
+                    .ok_or(AnthropicError::MissingToolUseName)?;
+                let arguments = input.ok_or(AnthropicError::MissingToolUseInput)?;
                 turns.push(CompatTurn::ToolCall(FunctionCall { name, arguments }));
             }
             ContentBlock::ToolResult { .. } | ContentBlock::Unsupported => {
-                return Err(ProviderRejection::unsupported(
-                    "messages.content",
-                    "only text and tool_use blocks are supported",
-                ));
+                return Err(AnthropicError::UnsupportedAssistantBlock);
             }
         }
     }
     Ok(())
 }
 
-fn tool_result_text(content: Option<ToolResultContent>) -> Result<String, ProviderRejection> {
+fn tool_result_text(content: Option<ToolResultContent>) -> Result<String, AnthropicError> {
     match content {
         Some(ToolResultContent::Text(text)) => Ok(text),
         Some(ToolResultContent::Object(object)) => Ok(object.serialized()),
@@ -181,23 +162,17 @@ fn tool_result_text(content: Option<ToolResultContent>) -> Result<String, Provid
                 match block {
                     ToolResultTextBlock::Text { text: part } => text.push(part),
                     ToolResultTextBlock::Unsupported => {
-                        return Err(ProviderRejection::unsupported(
-                            "messages.content",
-                            "only text tool-result blocks are supported",
-                        ));
+                        return Err(AnthropicError::UnsupportedToolResultBlock);
                     }
                 }
             }
             Ok(text.join("\n"))
         }
-        None => Err(ProviderRejection::invalid(
-            "messages.content",
-            "tool result content is required",
-        )),
+        None => Err(AnthropicError::MissingToolResultContent),
     }
 }
 
-fn response_events(response: &CompatTurnResponse) -> Result<SseEvents, ProviderRejection> {
+fn response_events(response: &CompatTurnResponse) -> Result<SseEvents, EncodingError> {
     let mut events = Vec::new();
     push_event(
         &mut events,
@@ -280,7 +255,7 @@ fn push_event(
     events: &mut Vec<Event>,
     name: &'static str,
     event: &StreamEvent,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), EncodingError> {
     events.push(json_event(event)?.event(name));
     Ok(())
 }
@@ -288,19 +263,25 @@ fn push_event(
 async fn messages(
     headers: HeaderMap,
     State(state): State<AppState>,
-    Json(payload): Json<MessagesRequest>,
+    payload: Result<Json<MessagesRequest>, JsonRejection>,
 ) -> Response {
     if let Err(error) =
         provider_authenticate(&headers, &state.config, ProviderAuth::ApiKey("x-api-key"))
     {
-        return AnthropicRejection::from(error).into_response();
+        return AnthropicRejection::from_error(&error).into_response();
     }
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            return AnthropicRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
 
     // Capture transport policy before lowering consumes the request body.
     let should_stream = payload.should_stream.unwrap_or(false);
     let request = match AnthropicTurn::try_from(payload) {
         Ok(request) => request.0,
-        Err(error) => return AnthropicRejection::from(error).into_response(),
+        Err(error) => return AnthropicRejection::from_error(&error).into_response(),
     };
     let limits = RequestLimits::new(
         state.config.max_input_chars,
@@ -308,7 +289,7 @@ async fn messages(
     );
     let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return AnthropicRejection::from(error).into_response(),
+        Err(error) => return AnthropicRejection::from_error(&error).into_response(),
     };
 
     if should_stream {
@@ -316,7 +297,7 @@ async fn messages(
             Ok(events) => events
                 .with_delay(state.config.stream_delay_ms)
                 .into_response(),
-            Err(error) => AnthropicRejection::from(error).into_response(),
+            Err(error) => AnthropicRejection::from_error(&error).into_response(),
         }
     } else {
         Json(MessagesResponse::from(response)).into_response()

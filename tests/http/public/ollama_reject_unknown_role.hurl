@@ -7,4 +7,5 @@ Content-Type: application/json
 }
 HTTP 400
 [Asserts]
+header "x-eliza-error-code" == "eliza::ollama::unsupported_role"
 jsonpath "$.error" isString

@@ -1,7 +1,6 @@
 //! Internal diagnostics for startup, CLI validation, and script loading.
 //!
-//! Provider request failures are deliberately not modeled here; those are
-//! rendered as OpenAI/Anthropic/Gemini-compatible HTTP error bodies.
+//! Request failures live beside their shared or provider-specific scope.
 
 use std::net::SocketAddr;
 
@@ -15,11 +14,6 @@ pub(super) enum AppError {
     #[error("bearer token must not be empty")]
     #[diagnostic(code(eliza::config::empty_bearer_token))]
     EmptyBearerToken,
-
-    /// Provider-visible model id was empty or whitespace-only.
-    #[error("model id must not be empty")]
-    #[diagnostic(code(eliza::config::empty_model_id))]
-    EmptyModelId,
 
     /// Script parser reached EOF while still expecting a token or close paren.
     #[error("unexpected end of script at {line}:{column}")]
