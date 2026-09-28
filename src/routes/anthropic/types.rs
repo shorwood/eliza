@@ -1,9 +1,7 @@
 //! Anthropic wire contracts shared by its route adapters.
 #![expect(
-    clippy::missing_errors_doc,
-    rlib::missing_section_dividers,
     rlib::undocumented_items,
-    reason = "private Serde fields mirror Anthropic's published wire names"
+    reason = "this module contains only private Serde wire declarations whose field names are the provider contract"
 )]
 
 use schemars::JsonSchema;
@@ -13,7 +11,13 @@ use uuid::Uuid;
 use super::errors::AnthropicError;
 use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
-use crate::types::turn::{CompatOutput, CompatTurnResponse, FunctionTool, TokenUsage, ToolChoice};
+use crate::types::turn::{
+    CompatOutput, CompatTurnResponse, FunctionTool, TokenUsage, ToolChoice as CompatToolChoice,
+};
+
+// -----------------------------------------------------------------------------
+// Message: Defines inbound message roles and content.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -26,7 +30,7 @@ pub(super) enum MessageRole {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum ContentBlock {
+pub(super) enum MessageContentBlock {
     Text {
         text: String,
     },
@@ -43,18 +47,14 @@ pub(super) enum ContentBlock {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
-pub(super) enum Content {
+pub(super) enum MessageContent {
     Text(String),
-    Blocks(Vec<ContentBlock>),
+    Blocks(Vec<MessageContentBlock>),
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub(super) enum ToolResultContent {
-    Text(String),
-    Blocks(Vec<ToolResultTextBlock>),
-    Object(JsonObject),
-}
+// -----------------------------------------------------------------------------
+// ToolResult: Defines client-submitted function output.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -67,10 +67,16 @@ pub(super) enum ToolResultTextBlock {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct Message {
-    pub(super) role: MessageRole,
-    pub(super) content: Content,
+#[serde(untagged)]
+pub(super) enum ToolResultContent {
+    Text(String),
+    Blocks(Vec<ToolResultTextBlock>),
+    Object(JsonObject),
 }
+
+// -----------------------------------------------------------------------------
+// Tool: Defines offered functions and selection policy.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct Tool {
@@ -95,6 +101,11 @@ impl Tool {
 pub(super) struct ToolList(Vec<Tool>);
 
 impl ToolList {
+    /// Lower provider tool declarations into the neutral function contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AnthropicError`] when a tool omits its name or input schema.
     pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, AnthropicError> {
         self.0
             .into_iter()
@@ -116,7 +127,7 @@ impl ToolList {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum AnthropicToolChoice {
+pub(super) enum ToolChoice {
     Auto,
     None,
     Any,
@@ -127,44 +138,54 @@ pub(super) enum AnthropicToolChoice {
     Unsupported,
 }
 
-impl TryFrom<Option<AnthropicToolChoice>> for ToolChoice {
+impl TryFrom<Option<ToolChoice>> for CompatToolChoice {
     type Error = AnthropicError;
 
-    fn try_from(choice: Option<AnthropicToolChoice>) -> Result<Self, Self::Error> {
+    fn try_from(choice: Option<ToolChoice>) -> Result<Self, Self::Error> {
         match choice {
-            None | Some(AnthropicToolChoice::Auto) => Ok(Self::Auto),
-            Some(AnthropicToolChoice::None) => Ok(Self::None),
-            Some(AnthropicToolChoice::Any) => Ok(Self::Required),
-            Some(AnthropicToolChoice::Tool { name }) => name
+            None | Some(ToolChoice::Auto) => Ok(Self::Auto),
+            Some(ToolChoice::None) => Ok(Self::None),
+            Some(ToolChoice::Any) => Ok(Self::Required),
+            Some(ToolChoice::Tool { name }) => name
                 .filter(|name| !name.is_empty())
                 .map(Self::Named)
                 .ok_or(AnthropicError::MissingNamedToolChoice),
-            Some(AnthropicToolChoice::Unsupported) => Err(AnthropicError::UnsupportedToolChoice),
+            Some(ToolChoice::Unsupported) => Err(AnthropicError::UnsupportedToolChoice),
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Messages: Defines unary request and response contracts.
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct MessagesInputMessage {
+    pub(super) role: MessageRole,
+    pub(super) content: MessageContent,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct MessagesRequest {
     pub(super) model: ModelId,
-    pub(super) system: Option<Content>,
-    pub(super) messages: Vec<Message>,
+    pub(super) system: Option<MessageContent>,
+    pub(super) messages: Vec<MessagesInputMessage>,
     #[serde(rename = "stream")]
     pub(super) should_stream: Option<bool>,
     pub(super) tools: Option<ToolList>,
-    pub(super) tool_choice: Option<AnthropicToolChoice>,
+    pub(super) tool_choice: Option<ToolChoice>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum StopReason {
+pub(super) enum MessagesStopReason {
     EndTurn,
     ToolUse,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum OutputBlock {
+pub(super) enum MessagesOutputBlock {
     Text {
         text: String,
     },
@@ -175,7 +196,7 @@ pub(super) enum OutputBlock {
     },
 }
 
-impl OutputBlock {
+impl MessagesOutputBlock {
     pub(super) fn empty_for(output: &CompatOutput) -> Self {
         match output {
             CompatOutput::Text(_) => Self::Text {
@@ -190,7 +211,7 @@ impl OutputBlock {
     }
 }
 
-impl From<&CompatOutput> for OutputBlock {
+impl From<&CompatOutput> for MessagesOutputBlock {
     fn from(output: &CompatOutput) -> Self {
         match output {
             CompatOutput::Text(text) => Self::Text { text: text.clone() },
@@ -204,12 +225,12 @@ impl From<&CompatOutput> for OutputBlock {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
-pub(super) struct Usage {
+pub(super) struct MessagesUsage {
     pub(super) input_tokens: usize,
     pub(super) output_tokens: usize,
 }
 
-impl From<TokenUsage> for Usage {
+impl From<TokenUsage> for MessagesUsage {
     fn from(usage: TokenUsage) -> Self {
         Self {
             input_tokens: usage.prompt,
@@ -225,30 +246,34 @@ pub(super) struct MessagesResponse {
     kind: &'static str,
     role: &'static str,
     model: ModelId,
-    content: Vec<OutputBlock>,
-    stop_reason: StopReason,
+    content: Vec<MessagesOutputBlock>,
+    stop_reason: MessagesStopReason,
     stop_sequence: Option<String>,
-    usage: Usage,
+    usage: MessagesUsage,
 }
 
 impl From<CompatTurnResponse> for MessagesResponse {
     fn from(response: CompatTurnResponse) -> Self {
         let stop_reason = match response.output {
-            CompatOutput::Text(_) => StopReason::EndTurn,
-            CompatOutput::ToolCall(_) => StopReason::ToolUse,
+            CompatOutput::Text(_) => MessagesStopReason::EndTurn,
+            CompatOutput::ToolCall(_) => MessagesStopReason::ToolUse,
         };
         Self {
             id: format!("msg_{}", Uuid::now_v7().simple()),
             kind: "message",
             role: "assistant",
             model: response.model,
-            content: vec![OutputBlock::from(&response.output)],
+            content: vec![MessagesOutputBlock::from(&response.output)],
             stop_reason,
             stop_sequence: None,
             usage: response.usage.into(),
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// Stream: Defines incremental Messages event contracts.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
 pub(super) struct StreamMessage {
@@ -257,10 +282,10 @@ pub(super) struct StreamMessage {
     pub(super) kind: &'static str,
     pub(super) role: &'static str,
     pub(super) model: ModelId,
-    pub(super) content: Vec<OutputBlock>,
-    pub(super) stop_reason: Option<StopReason>,
+    pub(super) content: Vec<MessagesOutputBlock>,
+    pub(super) stop_reason: Option<MessagesStopReason>,
     pub(super) stop_sequence: Option<String>,
-    pub(super) usage: Usage,
+    pub(super) usage: MessagesUsage,
 }
 
 #[derive(Debug, Serialize)]
@@ -271,13 +296,13 @@ pub(super) enum StreamDelta {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct MessageDelta {
-    pub(super) stop_reason: StopReason,
+pub(super) struct StreamMessageDelta {
+    pub(super) stop_reason: MessagesStopReason,
     pub(super) stop_sequence: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct OutputUsage {
+pub(super) struct StreamOutputUsage {
     pub(super) output_tokens: usize,
 }
 
@@ -289,7 +314,7 @@ pub(super) enum StreamEvent {
     },
     ContentBlockStart {
         index: usize,
-        content_block: OutputBlock,
+        content_block: MessagesOutputBlock,
     },
     ContentBlockDelta {
         index: usize,
@@ -299,11 +324,15 @@ pub(super) enum StreamEvent {
         index: usize,
     },
     MessageDelta {
-        delta: MessageDelta,
-        usage: OutputUsage,
+        delta: StreamMessageDelta,
+        usage: StreamOutputUsage,
     },
     MessageStop,
 }
+
+// -----------------------------------------------------------------------------
+// Model: Defines the Anthropic model catalog.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct ModelDescriptor {

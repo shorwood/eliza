@@ -1,11 +1,4 @@
 //! Ollama chat and model catalog adapter.
-#![expect(
-    rlib::missing_section_dividers,
-    rlib::undocumented_early_returns,
-    rlib::undocumented_items,
-    reason = "private adapter stages stay in request flow; validation errors describe each guard"
-)]
-
 use aide::axum::ApiRouter;
 use aide::axum::routing::{get_with, post_with};
 use axum::Json;
@@ -17,28 +10,45 @@ use axum::response::{IntoResponse, Response};
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use super::errors::{OllamaError, OllamaFailureResponse, OllamaRejection};
 use super::types::{
-    ChatRequest, ChatResponse, MessageContent, MessageRole, ModelDescriptor, ModelDetails,
-    OutputMessage, TagsResponse,
+    ChatOutputMessage, ChatRequest, ChatResponse, MessageContent, MessageRole, ModelDescriptor,
+    ModelDetails, ModelListResponse, ToolCall,
 };
 use crate::routes::errors::ExtractionError;
 use crate::types::http::{NdjsonResponse, stream_chunks};
+use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, RequestLimits,
 };
 
+// -----------------------------------------------------------------------------
+// CreatedAt: Defines deterministic model and response timestamps.
+// -----------------------------------------------------------------------------
+
+/// Stable timestamp used by the timeless ELIZA model.
 const CREATED_AT: &str = "1966-01-01T00:00:00Z";
 
-struct OllamaTurn(CompatTurnRequest);
+// -----------------------------------------------------------------------------
+// OllamaTurn: Lowers one chat request into the neutral contract.
+// -----------------------------------------------------------------------------
+
+/// Provider-neutral request lowered from Ollama chat input.
+struct OllamaTurn(
+    /// Validated conversation consumed by the shared executor.
+    CompatTurnRequest,
+);
 
 impl TryFrom<ChatRequest> for OllamaTurn {
     type Error = OllamaError;
 
     fn try_from(payload: ChatRequest) -> Result<Self, Self::Error> {
+        // Reject unsupported structured-output requests.
         if let Some(format) = &payload.format {
             return Err(OllamaError::StructuredOutputUnsupported {
                 kind: format.label(),
             });
         }
+
+        // Reject requests for a hidden reasoning trace.
         if payload.think.is_some() {
             return Err(OllamaError::ReasoningUnsupported);
         }
@@ -51,17 +61,11 @@ impl TryFrom<ChatRequest> for OllamaTurn {
                 MessageRole::System => system.push(content),
                 MessageRole::User => turns.push(CompatTurn::User(content)),
                 MessageRole::Assistant => {
-                    if !content.is_empty() {
-                        turns.push(CompatTurn::Assistant(content));
-                    }
-                    for call in message.tool_calls.unwrap_or_default() {
-                        turns.push(CompatTurn::ToolCall(call.lower("messages.tool_calls")?));
-                    }
+                    assistant_lower(content, message.tool_calls, &mut turns)?;
                 }
                 MessageRole::Tool => turns.push(CompatTurn::ToolResult(content)),
-                MessageRole::Unsupported => {
-                    return Err(OllamaError::UnsupportedRole);
-                }
+                // Unknown provider roles cannot be replayed safely.
+                MessageRole::Unsupported => return Err(OllamaError::UnsupportedRole),
             }
         }
 
@@ -75,50 +79,41 @@ impl TryFrom<ChatRequest> for OllamaTurn {
     }
 }
 
-fn stream_records(response: &CompatTurnResponse) -> Vec<ChatResponse> {
-    let mut records = match &response.output {
-        CompatOutput::Text(text) => text_stream_records(response, text),
-        CompatOutput::ToolCall(_) => vec![ChatResponse {
-            model: response.model.clone(),
-            created_at: CREATED_AT,
-            message: OutputMessage::from(&response.output),
-            is_done: false,
-            done_reason: None,
-            total_duration: None,
-            load_duration: None,
-            prompt_eval_count: None,
-            prompt_eval_duration: None,
-            eval_count: None,
-            eval_duration: None,
-        }],
-    };
-    records.push(ChatResponse {
-        model: response.model.clone(),
-        created_at: CREATED_AT,
-        message: OutputMessage {
-            role: "assistant",
-            content: String::new(),
-            tool_calls: Vec::new(),
-        },
-        is_done: true,
-        done_reason: Some("stop"),
-        total_duration: Some(0),
-        load_duration: Some(0),
-        prompt_eval_count: Some(response.usage.prompt),
-        prompt_eval_duration: Some(0),
-        eval_count: Some(response.usage.completion),
-        eval_duration: Some(0),
-    });
-    records
+// -----------------------------------------------------------------------------
+// AssistantLower: Lowers assistant text and tool calls in source order.
+// -----------------------------------------------------------------------------
+
+/// Lower assistant text and calls while preserving their provider order.
+///
+/// # Errors
+///
+/// Returns [`OllamaError`] when a tool call is unsupported or incomplete.
+fn assistant_lower(
+    content: String,
+    tool_calls: Option<Vec<ToolCall>>,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), OllamaError> {
+    if !content.is_empty() {
+        turns.push(CompatTurn::Assistant(content));
+    }
+    for call in tool_calls.unwrap_or_default() {
+        turns.push(CompatTurn::ToolCall(call.lower("messages.tool_calls")?));
+    }
+    Ok(())
 }
 
-fn text_stream_records(response: &CompatTurnResponse, text: &str) -> Vec<ChatResponse> {
+// -----------------------------------------------------------------------------
+// StreamRecords: Renders Ollama's NDJSON response sequence.
+// -----------------------------------------------------------------------------
+
+/// Render one record for each deterministic text chunk.
+fn stream_records_text(response: &CompatTurnResponse, text: &str) -> Vec<ChatResponse> {
     stream_chunks(text)
         .into_iter()
         .map(|chunk| ChatResponse {
             model: response.model.clone(),
             created_at: CREATED_AT,
-            message: OutputMessage {
+            message: ChatOutputMessage {
                 role: "assistant",
                 content: chunk,
                 tool_calls: Vec::new(),
@@ -135,16 +130,61 @@ fn text_stream_records(response: &CompatTurnResponse, text: &str) -> Vec<ChatRes
         .collect()
 }
 
+/// Render all NDJSON records for one completed neutral response.
+fn stream_records(response: &CompatTurnResponse) -> Vec<ChatResponse> {
+    let mut records = match &response.output {
+        CompatOutput::Text(text) => stream_records_text(response, text),
+        CompatOutput::ToolCall(_) => vec![ChatResponse {
+            model: response.model.clone(),
+            created_at: CREATED_AT,
+            message: ChatOutputMessage::from(&response.output),
+            is_done: false,
+            done_reason: None,
+            total_duration: None,
+            load_duration: None,
+            prompt_eval_count: None,
+            prompt_eval_duration: None,
+            eval_count: None,
+            eval_duration: None,
+        }],
+    };
+    records.push(ChatResponse {
+        model: response.model.clone(),
+        created_at: CREATED_AT,
+        message: ChatOutputMessage {
+            role: "assistant",
+            content: String::new(),
+            tool_calls: Vec::new(),
+        },
+        is_done: true,
+        done_reason: Some("stop"),
+        total_duration: Some(0),
+        load_duration: Some(0),
+        prompt_eval_count: Some(response.usage.prompt),
+        prompt_eval_duration: Some(0),
+        eval_count: Some(response.usage.completion),
+        eval_duration: Some(0),
+    });
+    records
+}
+
+// -----------------------------------------------------------------------------
+// Chat: Authenticates and executes Ollama chat requests.
+// -----------------------------------------------------------------------------
+
+/// Handle one unary or streaming Ollama chat request.
 async fn chat(
     State(state): State<AppState>,
     headers: HeaderMap,
     payload: Result<Json<ChatRequest>, JsonRejection>,
 ) -> Response {
+    // Authentication failures use Ollama's native error envelope.
     if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
         return OllamaRejection::from_error(&error).into_response();
     }
     let Json(payload) = match payload {
         Ok(payload) => payload,
+        // Extraction failures retain their typed diagnostic code.
         Err(error) => {
             return OllamaRejection::from_error(&ExtractionError::from(error)).into_response();
         }
@@ -154,15 +194,25 @@ async fn chat(
     let should_stream = payload.should_stream.unwrap_or(true);
     let request = match OllamaTurn::try_from(payload) {
         Ok(request) => request.0,
-        Err(error) => return OllamaRejection::from_error(&error).into_response(),
+        // Provider validation failures use Ollama's native envelope.
+        Err(error) => {
+            return OllamaRejection::from_error(&error).into_response();
+        }
     };
+
+    // Enforce shared request bounds after provider-specific lowering.
     let limits = RequestLimits::new(
         state.config.max_input_chars,
         state.config.max_history_messages,
     );
+
+    // Complete one neutral turn before rendering Ollama output.
     let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return OllamaRejection::from_error(&error).into_response(),
+        // Shared execution failures still render as Ollama errors.
+        Err(error) => {
+            return OllamaRejection::from_error(&error).into_response();
+        }
     };
 
     if should_stream {
@@ -175,12 +225,13 @@ async fn chat(
     }
 }
 
-async fn tags(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-        return OllamaRejection::from_error(&error).into_response();
-    }
-    let model = state.config.model.clone();
-    Json(TagsResponse {
+// -----------------------------------------------------------------------------
+// Tags: Renders Ollama's configured model catalog.
+// -----------------------------------------------------------------------------
+
+/// Build the model catalog for the configured ELIZA identity.
+fn tags_response_for_eliza(model: ModelId) -> ModelListResponse {
+    ModelListResponse {
         models: vec![ModelDescriptor {
             name: model.clone(),
             model,
@@ -196,9 +247,21 @@ async fn tags(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 quantization_level: "none",
             },
         }],
-    })
-    .into_response()
+    }
 }
+
+/// List the configured model in Ollama's native envelope.
+async fn tags(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // Authentication failures use Ollama's native error envelope.
+    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+        return OllamaRejection::from_error(&error).into_response();
+    }
+    Json(tags_response_for_eliza(state.config.model.clone())).into_response()
+}
+
+// -----------------------------------------------------------------------------
+// Ollama: Mounts native chat and model-list endpoints.
+// -----------------------------------------------------------------------------
 
 /// Ollama chat and model-list endpoints.
 pub(super) struct Ollama;
@@ -212,7 +275,7 @@ impl Ollama {
                 operation
                     .summary("Ollama models")
                     .tag("ollama")
-                    .response::<200, Json<TagsResponse>>()
+                    .response::<200, Json<ModelListResponse>>()
                     .default_response::<Json<OllamaFailureResponse>>()
             }),
         );

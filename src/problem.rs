@@ -4,7 +4,7 @@ use aide::OperationOutput;
 use aide::generate::GenContext;
 use aide::openapi::{MediaType, Operation, Response as ApiResponse, SchemaObject};
 use axum::Json;
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use miette::Diagnostic;
 use schemars::JsonSchema;
@@ -109,9 +109,12 @@ pub(crate) struct Problem {
 impl Problem {
     /// Capture public problem facts from a typed diagnostic.
     pub(crate) fn from_error(error: &impl ProblemDetails) -> Self {
+        // Classify public transport facts before rendering provider shapes.
         let class = error.class();
         let status = error.status();
         let param = error.param();
+
+        // Keep the exact diagnostic identity while hiding internal details.
         let code = error.code().map_or_else(
             || "eliza::internal::missing_diagnostic_code".to_owned(),
             |code| code.to_string(),
@@ -122,6 +125,8 @@ impl Problem {
         } else {
             Some(error.to_string())
         };
+
+        // Expose a stable problem type derived from the diagnostic namespace.
         let kind = format!(
             "urn:eliza:problem:{}",
             code.strip_prefix("eliza::")
@@ -166,12 +171,13 @@ impl Problem {
         self.param
     }
 
-    /// Attach the diagnostic header to a provider-rendered response.
-    pub(crate) fn finish_response(&self, mut response: Response) -> Response {
-        if let Ok(value) = HeaderValue::from_str(self.code()) {
-            response.headers_mut().insert(ERROR_CODE_HEADER, value);
-        }
-        response
+    /// Attach the diagnostic identifier to response headers.
+    pub(crate) fn write_error_code(&self, headers: &mut HeaderMap) {
+        // An invalid diagnostic code cannot safely become an HTTP header.
+        let Ok(value) = HeaderValue::from_str(self.code()) else {
+            return;
+        };
+        headers.insert(ERROR_CODE_HEADER, value);
     }
 }
 

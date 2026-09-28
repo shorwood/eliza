@@ -18,16 +18,20 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return OpenAiRejection::from_error(&error).into_response();
     }
 
-    Json(ModelListResponse {
+    // Render the configured model with OpenAI's fixed catalog metadata.
+    let descriptor = ModelDescriptor {
+        id: state.config.model.clone(),
+        object: "model",
+        created: 0,
+        owned_by: "eliza",
+    };
+
+    // Wrap the descriptor with OpenAI's list contract.
+    let response = ModelListResponse {
         object: "list",
-        data: vec![ModelDescriptor {
-            id: state.config.model.clone(),
-            object: "model",
-            created: 0,
-            owned_by: "eliza",
-        }],
-    })
-    .into_response()
+        data: vec![descriptor],
+    };
+    Json(response).into_response()
 }
 
 /// `OpenAI` model catalog endpoint.

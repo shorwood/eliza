@@ -20,10 +20,24 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{AuthMode, BearerToken, CorsMode, LogFormat, ServeArgs};
+use crate::cli::{AuthMode, CorsMode, LogFormat, ServeArgs};
 use crate::errors::AppError;
 use crate::routes;
 use crate::types::model::ModelId;
+use crate::types::turn::RequestLimits;
+
+// -----------------------------------------------------------------------------
+// PositiveLimit: Converts raw CLI counts into runtime invariants.
+// -----------------------------------------------------------------------------
+
+/// Convert one CLI request bound into its positive runtime representation.
+///
+/// # Errors
+///
+/// Returns [`AppError`] when `value` is zero.
+fn positive_limit(value: usize, flag: &'static str) -> Result<NonZeroUsize, AppError> {
+    NonZeroUsize::new(value).ok_or(AppError::ZeroLimit { flag })
+}
 
 // -----------------------------------------------------------------------------
 // ServerConfig: CLI-visible options converted into typed runtime facts.
@@ -34,48 +48,32 @@ use crate::types::model::ModelId;
 /// ```
 /// use eliza::serve::ServerConfig;
 ///
-/// let config = ServerConfig::default();
-/// assert_eq!(config.port, 8787);
-/// assert_eq!(config.model.as_str(), "eliza-doctor");
+/// let _config = ServerConfig::default();
 /// ```
 #[derive(Debug, Clone)]
 pub(super) struct ServerConfig {
-    /// Bind address.
-    host: IpAddr,
-    /// Bind port.
-    port: u16,
-    /// Provider-visible model id returned by model-list endpoints.
-    model: ModelId,
-    /// Provider endpoint authentication mode.
-    auth: AuthMode,
-    /// Shared bearer/API-key token when bearer auth is enabled.
-    bearer_token: Option<BearerToken>,
+    /// Validated listener address.
+    address: SocketAddr,
+    /// Behavior shared by all provider routes.
+    routes: routes::context::RouteConfig,
     /// CORS policy for browser clients.
     cors: CorsMode,
-    /// Optional delay between SSE chunks for local demos.
-    stream_delay_ms: u64,
-    /// Maximum accepted text character count across one provider request.
-    max_input_chars: NonZeroUsize,
-    /// Maximum accepted user-turn count replayed from one provider request.
-    max_history_messages: NonZeroUsize,
     /// Log rendering mode.
     log: LogFormat,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
+        let limits = RequestLimits::new(
+            NonZeroUsize::new(8000).expect("default max input chars should be nonzero"),
+            NonZeroUsize::new(200).expect("default max history messages should be nonzero"),
+        );
+        let routes =
+            routes::context::RouteConfig::new(ModelId::default(), AuthMode::None, None, 0, limits);
         Self {
-            host: IpAddr::from([127, 0, 0, 1]),
-            port: 8787,
-            model: ModelId::default(),
-            auth: AuthMode::None,
-            bearer_token: None,
+            address: SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 8787),
+            routes,
             cors: CorsMode::None,
-            stream_delay_ms: 0,
-            max_input_chars: NonZeroUsize::new(8000)
-                .expect("default max input chars should be nonzero"),
-            max_history_messages: NonZeroUsize::new(200)
-                .expect("default max history messages should be nonzero"),
             log: LogFormat::Text,
         }
     }
@@ -91,26 +89,25 @@ impl TryFrom<ServeArgs> for ServerConfig {
         }
 
         // Convert raw CLI counts into positive request-bound invariants.
-        let max_input_chars =
-            NonZeroUsize::new(args.max_input_chars).ok_or(AppError::ZeroLimit {
-                flag: "max-input-chars",
-            })?;
-        let max_history_messages =
-            NonZeroUsize::new(args.max_history_messages).ok_or(AppError::ZeroLimit {
-                flag: "max-history-messages",
-            })?;
+        let limits = RequestLimits::new(
+            positive_limit(args.max_input_chars, "max-input-chars")?,
+            positive_limit(args.max_history_messages, "max-history-messages")?,
+        );
 
-        // Preserve the validated CLI values as the complete runtime contract.
+        // Move provider behavior into the configuration shared by route state.
+        let routes = routes::context::RouteConfig::new(
+            args.model,
+            args.auth,
+            args.bearer_token,
+            args.stream_delay_ms,
+            limits,
+        );
+
+        // Retain only process-level behavior at the serving boundary.
         Ok(Self {
-            host: args.host,
-            port: args.port,
-            model: args.model,
-            auth: args.auth,
-            bearer_token: args.bearer_token,
+            address: SocketAddr::new(args.host, args.port),
+            routes,
             cors: args.cors,
-            stream_delay_ms: args.stream_delay_ms,
-            max_input_chars,
-            max_history_messages,
             log: args.log,
         })
     }
@@ -119,15 +116,7 @@ impl TryFrom<ServeArgs> for ServerConfig {
 impl ServerConfig {
     /// Build the complete provider-compatible router.
     fn into_router(self) -> Router {
-        let route_config = routes::context::RouteConfig::new(
-            self.model,
-            self.auth,
-            self.bearer_token,
-            self.stream_delay_ms,
-            self.max_input_chars,
-            self.max_history_messages,
-        );
-        build_server_router(self.cors, route_config)
+        build_server_router(self.cors, self.routes)
     }
 
     /// Run the HTTP server until its listener fails.
@@ -138,11 +127,13 @@ impl ServerConfig {
     /// Returns [`AppError`] when binding or serving fails.
     pub(super) async fn run(self) -> Result<(), AppError> {
         init_tracing(self.log);
-        let addr = SocketAddr::new(self.host, self.port);
-        let listener = TcpListener::bind(addr)
+        let listener = TcpListener::bind(self.address)
             .await
-            .map_err(|source| AppError::Bind { addr, source })?;
-        tracing::info!(%addr, "serving ELIZA compatibility server");
+            .map_err(|source| AppError::Bind {
+                addr: self.address,
+                source,
+            })?;
+        tracing::info!(address = %self.address, "serving ELIZA compatibility server");
         axum::serve(listener, self.into_router())
             .await
             .map_err(AppError::Serve)

@@ -1,9 +1,4 @@
 //! Typed `OpenAI` adapter failures and wire rendering.
-#![expect(
-    rlib::undocumented_items,
-    reason = "private variants and wire fields repeat their diagnostic and Serde contracts"
-)]
-
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use miette::Diagnostic;
@@ -18,6 +13,10 @@ use crate::problem::{Problem, ProblemClass, ProblemDetails};
 // -----------------------------------------------------------------------------
 
 /// Failure detected while lowering an `OpenAI` request.
+#[expect(
+    rlib::undocumented_items,
+    reason = "thiserror messages and Miette codes are the canonical contracts for private adapter failures"
+)]
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OpenAiError {
     #[error("invalid function arguments: {source}")]
@@ -128,13 +127,17 @@ impl ProblemDetails for OpenAiError {
 // OpenAiErrorKind: Maps neutral failure classes to wire kinds.
 // -----------------------------------------------------------------------------
 
+/// `OpenAI`'s serialized error classification.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum OpenAiErrorKind {
+    /// Invalid, unsupported, or oversized request input.
     #[serde(rename = "invalid_request_error")]
     InvalidRequest,
+    /// Missing or invalid authentication.
     #[serde(rename = "authentication_error")]
     Authentication,
+    /// Internal server failure.
     #[serde(rename = "server_error")]
     Server,
 }
@@ -158,10 +161,14 @@ impl From<ProblemClass> for OpenAiErrorKind {
 /// `OpenAI` error object, also referenced by Responses API progress envelopes.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub(super) struct OpenAiFailureBody {
+    /// Human-readable failure detail.
     message: String,
+    /// Provider error classification.
     #[serde(rename = "type")]
     kind: OpenAiErrorKind,
+    /// Request field associated with the failure, when known.
     param: Option<&'static str>,
+    /// Stable diagnostic code.
     code: Option<Box<str>>,
 }
 
@@ -172,6 +179,7 @@ pub(super) struct OpenAiFailureBody {
 /// `OpenAI` top-level failure envelope.
 #[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct OpenAiFailureResponse {
+    /// Provider-native error payload.
     error: OpenAiFailureBody,
 }
 
@@ -180,7 +188,10 @@ pub(crate) struct OpenAiFailureResponse {
 // -----------------------------------------------------------------------------
 
 /// Provider-native renderer for one typed problem.
-pub(super) struct OpenAiRejection(Problem);
+pub(super) struct OpenAiRejection(
+    /// Neutral problem awaiting `OpenAI` wire rendering.
+    Problem,
+);
 
 impl OpenAiRejection {
     /// Capture a typed diagnostic for `OpenAI` rendering.
@@ -192,7 +203,7 @@ impl OpenAiRejection {
 impl IntoResponse for OpenAiRejection {
     fn into_response(self) -> Response {
         let problem = self.0;
-        let response = (
+        let mut response = (
             problem.status(),
             Json(OpenAiFailureResponse {
                 error: OpenAiFailureBody {
@@ -204,7 +215,8 @@ impl IntoResponse for OpenAiRejection {
             }),
         )
             .into_response();
-        problem.finish_response(response)
+        problem.write_error_code(response.headers_mut());
+        response
     }
 }
 
