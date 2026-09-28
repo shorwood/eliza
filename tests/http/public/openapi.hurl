@@ -21,10 +21,10 @@ jsonpath "$.paths['/openai/v1/chat/completions'].post.requestBody" isObject
 jsonpath "$.paths['/anthropic/v1/messages'].post.requestBody" isObject
 jsonpath "$.paths['/gemini/v1beta/models/{model_action}'].post.requestBody" isObject
 jsonpath "$.paths['/ollama/api/chat'].post.requestBody" isObject
-jsonpath "$.components.schemas.ChatCompletionRequest" isObject
+jsonpath "$.components.schemas.ChatRequest" isObject
 jsonpath "$.components.schemas.MessagesRequest" isObject
 jsonpath "$.components.schemas.GenerateContentRequest" isObject
-jsonpath "$.components.schemas.ChatRequest" isObject
+jsonpath "$.components.schemas.ChatRequest2" isObject
 jsonpath "$.components.schemas.OpenAiFailureResponse" isObject
 jsonpath "$.components.schemas.AnthropicFailureResponse" isObject
 jsonpath "$.components.schemas.GeminiFailureResponse" isObject
