@@ -1,7 +1,7 @@
 // nix develop path:. -c cargo test --test cli --locked
 //! End-to-end UI contracts for the compiled CLI.
 
-#![allow(
+#![expect(
     clippy::expect_used,
     clippy::missing_panics_doc,
     reason = "UI test failures must identify broken process and fixture contracts"
