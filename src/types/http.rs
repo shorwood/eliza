@@ -2,14 +2,12 @@
 
 use std::time::Duration;
 
-use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::{StreamExt, stream};
 use serde::Serialize;
-use serde_json::{Value, json};
 
 // -----------------------------------------------------------------------------
 // ProviderRejection: Stores failures rendered by provider adapters.
@@ -92,11 +90,6 @@ impl ProviderRejection {
             message: message.into(),
             param: None,
         }
-    }
-
-    /// Render this rejection using the Ollama error envelope.
-    pub(crate) fn ollama_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
     }
 }
 
@@ -196,27 +189,39 @@ impl SseEvents {
 /// Newline-delimited JSON records with optional delivery pacing.
 pub(crate) struct NdjsonResponse {
     /// Records delivered in insertion order.
-    records: Vec<Value>,
+    records: Vec<Bytes>,
     /// Delay inserted before each record.
     delay_ms: u64,
 }
 
 impl NdjsonResponse {
     /// Build a paced NDJSON response from ordered JSON records.
-    pub(crate) fn new(records: Vec<Value>, delay_ms: u64) -> Self {
-        Self { records, delay_ms }
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal rejection when a typed record cannot be serialized.
+    pub(crate) fn new(
+        records: Vec<impl Serialize>,
+        delay_ms: u64,
+    ) -> Result<Self, ProviderRejection> {
+        let records = records
+            .into_iter()
+            .map(|record| {
+                let mut line = serde_json::to_vec(&record).map_err(|error| {
+                    ProviderRejection::internal(format!("failed to encode record: {error}"))
+                })?;
+                line.push(b'\n');
+                Ok(Bytes::from(line))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { records, delay_ms })
     }
 }
 
 impl IntoResponse for NdjsonResponse {
     fn into_response(self) -> Response {
         let delay_ms = self.delay_ms;
-        let chunks = self.records.into_iter().map(|record| {
-            let mut line = record.to_string();
-            line.push('\n');
-            Bytes::from(line)
-        });
-        let body = Body::from_stream(stream::iter(chunks).then(move |chunk| async move {
+        let body = Body::from_stream(stream::iter(self.records).then(move |chunk| async move {
             if delay_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
