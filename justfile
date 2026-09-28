@@ -26,13 +26,16 @@ lint: rlib-library
     cargo-clippy clippy --workspace --all-targets --locked -- -D warnings
     host=$(rustc --version --verbose | sed -n 's/^host: //p'); case "$host" in *darwin*) extension=dylib ;; *) extension=so ;; esac; plugin="$PWD/../rlib/target/debug/librlib_lint@nightly-$host.$extension"; plugin_hash=$(cksum "$plugin" | awk '{print $1}'); CARGO_TARGET_DIR="$PWD/target/dylint/$plugin_hash" CARGO_BUILD_JOBS=1 DYLINT_LIBRARY_PATH="$PWD/../rlib/target/debug" DYLINT_RUSTFLAGS="-Dwarnings" cargo dylint --no-deps --lib rlib_lint --workspace -- --all-targets --locked
 
+check-hurl-layout:
+    @for file in tests/http/public/*.hurl tests/http/auth/*.hurl; do request_count=$(rg -c '^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ' "$file"); test "$request_count" -eq 1 || { echo "$file: expected one HTTP request, found $request_count" >&2; exit 1; }; done
+
 test:
     cargo test --workspace --all-targets --locked
 
-test-http:
+test-http: check-hurl-layout
     cargo test --test http --locked
 
-ok: rlib-library
+ok: rlib-library check-hurl-layout
     cargo fmt --all --check
     hurlfmt --check tests/http/public/*.hurl tests/http/auth/*.hurl
     cargo check --workspace --all-targets --locked
