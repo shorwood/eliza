@@ -97,7 +97,10 @@ impl TryFrom<OllamaChatRequest> for OllamaTurn {
                         turns.push(CompatTurn::Assistant(content));
                     }
                     for call in message.tool_calls {
-                        turns.push(CompatTurn::ToolCall(lower_call(&call)?));
+                        turns.push(CompatTurn::ToolCall(lower_ollama_call(
+                            &call,
+                            "messages.tool_calls",
+                        )?));
                     }
                 }
                 "tool" => turns.push(CompatTurn::ToolResult(content)),
@@ -133,26 +136,24 @@ fn value_text(value: &Value) -> String {
 /// # Errors
 ///
 /// Returns a rejection for missing fields or non-object arguments.
-fn lower_call(value: &Value) -> Result<FunctionCall, ProviderRejection> {
-    let function = value.get("function").ok_or_else(|| {
-        ProviderRejection::invalid("messages.tool_calls", "tool call is missing function")
-    })?;
+fn lower_ollama_call(
+    value: &Value,
+    param: &'static str,
+) -> Result<FunctionCall, ProviderRejection> {
+    let function = value
+        .get("function")
+        .ok_or_else(|| ProviderRejection::invalid(param, "tool call is missing function"))?;
     let name = function
         .get("name")
         .and_then(Value::as_str)
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| {
-            ProviderRejection::invalid("messages.tool_calls", "tool call is missing name")
-        })?;
+        .ok_or_else(|| ProviderRejection::invalid(param, "tool call is missing name"))?;
     let arguments = function
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
     let arguments = JsonObject::from_value(arguments).ok_or_else(|| {
-        ProviderRejection::invalid(
-            "messages.tool_calls",
-            "tool call arguments must be a JSON object",
-        )
+        ProviderRejection::invalid(param, "tool call arguments must be a JSON object")
     })?;
     Ok(FunctionCall {
         name: name.to_owned(),
