@@ -12,6 +12,12 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-body contains "tool_calls"
-body contains "prompt_tokens"
+header "Content-Type" startsWith "text/event-stream"
+body contains "\"object\":\"chat.completion.chunk\""
+body contains "\"model\":\"eliza-doctor\""
+body contains "\"tool_calls\""
+body contains "\"name\":\"echo\""
+body contains "\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\""
+body contains "\"finish_reason\":\"tool_calls\""
+body contains "\"prompt_tokens\""
 body contains "data: [DONE]"

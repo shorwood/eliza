@@ -11,5 +11,21 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
+header "Content-Type" startsWith "application/json"
+jsonpath "$.*" count == 11
+jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.created_at" == "1966-01-01T00:00:00Z"
+jsonpath "$.message.role" == "assistant"
+jsonpath "$.message.content" == ""
+jsonpath "$.message.tool_calls" count == 1
+jsonpath "$.message.tool_calls[0].type" == "function"
 jsonpath "$.message.tool_calls[0].function.name" == "echo"
 jsonpath "$.message.tool_calls[0].function.arguments.value" == "hello"
+jsonpath "$.done" == true
+jsonpath "$.done_reason" == "stop"
+jsonpath "$.total_duration" == 0
+jsonpath "$.load_duration" == 0
+jsonpath "$.prompt_eval_count" isInteger
+jsonpath "$.prompt_eval_duration" == 0
+jsonpath "$.eval_count" isInteger
+jsonpath "$.eval_duration" == 0
