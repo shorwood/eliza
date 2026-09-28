@@ -284,13 +284,10 @@ fn render_reassembly_words(items: &[ReassemblyItem], captures: &[Vec<String>]) -
     for item in items {
         match item {
             ReassemblyItem::Word(word) => words.push(word.clone()),
-            ReassemblyItem::Capture(capture) => words.extend(
-                captures
-                    .get(capture.0.get() - 1)
-                    .into_iter()
-                    .flatten()
-                    .cloned(),
-            ),
+            ReassemblyItem::Capture(capture) => {
+                let values = captures.get(capture.0.get() - 1).into_iter().flatten();
+                words.extend(values.cloned());
+            }
         }
     }
 
@@ -378,7 +375,7 @@ impl TryFrom<&Sexp> for DecompositionRule {
     type Error = AppError;
 
     fn try_from(sexp: &Sexp) -> Result<Self, Self::Error> {
-        // Lower the pattern and ordered response alternatives independently.
+        // Lower the decomposition pattern from its leading list.
         let items = SexpList::from_sexp(sexp, "decomposition rule")?;
         let pattern_sexp = items.expect(0, "decomposition pattern")?;
         let pattern_items = SexpList::from_sexp(pattern_sexp, "decomposition pattern list")?;
@@ -386,6 +383,8 @@ impl TryFrom<&Sexp> for DecompositionRule {
             .iter()
             .map(PatternItem::try_from)
             .collect::<Result<Vec<_>, _>>()?;
+
+        // Preserve the remaining response alternatives in source order.
         let reassembly_items = items.tail(1);
         let reassemblies = reassembly_items
             .iter()
@@ -500,12 +499,8 @@ struct KeywordRule {
     substitution: Option<Keyword>,
     /// Stores the tags value owned by this contract.
     tags: Vec<TagName>,
-    /// Stores the precedence value owned by this contract.
-    precedence: Precedence,
-    /// Stores the link value owned by this contract.
-    link: Option<LinkTarget>,
-    /// Stores the decompositions value owned by this contract.
-    decompositions: Vec<DecompositionRule>,
+    /// Executable behavior, absent only for metadata declarations.
+    transform: TransformRule,
 }
 
 impl TryFrom<SexpList<'_>> for KeywordRule {
@@ -561,13 +556,18 @@ impl TryFrom<SexpList<'_>> for KeywordRule {
             .map(DecompositionRule::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
+        let transform = TransformRule {
+            precedence,
+            link,
+            decompositions,
+        };
+
+        // Return metadata and executable behavior as one keyword declaration.
         Ok(Self {
             keyword,
             substitution,
             tags,
-            precedence,
-            link,
-            decompositions,
+            transform,
         })
     }
 }
@@ -721,7 +721,7 @@ impl ReassemblyItem {
 // Script: Owns the lowered ELIZA program.
 // -----------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Script {
     /// Stores the substitutions value owned by this contract.
     substitutions: HashMap<Keyword, Keyword>,
@@ -799,19 +799,12 @@ impl Script {
 
         // A keyword without link or decompositions is only a substitution or
         // tag declaration, not a transform candidate.
-        if rule.link.is_none() && rule.decompositions.is_empty() {
+        if rule.transform.link.is_none() && rule.transform.decompositions.is_empty() {
             return;
         }
 
         // Register the executable transform after metadata-only rules return.
-        self.transforms.insert(
-            rule.keyword.clone(),
-            TransformRule {
-                precedence: rule.precedence,
-                link: rule.link,
-                decompositions: rule.decompositions,
-            },
-        );
+        self.transforms.insert(rule.keyword.clone(), rule.transform);
     }
 
     /// Apply one lowered source declaration to the script.
@@ -829,12 +822,7 @@ impl FromStr for Script {
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         // Initialize an empty lowered script before visiting source forms.
         let sexps = Parser::parse(input)?;
-        let mut script = Script {
-            substitutions: HashMap::new(),
-            tags: HashMap::new(),
-            transforms: HashMap::new(),
-            memory: None,
-        };
+        let mut script = Script::default();
         let mut saw_greeting = false;
         let mut started = false;
 
@@ -1094,6 +1082,8 @@ impl ElizaSession<'_> {
         {
             return;
         }
+
+        // Record the first occurrence with its source position and precedence.
         candidates.push(RankedKeyword {
             precedence: rule.precedence,
             position,
@@ -1316,13 +1306,8 @@ impl<'script> From<&'script Script> for ElizaSession<'script> {
     reason = "test rationales replace public panic contracts"
 )]
 mod tests {
-    // -------------------------------------------------------------------------
-    // ItShould: Verifies parsing and conversation behavior.
-    // -------------------------------------------------------------------------
-
-    /// Checks the script contract.
-    mod script {
-        use super::super::{ElizaSession, Script, doctor_script};
+    mod it_should_converse {
+        use super::*;
 
         /// A change here must not alter the accepted DOCTOR script behavior.
         #[test]
@@ -1381,6 +1366,10 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(first_outputs, second_outputs);
         }
+    }
+
+    mod it_should_parse_source {
+        use super::*;
 
         /// A change here must not alter the accepted DOCTOR script behavior.
         #[test]
@@ -1409,6 +1398,10 @@ mod tests {
                 .expect_err("script should fail");
             assert_eq!(error.to_string(), "unexpected closing parenthesis at 2:1");
         }
+    }
+
+    mod it_should_reject_invalid_source {
+        use super::*;
 
         /// A change here must not alter the accepted DOCTOR script behavior.
         #[test]
@@ -1438,6 +1431,8 @@ mod tests {
             assert_eq!(error.to_string(), "expected non-zero capture index at 5:6");
         }
     }
+
+    use super::{ElizaSession, Script, doctor_script};
 }
 
 // -----------------------------------------------------------------------------

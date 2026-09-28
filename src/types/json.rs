@@ -23,20 +23,19 @@ impl JsonObject {
 #[cfg(test)]
 #[expect(
     clippy::missing_panics_doc,
-    rlib::missing_section_dividers,
-    reason = "two compact contract tests need no navigation ceremony"
+    reason = "test assertions are the intended panic contract"
 )]
 mod tests {
     use super::*;
 
     #[test]
-    fn object_round_trips() {
+    fn it_should_round_trip_an_object() {
         let object = serde_json::from_str::<JsonObject>(r#"{"value":"hello"}"#).unwrap();
         assert_eq!(object.serialized(), r#"{"value":"hello"}"#);
     }
 
     #[test]
-    fn scalar_is_rejected() {
+    fn it_should_reject_a_scalar() {
         assert!(serde_json::from_str::<JsonObject>("42").is_err());
     }
 }

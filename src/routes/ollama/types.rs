@@ -1,9 +1,7 @@
 //! Ollama wire contracts shared by its route adapters.
 #![expect(
-    clippy::missing_errors_doc,
-    rlib::missing_section_dividers,
     rlib::undocumented_items,
-    reason = "private Serde fields mirror Ollama's published wire names"
+    reason = "this module contains only private Serde wire declarations whose field names are the provider contract"
 )]
 
 use schemars::JsonSchema;
@@ -12,7 +10,13 @@ use serde::{Deserialize, Serialize};
 use super::errors::OllamaError;
 use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
-use crate::types::turn::{CompatOutput, CompatTurnResponse, FunctionTool, ToolChoice};
+use crate::types::turn::{
+    CompatOutput, CompatTurnResponse, FunctionTool, ToolChoice as CompatToolChoice,
+};
+
+// -----------------------------------------------------------------------------
+// Message: Defines inbound message roles and content.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -42,72 +46,80 @@ impl MessageContent {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Tool: Defines function calls, declarations, and selection policy.
+// -----------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum FunctionKind {
+pub(super) enum ToolFunctionKind {
     Function,
     #[serde(other)]
     Unsupported,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct CalledFunction {
+pub(super) struct ToolCalledFunction {
     name: Option<String>,
     arguments: Option<JsonObject>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct ToolCall {
-    #[serde(rename = "type")]
-    kind: FunctionKind,
-    function: Option<CalledFunction>,
-}
-
-impl ToolCall {
-    pub(super) fn lower(
-        self,
-        param: &'static str,
-    ) -> Result<crate::types::turn::FunctionCall, OllamaError> {
-        // Reject extension calls before reading function-only fields.
-        if matches!(self.kind, FunctionKind::Unsupported) {
-            return Err(OllamaError::UnsupportedToolCallKind { param });
-        }
-        let function = self
-            .function
-            .ok_or(OllamaError::MissingToolCallFunction { param })?;
-        let name = function
+impl ToolCalledFunction {
+    /// Lower required call fields into the neutral function contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OllamaError`] when the function name is absent or empty.
+    fn lower(self, param: &'static str) -> Result<crate::types::turn::FunctionCall, OllamaError> {
+        let name = self
             .name
             .filter(|name| !name.is_empty())
             .ok_or(OllamaError::MissingToolCallName { param })?;
+
+        // Missing arguments mean an empty object in Ollama's request shape.
         Ok(crate::types::turn::FunctionCall {
             name,
-            arguments: function.arguments.unwrap_or_default(),
+            arguments: self.arguments.unwrap_or_default(),
         })
     }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct Message {
-    pub(super) role: MessageRole,
-    pub(super) content: Option<MessageContent>,
-    pub(super) tool_calls: Option<Vec<ToolCall>>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct Tool {
+pub(super) struct ToolCall {
     #[serde(rename = "type")]
-    kind: FunctionKind,
-    function: Option<FunctionDefinition>,
+    kind: ToolFunctionKind,
+    function: Option<ToolCalledFunction>,
+}
+
+impl ToolCall {
+    /// Lower one Ollama tool call into the neutral function contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OllamaError`] for a non-function call or a missing function.
+    pub(super) fn lower(
+        self,
+        param: &'static str,
+    ) -> Result<crate::types::turn::FunctionCall, OllamaError> {
+        // Reject extension calls before reading function-only fields.
+        if matches!(self.kind, ToolFunctionKind::Unsupported) {
+            return Err(OllamaError::UnsupportedToolCallKind { param });
+        }
+        let function = self
+            .function
+            .ok_or(OllamaError::MissingToolCallFunction { param })?;
+        function.lower(param)
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct FunctionDefinition {
+pub(super) struct ToolFunctionDefinition {
     name: Option<String>,
     description: Option<String>,
     parameters: Option<JsonObject>,
 }
 
-impl FunctionDefinition {
+impl ToolFunctionDefinition {
     fn char_count(&self) -> usize {
         self.name.as_ref().map_or(0, String::len)
             + self.description.as_ref().map_or(0, String::len)
@@ -118,17 +130,30 @@ impl FunctionDefinition {
     }
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct Tool {
+    #[serde(rename = "type")]
+    kind: ToolFunctionKind,
+    function: Option<ToolFunctionDefinition>,
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub(super) struct ToolList(Vec<Tool>);
 
 impl ToolList {
+    /// Lower provider tool declarations into the neutral function contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OllamaError`] when a tool is not a function or omits its
+    /// function definition or name.
     pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, OllamaError> {
         self.0
             .into_iter()
             .map(|tool| {
                 // A function list cannot normalize provider extension tools.
-                if matches!(tool.kind, FunctionKind::Unsupported) {
+                if matches!(tool.kind, ToolFunctionKind::Unsupported) {
                     return Err(OllamaError::UnsupportedToolDefinition);
                 }
                 let function = tool.function.ok_or(OllamaError::MissingToolDefinition)?;
@@ -154,34 +179,34 @@ pub(super) enum ToolChoiceMode {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct NamedToolChoice {
-    function: NamedFunction,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct NamedFunction {
+pub(super) struct ToolNamedFunction {
     name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub(super) enum OllamaToolChoice {
-    Mode(ToolChoiceMode),
-    Named(NamedToolChoice),
+pub(super) struct ToolNamedChoice {
+    function: ToolNamedFunction,
 }
 
-impl TryFrom<Option<OllamaToolChoice>> for ToolChoice {
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub(super) enum ToolChoice {
+    Mode(ToolChoiceMode),
+    Named(ToolNamedChoice),
+}
+
+impl TryFrom<Option<ToolChoice>> for CompatToolChoice {
     type Error = OllamaError;
 
-    fn try_from(choice: Option<OllamaToolChoice>) -> Result<Self, Self::Error> {
+    fn try_from(choice: Option<ToolChoice>) -> Result<Self, Self::Error> {
         match choice {
-            None | Some(OllamaToolChoice::Mode(ToolChoiceMode::Auto)) => Ok(Self::Auto),
-            Some(OllamaToolChoice::Mode(ToolChoiceMode::None)) => Ok(Self::None),
-            Some(OllamaToolChoice::Mode(ToolChoiceMode::Required)) => Ok(Self::Required),
-            Some(OllamaToolChoice::Mode(ToolChoiceMode::Unsupported)) => {
+            None | Some(ToolChoice::Mode(ToolChoiceMode::Auto)) => Ok(Self::Auto),
+            Some(ToolChoice::Mode(ToolChoiceMode::None)) => Ok(Self::None),
+            Some(ToolChoice::Mode(ToolChoiceMode::Required)) => Ok(Self::Required),
+            Some(ToolChoice::Mode(ToolChoiceMode::Unsupported)) => {
                 Err(OllamaError::UnsupportedToolChoiceMode)
             }
-            Some(OllamaToolChoice::Named(choice)) => choice
+            Some(ToolChoice::Named(choice)) => choice
                 .function
                 .name
                 .filter(|name| !name.is_empty())
@@ -189,6 +214,18 @@ impl TryFrom<Option<OllamaToolChoice>> for ToolChoice {
                 .ok_or(OllamaError::MissingNamedToolChoice),
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// OutputFormat: Defines structured-output request options.
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum OutputFormatName {
+    Json,
+    #[serde(other)]
+    Unsupported,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -208,48 +245,51 @@ impl OutputFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum OutputFormatName {
-    Json,
-    #[serde(other)]
-    Unsupported,
+// -----------------------------------------------------------------------------
+// Chat: Defines unary and streaming chat contracts.
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct ChatMessage {
+    pub(super) role: MessageRole,
+    pub(super) content: Option<MessageContent>,
+    pub(super) tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct ChatRequest {
     pub(super) model: ModelId,
-    pub(super) messages: Vec<Message>,
+    pub(super) messages: Vec<ChatMessage>,
     #[serde(rename = "stream")]
     pub(super) should_stream: Option<bool>,
     pub(super) tools: Option<ToolList>,
-    pub(super) tool_choice: Option<OllamaToolChoice>,
+    pub(super) tool_choice: Option<ToolChoice>,
     pub(super) format: Option<OutputFormat>,
     pub(super) think: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct OutputFunction {
+pub(super) struct ChatOutputFunction {
     name: String,
     arguments: JsonObject,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct OutputToolCall {
+pub(super) struct ChatOutputToolCall {
     #[serde(rename = "type")]
-    kind: FunctionKind,
-    function: OutputFunction,
+    kind: ToolFunctionKind,
+    function: ChatOutputFunction,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct OutputMessage {
+pub(super) struct ChatOutputMessage {
     pub(super) role: &'static str,
     pub(super) content: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(super) tool_calls: Vec<OutputToolCall>,
+    pub(super) tool_calls: Vec<ChatOutputToolCall>,
 }
 
-impl From<&CompatOutput> for OutputMessage {
+impl From<&CompatOutput> for ChatOutputMessage {
     fn from(output: &CompatOutput) -> Self {
         match output {
             CompatOutput::Text(text) => Self {
@@ -257,17 +297,25 @@ impl From<&CompatOutput> for OutputMessage {
                 content: text.clone(),
                 tool_calls: Vec::new(),
             },
-            CompatOutput::ToolCall(call) => Self {
-                role: "assistant",
-                content: String::new(),
-                tool_calls: vec![OutputToolCall {
-                    kind: FunctionKind::Function,
-                    function: OutputFunction {
-                        name: call.name.clone(),
-                        arguments: call.arguments.clone(),
-                    },
-                }],
-            },
+            CompatOutput::ToolCall(call) => call.into(),
+        }
+    }
+}
+
+impl From<&crate::types::turn::FunctionCall> for ChatOutputMessage {
+    fn from(call: &crate::types::turn::FunctionCall) -> Self {
+        let function = ChatOutputFunction {
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+        };
+        let tool_call = ChatOutputToolCall {
+            kind: ToolFunctionKind::Function,
+            function,
+        };
+        Self {
+            role: "assistant",
+            content: String::new(),
+            tool_calls: vec![tool_call],
         }
     }
 }
@@ -276,7 +324,7 @@ impl From<&CompatOutput> for OutputMessage {
 pub(super) struct ChatResponse {
     pub(super) model: ModelId,
     pub(super) created_at: &'static str,
-    pub(super) message: OutputMessage,
+    pub(super) message: ChatOutputMessage,
     #[serde(rename = "done")]
     pub(super) is_done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -300,7 +348,7 @@ impl From<&CompatTurnResponse> for ChatResponse {
         Self {
             model: response.model.clone(),
             created_at: "1966-01-01T00:00:00Z",
-            message: OutputMessage::from(&response.output),
+            message: ChatOutputMessage::from(&response.output),
             is_done: true,
             done_reason: Some("stop"),
             total_duration: Some(0),
@@ -312,6 +360,10 @@ impl From<&CompatTurnResponse> for ChatResponse {
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// Model: Defines the Ollama model catalog.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct ModelDetails {
@@ -334,6 +386,6 @@ pub(super) struct ModelDescriptor {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct TagsResponse {
+pub(super) struct ModelListResponse {
     pub(super) models: Vec<ModelDescriptor>,
 }

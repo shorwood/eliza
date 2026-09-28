@@ -1,12 +1,4 @@
 //! `OpenAI` Responses API adapter.
-#![expect(
-    clippy::missing_errors_doc,
-    rlib::missing_section_dividers,
-    rlib::undocumented_items,
-    rlib::undocumented_early_returns,
-    reason = "private adapter stages stay in request flow; wire names and validation errors are self-describing"
-)]
-
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
@@ -20,10 +12,11 @@ use uuid::Uuid;
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
 use super::types::{
-    AssistantRole, ResponseIds, ResponseProgress, ResponseStatus, ResponsesContent,
-    ResponsesContentPart, ResponsesEnvelope, ResponsesInput, ResponsesInputItem, ResponsesOutput,
-    ResponsesRequest, ResponsesRole, ResponsesStreamEvent, ResponsesTextConfig,
-    ResponsesTextFormat, ToolOutput, response_output_text,
+    AssistantRole, ResponsesRequest, ResponsesRequestContent, ResponsesRequestContentPart,
+    ResponsesRequestInput, ResponsesRequestInputItem, ResponsesRequestRole,
+    ResponsesRequestTextConfig, ResponsesRequestTextFormat, ResponsesRequestToolOutput,
+    ResponsesResponse, ResponsesResponseIds, ResponsesResponseOutput, ResponsesResponseProgress,
+    ResponsesResponseStatus, ResponsesResponseStreamEvent, responses_response_output_text,
 };
 use crate::routes::errors::ExtractionError;
 use crate::types::errors::EncodingError;
@@ -32,7 +25,15 @@ use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
 };
 
-struct OpenAiResponsesTurn(CompatTurnRequest);
+// -----------------------------------------------------------------------------
+// OpenAiResponsesTurn: Lowers one Responses request into the neutral contract.
+// -----------------------------------------------------------------------------
+
+/// Provider-neutral request lowered from Responses API input.
+struct OpenAiResponsesTurn(
+    /// Validated conversation consumed by the shared executor.
+    CompatTurnRequest,
+);
 
 impl TryFrom<ResponsesRequest> for OpenAiResponsesTurn {
     type Error = OpenAiError;
@@ -54,22 +55,101 @@ impl TryFrom<ResponsesRequest> for OpenAiResponsesTurn {
     }
 }
 
-fn validate_text_config(config: Option<ResponsesTextConfig>) -> Result<(), OpenAiError> {
+// -----------------------------------------------------------------------------
+// ValidateTextConfig: Rejects unsupported structured-output requests.
+// -----------------------------------------------------------------------------
+
+/// Validate the optional Responses text format.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when structured output is requested.
+fn validate_text_config(config: Option<ResponsesRequestTextConfig>) -> Result<(), OpenAiError> {
     match config.and_then(|config| config.format) {
-        None | Some(ResponsesTextFormat::Text) => Ok(()),
-        Some(ResponsesTextFormat::Unsupported) => Err(OpenAiError::StructuredOutputUnsupported {
-            param: "text.format",
-        }),
+        None | Some(ResponsesRequestTextFormat::Text) => Ok(()),
+        Some(ResponsesRequestTextFormat::Unsupported) => {
+            Err(OpenAiError::StructuredOutputUnsupported {
+                param: "text.format",
+            })
+        }
     }
 }
 
+// -----------------------------------------------------------------------------
+// Lower: Converts Responses input items into neutral conversation turns.
+// -----------------------------------------------------------------------------
+
+/// Lower one Responses message according to its typed role.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when content is unsupported or the role is unknown.
+fn lower_message_item(
+    role: ResponsesRequestRole,
+    content: ResponsesRequestContent,
+    system: &mut Vec<String>,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), OpenAiError> {
+    let text = text_content(content, "input.content")?;
+    match role {
+        ResponsesRequestRole::User => turns.push(CompatTurn::User(text)),
+        ResponsesRequestRole::System | ResponsesRequestRole::Developer => system.push(text),
+        ResponsesRequestRole::Assistant => turns.push(CompatTurn::Assistant(text)),
+        // Unknown provider roles cannot be replayed safely.
+        ResponsesRequestRole::Unsupported => return Err(OpenAiError::UnsupportedResponsesRole),
+    }
+    Ok(())
+}
+
+/// Lower one typed Responses input item.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when the item is unsupported or omits required
+/// function-call data.
+fn lower_item(
+    item: ResponsesRequestInputItem,
+    system: &mut Vec<String>,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), OpenAiError> {
+    match item {
+        ResponsesRequestInputItem::Message { role, content } => {
+            lower_message_item(role, content, system, turns)?;
+        }
+        ResponsesRequestInputItem::FunctionCall { name, arguments } => {
+            let name = required_name(name, "input.name")?;
+            let arguments = arguments.ok_or(OpenAiError::MissingFunctionCallArguments)?;
+            turns.push(CompatTurn::ToolCall(FunctionCall {
+                name,
+                arguments: arguments.into_object("input.arguments")?,
+            }));
+        }
+        ResponsesRequestInputItem::FunctionCallOutput { output } => {
+            let output = output.ok_or(OpenAiError::MissingFunctionOutput)?;
+            turns.push(CompatTurn::ToolResult(match output {
+                ResponsesRequestToolOutput::Text(text) => text,
+                ResponsesRequestToolOutput::Object(object) => object.serialized(),
+            }));
+        }
+        // Unknown item types cannot be represented by the neutral contract.
+        ResponsesRequestInputItem::Unsupported => return Err(OpenAiError::UnsupportedInputItem),
+    }
+    Ok(())
+}
+
+/// Lower string or item-list input into an ordered neutral transcript.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when any input item cannot be represented by the
+/// neutral transcript.
 fn lower_input(
-    input: ResponsesInput,
+    input: ResponsesRequestInput,
     system: &mut Vec<String>,
 ) -> Result<Vec<CompatTurn>, OpenAiError> {
     match input {
-        ResponsesInput::Text(text) => Ok(vec![CompatTurn::User(text)]),
-        ResponsesInput::Items(items) => {
+        ResponsesRequestInput::Text(text) => Ok(vec![CompatTurn::User(text)]),
+        ResponsesRequestInput::Items(items) => {
             let mut turns = Vec::new();
             for item in items {
                 lower_item(item, system, &mut turns)?;
@@ -79,75 +159,88 @@ fn lower_input(
     }
 }
 
-fn lower_item(
-    item: ResponsesInputItem,
-    system: &mut Vec<String>,
-    turns: &mut Vec<CompatTurn>,
-) -> Result<(), OpenAiError> {
-    match item {
-        ResponsesInputItem::Message { role, content } => {
-            let text = text_content(content, "input.content")?;
-            match role {
-                ResponsesRole::User => turns.push(CompatTurn::User(text)),
-                ResponsesRole::System | ResponsesRole::Developer => system.push(text),
-                ResponsesRole::Assistant => turns.push(CompatTurn::Assistant(text)),
-                ResponsesRole::Unsupported => {
-                    return Err(OpenAiError::UnsupportedResponsesRole);
-                }
-            }
-        }
-        ResponsesInputItem::FunctionCall { name, arguments } => {
-            let name = required_name(name, "input.name")?;
-            let arguments = arguments.ok_or(OpenAiError::MissingFunctionCallArguments)?;
-            turns.push(CompatTurn::ToolCall(FunctionCall {
-                name,
-                arguments: arguments.into_object("input.arguments")?,
-            }));
-        }
-        ResponsesInputItem::FunctionCallOutput { output } => {
-            let output = output.ok_or(OpenAiError::MissingFunctionOutput)?;
-            turns.push(CompatTurn::ToolResult(match output {
-                ToolOutput::Text(text) => text,
-                ToolOutput::Object(object) => object.serialized(),
-            }));
-        }
-        ResponsesInputItem::Unsupported => {
-            return Err(OpenAiError::UnsupportedInputItem);
+// -----------------------------------------------------------------------------
+// Text: Normalizes Responses content into replayable text.
+// -----------------------------------------------------------------------------
+
+/// Lower one Responses content part into its text payload.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when the content part is not text.
+fn text_part(
+    part: ResponsesRequestContentPart,
+    param: &'static str,
+) -> Result<String, OpenAiError> {
+    match part {
+        ResponsesRequestContentPart::InputText { text }
+        | ResponsesRequestContentPart::OutputText { text }
+        | ResponsesRequestContentPart::Text { text } => Ok(text),
+        ResponsesRequestContentPart::Unsupported => {
+            Err(OpenAiError::UnsupportedContentPart { param })
         }
     }
-    Ok(())
 }
 
-fn text_content(content: ResponsesContent, param: &'static str) -> Result<String, OpenAiError> {
+/// Join validated text parts from one Responses content value.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when any content part is not text.
+fn text_parts(
+    parts: Vec<ResponsesRequestContentPart>,
+    param: &'static str,
+) -> Result<String, OpenAiError> {
+    let text = parts
+        .into_iter()
+        .map(|part| text_part(part, param))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(text.join("\n"))
+}
+
+/// Lower string or part-list Responses content into text.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when part-list content contains a non-text part.
+fn text_content(
+    content: ResponsesRequestContent,
+    param: &'static str,
+) -> Result<String, OpenAiError> {
     match content {
-        ResponsesContent::Text(text) => Ok(text),
-        ResponsesContent::Parts(parts) => {
-            let mut text = Vec::with_capacity(parts.len());
-            for part in parts {
-                match part {
-                    ResponsesContentPart::InputText { text: part }
-                    | ResponsesContentPart::OutputText { text: part }
-                    | ResponsesContentPart::Text { text: part } => text.push(part),
-                    ResponsesContentPart::Unsupported => {
-                        return Err(OpenAiError::UnsupportedContentPart { param });
-                    }
-                }
-            }
-            Ok(text.join("\n"))
-        }
+        ResponsesRequestContent::Text(text) => Ok(text),
+        ResponsesRequestContent::Parts(parts) => text_parts(parts, param),
     }
 }
 
+// -----------------------------------------------------------------------------
+// RequiredName: Validates names carried by function-call items.
+// -----------------------------------------------------------------------------
+
+/// Require one non-empty function name.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when the name is absent or empty.
 fn required_name(name: Option<String>, param: &'static str) -> Result<String, OpenAiError> {
     name.filter(|name| !name.is_empty())
         .ok_or(OpenAiError::MissingFunctionName { param })
 }
 
+// -----------------------------------------------------------------------------
+// ResponseContext: Owns stable identifiers and the completed envelope.
+// -----------------------------------------------------------------------------
+
+/// Stable identifiers and completed values shared across stream events.
 struct ResponseContext {
+    /// Output item identifier.
     item_id: String,
+    /// Function call identifier.
     call_id: String,
-    final_output: ResponsesOutput,
-    envelope: ResponsesEnvelope,
+    /// Final typed output item.
+    final_output: ResponsesResponseOutput,
+    /// Complete terminal response envelope.
+    envelope: ResponsesResponse,
 }
 
 impl From<&CompatTurnResponse> for ResponseContext {
@@ -157,38 +250,47 @@ impl From<&CompatTurnResponse> for ResponseContext {
             CompatOutput::ToolCall(_) => format!("fc_{}", Uuid::now_v7().simple()),
         };
         let call_id = format!("call_{}", Uuid::now_v7().simple());
-        let output = ResponsesOutput::from_compat(
+        let output = ResponsesResponseOutput::from_compat(
             &response.output,
-            ResponseIds {
+            ResponsesResponseIds {
                 item: item_id.clone(),
                 call: call_id.clone(),
             },
-            ResponseStatus::Completed,
+            ResponsesResponseStatus::Completed,
         );
         Self {
             item_id,
             call_id,
             final_output: output.clone(),
-            envelope: ResponsesEnvelope {
+            envelope: ResponsesResponse {
                 id: format!("resp_{}", Uuid::now_v7().simple()),
                 object: "response",
                 created_at: unix_timestamp(),
-                status: ResponseStatus::Completed,
+                status: ResponsesResponseStatus::Completed,
                 error: None,
                 incomplete_details: None,
                 model: response.model.clone(),
                 output: vec![output],
-                output_text: response_output_text(response),
+                output_text: responses_response_output_text(response),
                 usage: response.usage.into(),
             },
         }
     }
 }
 
+// -----------------------------------------------------------------------------
+// Sequence: Allocates monotonically increasing event positions.
+// -----------------------------------------------------------------------------
+
+/// Next sequence number assigned to a Responses stream event.
 #[derive(Default)]
-struct Sequence(usize);
+struct Sequence(
+    /// Next available sequence number.
+    usize,
+);
 
 impl Sequence {
+    /// Return the current sequence number and advance the counter.
     fn next(&mut self) -> usize {
         let current = self.0;
         self.0 += 1;
@@ -196,80 +298,51 @@ impl Sequence {
     }
 }
 
-fn response_stream(response: &CompatTurnResponse) -> Result<SseEvents, EncodingError> {
-    let context = ResponseContext::from(response);
-    let mut sequence = Sequence::default();
-    let mut events = Vec::new();
-    push_event(
-        &mut events,
-        &ResponsesStreamEvent::Created {
-            sequence_number: sequence.next(),
-            response: ResponseProgress {
-                id: context.envelope.id.clone(),
-                object: "response",
-                created_at: context.envelope.created_at,
-                status: ResponseStatus::InProgress,
-                model: response.model.clone(),
-                output: Vec::new(),
-                error: None,
-                incomplete_details: None,
-            },
-        },
-    )?;
-    push_output_events(&mut events, &mut sequence, &context, &response.output)?;
-    push_event(
-        &mut events,
-        &ResponsesStreamEvent::OutputItemDone {
-            sequence_number: sequence.next(),
-            output_index: 0,
-            item: context.final_output,
-        },
-    )?;
-    push_event(
-        &mut events,
-        &ResponsesStreamEvent::Completed {
-            sequence_number: sequence.next(),
-            response: context.envelope,
-        },
-    )?;
-    Ok(SseEvents::from(events))
-}
+// -----------------------------------------------------------------------------
+// Stream: Renders OpenAI's Responses event sequence.
+// -----------------------------------------------------------------------------
 
-fn push_output_events(
+/// Serialize and append one Responses stream event.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when the event cannot be serialized.
+fn stream_push_event(
     events: &mut Vec<Event>,
-    sequence: &mut Sequence,
-    context: &ResponseContext,
-    output: &CompatOutput,
+    event: &ResponsesResponseStreamEvent,
 ) -> Result<(), EncodingError> {
-    match output {
-        CompatOutput::Text(text) => push_text_events(events, sequence, context, text),
-        CompatOutput::ToolCall(call) => push_tool_events(events, sequence, context, call),
-    }
+    events.push(json_event(event)?);
+    Ok(())
 }
 
-fn push_text_events(
+/// Append text item, delta, and completion events.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when a text event cannot be serialized.
+fn stream_push_text(
     events: &mut Vec<Event>,
     sequence: &mut Sequence,
     context: &ResponseContext,
     text: &str,
 ) -> Result<(), EncodingError> {
-    push_event(
+    stream_push_event(
         events,
-        &ResponsesStreamEvent::OutputItemAdded {
+        &ResponsesResponseStreamEvent::OutputItemAdded {
             sequence_number: sequence.next(),
             output_index: 0,
-            item: ResponsesOutput::Message {
+            item: ResponsesResponseOutput::Message {
                 id: context.item_id.clone(),
-                status: ResponseStatus::InProgress,
+                status: ResponsesResponseStatus::InProgress,
                 role: AssistantRole::Assistant,
                 content: Vec::new(),
             },
         },
     )?;
     for chunk in stream_chunks(text) {
-        push_event(
+        stream_push_event(
             events,
-            &ResponsesStreamEvent::OutputTextDelta {
+            &ResponsesResponseStreamEvent::OutputTextDelta {
                 sequence_number: sequence.next(),
                 item_id: context.item_id.clone(),
                 output_index: 0,
@@ -278,9 +351,9 @@ fn push_text_events(
             },
         )?;
     }
-    push_event(
+    stream_push_event(
         events,
-        &ResponsesStreamEvent::OutputTextDone {
+        &ResponsesResponseStreamEvent::OutputTextDone {
             sequence_number: sequence.next(),
             item_id: context.item_id.clone(),
             output_index: 0,
@@ -290,30 +363,35 @@ fn push_text_events(
     )
 }
 
-fn push_tool_events(
+/// Append function item, argument delta, and completion events.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when a function event cannot be serialized.
+fn stream_push_tool(
     events: &mut Vec<Event>,
     sequence: &mut Sequence,
     context: &ResponseContext,
     call: &FunctionCall,
 ) -> Result<(), EncodingError> {
-    push_event(
+    stream_push_event(
         events,
-        &ResponsesStreamEvent::OutputItemAdded {
+        &ResponsesResponseStreamEvent::OutputItemAdded {
             sequence_number: sequence.next(),
             output_index: 0,
-            item: ResponsesOutput::FunctionCall {
+            item: ResponsesResponseOutput::FunctionCall {
                 id: context.item_id.clone(),
                 call_id: context.call_id.clone(),
                 name: call.name.clone(),
                 arguments: String::new(),
-                status: ResponseStatus::InProgress,
+                status: ResponsesResponseStatus::InProgress,
             },
         },
     )?;
     let arguments = call.arguments.serialized();
-    push_event(
+    stream_push_event(
         events,
-        &ResponsesStreamEvent::FunctionArgumentsDelta {
+        &ResponsesResponseStreamEvent::FunctionArgumentsDelta {
             sequence_number: sequence.next(),
             item_id: context.item_id.clone(),
             output_index: 0,
@@ -321,9 +399,9 @@ fn push_tool_events(
             delta: arguments.clone(),
         },
     )?;
-    push_event(
+    stream_push_event(
         events,
-        &ResponsesStreamEvent::FunctionArgumentsDone {
+        &ResponsesResponseStreamEvent::FunctionArgumentsDone {
             sequence_number: sequence.next(),
             item_id: context.item_id.clone(),
             output_index: 0,
@@ -334,42 +412,116 @@ fn push_tool_events(
     )
 }
 
-fn push_event(events: &mut Vec<Event>, event: &ResponsesStreamEvent) -> Result<(), EncodingError> {
-    events.push(json_event(event)?);
-    Ok(())
+/// Append output-specific events to one response stream.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when an output event cannot be serialized.
+fn stream_push_output(
+    events: &mut Vec<Event>,
+    sequence: &mut Sequence,
+    context: &ResponseContext,
+    output: &CompatOutput,
+) -> Result<(), EncodingError> {
+    match output {
+        CompatOutput::Text(text) => stream_push_text(events, sequence, context, text),
+        CompatOutput::ToolCall(call) => stream_push_tool(events, sequence, context, call),
+    }
 }
 
-async fn responses(
+/// Render the complete SSE sequence for one neutral response.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when any response event cannot be serialized.
+fn stream_response(response: &CompatTurnResponse) -> Result<SseEvents, EncodingError> {
+    let context = ResponseContext::from(response);
+    let mut sequence = Sequence::default();
+    let mut events = Vec::new();
+    stream_push_event(
+        &mut events,
+        &ResponsesResponseStreamEvent::Created {
+            sequence_number: sequence.next(),
+            response: ResponsesResponseProgress {
+                id: context.envelope.id.clone(),
+                object: "response",
+                created_at: context.envelope.created_at,
+                status: ResponsesResponseStatus::InProgress,
+                model: response.model.clone(),
+                output: Vec::new(),
+                error: None,
+                incomplete_details: None,
+            },
+        },
+    )?;
+    stream_push_output(&mut events, &mut sequence, &context, &response.output)?;
+    stream_push_event(
+        &mut events,
+        &ResponsesResponseStreamEvent::OutputItemDone {
+            sequence_number: sequence.next(),
+            output_index: 0,
+            item: context.final_output,
+        },
+    )?;
+    stream_push_event(
+        &mut events,
+        &ResponsesResponseStreamEvent::Completed {
+            sequence_number: sequence.next(),
+            response: context.envelope,
+        },
+    )?;
+    Ok(SseEvents::from(events))
+}
+
+// -----------------------------------------------------------------------------
+// OpenAiResponses: Handles and mounts the endpoint.
+// -----------------------------------------------------------------------------
+
+/// Handle one unary or streaming Responses API request.
+async fn open_ai_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
     payload: Result<Json<ResponsesRequest>, JsonRejection>,
 ) -> Response {
+    // Authentication failures use OpenAI's native error envelope.
     if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
         return OpenAiRejection::from_error(&error).into_response();
     }
     let Json(payload) = match payload {
         Ok(payload) => payload,
+        // Extraction failures retain their typed diagnostic code.
         Err(error) => {
             return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
         }
     };
 
+    // Capture transport policy before lowering consumes the request body.
     let should_stream = payload.should_stream.unwrap_or(false);
     let request = match OpenAiResponsesTurn::try_from(payload) {
         Ok(request) => request.0,
-        Err(error) => return OpenAiRejection::from_error(&error).into_response(),
+        // Provider validation failures use OpenAI's native envelope.
+        Err(error) => {
+            return OpenAiRejection::from_error(&error).into_response();
+        }
     };
+
+    // Apply shared resource bounds to the lowered request.
     let limits = RequestLimits::new(
         state.config.max_input_chars,
         state.config.max_history_messages,
     );
+
+    // Complete one neutral turn before rendering Responses output.
     let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return OpenAiRejection::from_error(&error).into_response(),
+        // Shared execution failures still render as OpenAI errors.
+        Err(error) => {
+            return OpenAiRejection::from_error(&error).into_response();
+        }
     };
 
     if should_stream {
-        match response_stream(&response) {
+        match stream_response(&response) {
             Ok(events) => events
                 .with_delay(state.config.stream_delay_ms)
                 .into_response(),
@@ -388,11 +540,11 @@ impl OpenAiResponses {
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
             "/v1/responses",
-            post_with(responses, |operation| {
+            post_with(open_ai_responses, |operation| {
                 operation
                     .summary("OpenAI response")
                     .tag("openai")
-                    .response::<200, Json<ResponsesEnvelope>>()
+                    .response::<200, Json<ResponsesResponse>>()
                     .default_response::<Json<OpenAiFailureResponse>>()
             }),
         )

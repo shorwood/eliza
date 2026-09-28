@@ -24,6 +24,15 @@ impl Parser {
         self.tokens.get(self.cursor)
     }
 
+    /// Advance past one atom and retain its source span.
+    fn parse_atom(&mut self, atom: String, span: Span) -> Sexp {
+        self.cursor += 1;
+        Sexp {
+            kind: SexpKind::Atom(atom),
+            span,
+        }
+    }
+
     /// Parse one atom or list at the current cursor.
     ///
     /// # Errors
@@ -31,27 +40,23 @@ impl Parser {
     /// Returns [`AppError`] when the cursor is at EOF or an unexpected close
     /// paren.
     fn parse_one(&mut self) -> Result<Sexp, AppError> {
+        // Resolve the current token or report the lexer's final source position.
         let token = self.peek().ok_or(AppError::ScriptUnexpectedEnd {
             line: self.eof.line,
             column: self.eof.column,
         })?;
 
+        // Prepare the positioned close-paren failure before mutable dispatch.
+        let unexpected_close = AppError::ScriptUnexpectedClose {
+            line: token.span.line,
+            column: token.span.column,
+        };
+
         // Dispatch the positioned token into its expression representation.
         match &token.kind {
             TokenKind::OpenParen => self.parse_list(),
-            TokenKind::CloseParen => Err(AppError::ScriptUnexpectedClose {
-                line: token.span.line,
-                column: token.span.column,
-            }),
-            TokenKind::Atom(atom) => {
-                let atom = atom.clone();
-                let span = token.span;
-                self.cursor += 1;
-                Ok(Sexp {
-                    kind: SexpKind::Atom(atom),
-                    span,
-                })
-            }
+            TokenKind::CloseParen => Err(unexpected_close),
+            TokenKind::Atom(atom) => Ok(self.parse_atom(atom.clone(), token.span)),
         }
     }
 

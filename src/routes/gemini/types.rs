@@ -1,9 +1,7 @@
 //! Gemini wire contracts shared by its route adapters.
 #![expect(
-    clippy::missing_errors_doc,
-    rlib::missing_section_dividers,
     rlib::undocumented_items,
-    reason = "private Serde fields mirror Gemini's published wire names"
+    reason = "this module contains only private Serde wire declarations whose field names are the provider contract"
 )]
 
 use schemars::JsonSchema;
@@ -13,7 +11,14 @@ use uuid::Uuid;
 use super::errors::GeminiError;
 use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
-use crate::types::turn::{CompatOutput, CompatTurnResponse, FunctionTool, TokenUsage, ToolChoice};
+use crate::types::turn::{
+    CompatOutput, CompatTurn, CompatTurnResponse, FunctionCall, FunctionTool, TokenUsage,
+    ToolChoice as CompatToolChoice,
+};
+
+// -----------------------------------------------------------------------------
+// Content: Defines inbound conversation content and function records.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -26,18 +31,51 @@ pub(super) enum ContentRole {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct ContentFunctionCall {
+    name: Option<String>,
+    args: Option<JsonObject>,
+}
+
+impl TryFrom<ContentFunctionCall> for CompatTurn {
+    type Error = GeminiError;
+
+    fn try_from(function_call: ContentFunctionCall) -> Result<Self, Self::Error> {
+        let name = function_call
+            .name
+            .filter(|name| !name.is_empty())
+            .ok_or(GeminiError::MissingFunctionCallName)?;
+        Ok(Self::ToolCall(FunctionCall {
+            name,
+            arguments: function_call.args.unwrap_or_default(),
+        }))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
-pub(super) enum Part {
+pub(super) enum ContentFunctionResponseValue {
+    Text(String),
+    Object(JsonObject),
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct ContentFunctionResponse {
+    pub(super) response: Option<ContentFunctionResponseValue>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub(super) enum ContentPart {
     Text {
         text: String,
     },
     FunctionCall {
         #[serde(rename = "functionCall")]
-        function_call: FunctionCallInput,
+        function_call: ContentFunctionCall,
     },
     FunctionResponse {
         #[serde(rename = "functionResponse")]
-        function_response: FunctionResponseInput,
+        function_response: ContentFunctionResponse,
     },
     Unsupported {
         #[serde(flatten)]
@@ -46,43 +84,23 @@ pub(super) enum Part {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct FunctionCallInput {
-    pub(super) name: Option<String>,
-    pub(super) args: Option<JsonObject>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct FunctionResponseInput {
-    pub(super) response: Option<FunctionResponseValue>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub(super) enum FunctionResponseValue {
-    Text(String),
-    Object(JsonObject),
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct GeminiContent {
+pub(super) struct Content {
     pub(super) role: Option<ContentRole>,
-    pub(super) parts: Option<Vec<Part>>,
+    pub(super) parts: Option<Vec<ContentPart>>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ToolGroup {
-    function_declarations: Option<Vec<FunctionDeclaration>>,
-}
+// -----------------------------------------------------------------------------
+// Tool: Defines offered functions and selection policy.
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct FunctionDeclaration {
+pub(super) struct ToolFunctionDeclaration {
     name: Option<String>,
     description: Option<String>,
     parameters: Option<JsonObject>,
 }
 
-impl FunctionDeclaration {
+impl ToolFunctionDeclaration {
     fn char_count(&self) -> usize {
         self.name.as_ref().map_or(0, String::len)
             + self.description.as_ref().map_or(0, String::len)
@@ -93,11 +111,23 @@ impl FunctionDeclaration {
     }
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ToolGroup {
+    function_declarations: Option<Vec<ToolFunctionDeclaration>>,
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub(super) struct ToolGroupList(Vec<ToolGroup>);
 
 impl ToolGroupList {
+    /// Lower provider tool groups into the neutral function contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeminiError`] when a group has no function declarations or a
+    /// declaration has no name.
     pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, GeminiError> {
         let mut functions = Vec::new();
         for group in self.0 {
@@ -119,7 +149,7 @@ impl ToolGroupList {
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(super) enum FunctionCallingMode {
+pub(super) enum ToolFunctionCallingMode {
     Auto,
     Validated,
     None,
@@ -130,25 +160,34 @@ pub(super) enum FunctionCallingMode {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct FunctionCallingConfig {
-    mode: Option<FunctionCallingMode>,
+pub(super) struct ToolFunctionCallingConfig {
+    mode: Option<ToolFunctionCallingMode>,
     allowed_function_names: Option<Vec<String>>,
 }
 
-impl FunctionCallingConfig {
-    fn lower(self, param: &'static str) -> Result<ToolChoice, GeminiError> {
-        match self.mode.unwrap_or(FunctionCallingMode::Auto) {
-            FunctionCallingMode::Auto | FunctionCallingMode::Validated => Ok(ToolChoice::Auto),
-            FunctionCallingMode::None => Ok(ToolChoice::None),
-            FunctionCallingMode::Any => {
+impl ToolFunctionCallingConfig {
+    /// Lower Gemini's function-calling policy into the neutral tool choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeminiError`] for an unsupported calling mode.
+    fn lower(self, param: &'static str) -> Result<CompatToolChoice, GeminiError> {
+        match self.mode.unwrap_or(ToolFunctionCallingMode::Auto) {
+            ToolFunctionCallingMode::Auto | ToolFunctionCallingMode::Validated => {
+                Ok(CompatToolChoice::Auto)
+            }
+            ToolFunctionCallingMode::None => Ok(CompatToolChoice::None),
+            ToolFunctionCallingMode::Any => {
                 let names = self.allowed_function_names.unwrap_or_default();
                 Ok(match names.as_slice() {
-                    [] => ToolChoice::Required,
-                    [name] => ToolChoice::Named(name.clone()),
-                    _ => ToolChoice::Allowed(names),
+                    [] => CompatToolChoice::Required,
+                    [name] => CompatToolChoice::Named(name.clone()),
+                    _ => CompatToolChoice::Allowed(names),
                 })
             }
-            FunctionCallingMode::Unsupported => Err(GeminiError::UnsupportedCallingMode { param }),
+            ToolFunctionCallingMode::Unsupported => {
+                Err(GeminiError::UnsupportedCallingMode { param })
+            }
         }
     }
 }
@@ -156,33 +195,42 @@ impl FunctionCallingConfig {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ToolConfig {
-    function_calling_config: Option<FunctionCallingConfig>,
+    function_calling_config: Option<ToolFunctionCallingConfig>,
 }
 
 impl ToolConfig {
+    /// Lower optional Gemini tool configuration into a neutral tool choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeminiError`] when the configured calling mode is unsupported.
     pub(super) fn into_domain(
         config: Option<Self>,
         param: &'static str,
-    ) -> Result<ToolChoice, GeminiError> {
+    ) -> Result<CompatToolChoice, GeminiError> {
         match config.and_then(|config| config.function_calling_config) {
             Some(config) => config.lower(param),
-            None => Ok(ToolChoice::Auto),
+            None => Ok(CompatToolChoice::Auto),
         }
     }
 }
 
+// -----------------------------------------------------------------------------
+// Generate: Defines unary and streaming generation contracts.
+// -----------------------------------------------------------------------------
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GenerateContentRequest {
-    pub(super) contents: Option<Vec<GeminiContent>>,
-    pub(super) system_instruction: Option<GeminiContent>,
+    pub(super) contents: Option<Vec<Content>>,
+    pub(super) system_instruction: Option<Content>,
     pub(super) tools: Option<ToolGroupList>,
     pub(super) tool_config: Option<ToolConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum StreamFormat {
+pub(super) enum GenerateStreamFormat {
     Sse,
     #[serde(other)]
     Json,
@@ -190,46 +238,46 @@ pub(super) enum StreamFormat {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct GenerateQuery {
-    pub(super) alt: Option<StreamFormat>,
+    pub(super) alt: Option<GenerateStreamFormat>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(super) enum FinishReason {
+pub(super) enum GenerateFinishReason {
     Stop,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-#[serde(untagged)]
-pub(super) enum OutputPart {
-    Text {
-        text: String,
-    },
-    FunctionCall {
-        #[serde(rename = "functionCall")]
-        function_call: FunctionCallOutput,
-    },
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct FunctionCallOutput {
+pub(super) struct GenerateFunctionCall {
     pub(super) id: String,
     pub(super) name: String,
     pub(super) args: JsonObject,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct OutputContent {
+#[serde(untagged)]
+pub(super) enum GenerateOutputPart {
+    Text {
+        text: String,
+    },
+    FunctionCall {
+        #[serde(rename = "functionCall")]
+        function_call: GenerateFunctionCall,
+    },
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct GenerateOutputContent {
     pub(super) role: &'static str,
-    pub(super) parts: Vec<OutputPart>,
+    pub(super) parts: Vec<GenerateOutputPart>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Candidate {
-    pub(super) content: OutputContent,
+pub(super) struct GenerateCandidate {
+    pub(super) content: GenerateOutputContent,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) finish_reason: Option<FinishReason>,
+    pub(super) finish_reason: Option<GenerateFinishReason>,
     pub(super) index: usize,
 }
 
@@ -239,13 +287,13 @@ pub(super) struct Candidate {
     clippy::struct_field_names,
     reason = "field names must match Gemini usage metadata"
 )]
-pub(super) struct UsageMetadata {
+pub(super) struct GenerateUsage {
     prompt_token_count: usize,
     candidates_token_count: usize,
     total_token_count: usize,
 }
 
-impl From<TokenUsage> for UsageMetadata {
+impl From<TokenUsage> for GenerateUsage {
     fn from(usage: TokenUsage) -> Self {
         Self {
             prompt_token_count: usage.prompt,
@@ -258,18 +306,18 @@ impl From<TokenUsage> for UsageMetadata {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GenerateContentResponse {
-    pub(super) candidates: Vec<Candidate>,
+    pub(super) candidates: Vec<GenerateCandidate>,
     pub(super) model_version: ModelId,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) usage_metadata: Option<UsageMetadata>,
+    pub(super) usage_metadata: Option<GenerateUsage>,
 }
 
 impl From<CompatTurnResponse> for GenerateContentResponse {
     fn from(response: CompatTurnResponse) -> Self {
         let part = match response.output {
-            CompatOutput::Text(text) => OutputPart::Text { text },
-            CompatOutput::ToolCall(call) => OutputPart::FunctionCall {
-                function_call: FunctionCallOutput {
+            CompatOutput::Text(text) => GenerateOutputPart::Text { text },
+            CompatOutput::ToolCall(call) => GenerateOutputPart::FunctionCall {
+                function_call: GenerateFunctionCall {
                     id: format!("call_{}", Uuid::now_v7().simple()),
                     name: call.name,
                     args: call.arguments,
@@ -277,12 +325,12 @@ impl From<CompatTurnResponse> for GenerateContentResponse {
             },
         };
         Self {
-            candidates: vec![Candidate {
-                content: OutputContent {
+            candidates: vec![GenerateCandidate {
+                content: GenerateOutputContent {
                     role: "model",
                     parts: vec![part],
                 },
-                finish_reason: Some(FinishReason::Stop),
+                finish_reason: Some(GenerateFinishReason::Stop),
                 index: 0,
             }],
             model_version: response.model,
@@ -291,19 +339,37 @@ impl From<CompatTurnResponse> for GenerateContentResponse {
     }
 }
 
+// -----------------------------------------------------------------------------
+// GeminiModel: Defines the Gemini model catalog.
+// -----------------------------------------------------------------------------
+
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GeminiModel {
+pub(super) struct GeminiModelIdentity {
     pub(super) name: String,
     pub(super) version: &'static str,
     pub(super) display_name: &'static str,
     pub(super) description: &'static str,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GeminiModelCapabilities {
     pub(super) supported_generation_methods: Vec<&'static str>,
     pub(super) input_token_limit: usize,
     pub(super) output_token_limit: usize,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct GeminiModelsResponse {
+#[serde(rename_all = "camelCase")]
+pub(super) struct GeminiModel {
+    #[serde(flatten)]
+    pub(super) identity: GeminiModelIdentity,
+    #[serde(flatten)]
+    pub(super) capabilities: GeminiModelCapabilities,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct GeminiModelListResponse {
     pub(super) models: Vec<GeminiModel>,
 }
