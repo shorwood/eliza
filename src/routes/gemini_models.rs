@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::context::{AppState, provider_authenticate};
+use super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::ProviderRejection;
 
 // -----------------------------------------------------------------------------
@@ -99,7 +99,11 @@ impl IntoResponse for GeminiRejection {
 /// Performs the models operation for this abstraction.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Render authentication failures in Gemini's envelope immediately.
-    if let Err(error) = provider_authenticate(&headers, &state.config) {
+    if let Err(error) = provider_authenticate(
+        &headers,
+        &state.config,
+        ProviderAuth::ApiKey("x-goog-api-key"),
+    ) {
         return GeminiRejection(error).into_response();
     }
 
@@ -129,7 +133,7 @@ impl GeminiModels {
     /// Mount the native Gemini model catalog route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/v1beta/models",
+            "/gemini/v1beta/models",
             get_with(models, |operation| {
                 operation
                     .summary("Gemini models")

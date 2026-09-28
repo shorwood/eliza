@@ -1,4 +1,6 @@
 //! Standalone classic ELIZA compatibility server.
+#![feature(register_tool)]
+#![register_tool(rlib)]
 
 mod errors;
 mod eliza;
