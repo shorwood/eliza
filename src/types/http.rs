@@ -31,17 +31,6 @@ pub(crate) enum ProviderRejectionKind {
 }
 
 impl ProviderRejectionKind {
-    /// Return the legacy OpenAI-compatible error name.
-    const fn openai_name(self) -> &'static str {
-        match self {
-            Self::Invalid => "invalid_request_error",
-            Self::Unsupported => "unsupported_request_error",
-            Self::Unauthorized => "authentication_error",
-            Self::TooLarge => "request_too_large",
-            Self::Internal => "server_error",
-        }
-    }
-
     /// Return the legacy Gemini-compatible status name.
     const fn gemini_name(self) -> &'static str {
         match self {
@@ -117,18 +106,6 @@ impl ProviderRejection {
         }
     }
 
-    /// Render this rejection using the Anthropic error envelope.
-    pub(crate) fn anthropic_response(self) -> Response {
-        (
-            self.status,
-            Json(json!({
-                "type": "error",
-                "error": { "type": self.kind.openai_name(), "message": self.message }
-            })),
-        )
-            .into_response()
-    }
-
     /// Render this rejection using the native Gemini error envelope.
     pub(crate) fn gemini_response(self) -> Response {
         (
@@ -150,73 +127,6 @@ impl ProviderRejection {
     }
 }
 
-// -----------------------------------------------------------------------------
-// TextArrayKind: Describes provider-specific typed text arrays.
-// -----------------------------------------------------------------------------
-
-/// Provider-specific typed text array shape.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum TextArrayKind {
-    /// Anthropic-style blocks.
-    Blocks,
-}
-
-impl TextArrayKind {
-    /// Return whether a wire type represents text for this provider shape.
-    fn is_text_type(self, item_type: Option<&str>) -> bool {
-        match self {
-            Self::Blocks => item_type == Some("text"),
-        }
-    }
-
-    /// Return the rejection for a non-text typed item.
-    const fn unsupported_message(self) -> &'static str {
-        match self {
-            Self::Blocks => "only text content blocks are supported",
-        }
-    }
-
-    /// Return the rejection for a typed item without text.
-    const fn missing_text_message(self) -> &'static str {
-        match self {
-            Self::Blocks => "text content block is missing text",
-        }
-    }
-
-    /// Return the rejection for a non-textual outer content shape.
-    const fn outer_message(self) -> &'static str {
-        match self {
-            Self::Blocks => "content must be a string or text blocks",
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// JoinedText: Accumulates text fragments with separators.
-// -----------------------------------------------------------------------------
-
-/// Text fragments accumulated with newline separators.
-#[derive(Default)]
-struct JoinedText(
-    /// Accumulated text including inserted separators.
-    String,
-);
-
-impl JoinedText {
-    /// Append one fragment, inserting a separator when needed.
-    fn push(&mut self, text: &str) {
-        if !self.0.is_empty() {
-            self.0.push('\n');
-        }
-        self.0.push_str(text);
-    }
-
-    /// Return the accumulated text.
-    fn into_string(self) -> String {
-        self.0
-    }
-}
-
 /// Split provider output into readable streaming chunks.
 pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
     let mut chunks = Vec::new();
@@ -234,53 +144,6 @@ pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
         chunks.push(current);
     }
     chunks
-}
-
-/// Join an OpenAI/Anthropic typed text-item array.
-///
-/// # Errors
-///
-/// Returns [`ProviderRejection`] when an item is not textual or lacks text.
-fn join_typed_text_items(
-    items: &[Value],
-    param: &'static str,
-    kind: TextArrayKind,
-) -> Result<String, ProviderRejection> {
-    let mut text = JoinedText::default();
-    for item in items {
-        // Reject non-text blocks before provider-neutral lowering.
-        if !kind.is_text_type(item.get("type").and_then(Value::as_str)) {
-            return Err(ProviderRejection::unsupported(
-                param,
-                kind.unsupported_message(),
-            ));
-        }
-        let item_text = item
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ProviderRejection::invalid(param, kind.missing_text_message()))?;
-        text.push(item_text);
-    }
-    Ok(text.into_string())
-}
-
-/// Extract optional text content from string, null, or typed text arrays.
-///
-/// # Errors
-///
-/// Returns [`ProviderRejection`] when the content shape is not textual or a
-/// typed text array item is malformed.
-pub(crate) fn optional_text_content(
-    content: &Value,
-    param: &'static str,
-    kind: TextArrayKind,
-) -> Result<Option<String>, ProviderRejection> {
-    match content {
-        Value::Null => Ok(None),
-        Value::String(text) => Ok(Some(text.clone())),
-        Value::Array(items) => join_typed_text_items(items, param, kind).map(Some),
-        _ => Err(ProviderRejection::unsupported(param, kind.outer_message())),
-    }
 }
 
 // -----------------------------------------------------------------------------
