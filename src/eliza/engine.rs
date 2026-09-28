@@ -1311,7 +1311,7 @@ impl<'script> From<&'script Script> for ElizaSession<'script> {
 
 /// Checks ELIZA script parsing and turns behavior at its source owner.
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::missing_panics_doc,
     reason = "test rationales replace public panic contracts"
 )]
@@ -1457,9 +1457,12 @@ mod tests {
 /// let mut session = ElizaSession::new(doctor_script());
 /// assert_eq!(session.respond("If I fail").output, "DO YOU THINK ITS LIKELY THAT YOU FAIL");
 /// ```
-#[allow(
-    clippy::items_after_test_module,
-    reason = "rlib requires dependency-first declaration order for test modules"
+#[cfg_attr(
+    test,
+    expect(
+        clippy::items_after_test_module,
+        reason = "rlib requires dependency-first declaration order for test modules"
+    )
 )]
 pub(crate) fn doctor_script() -> &'static Script {
     DOCTOR.get_or_init(|| {
