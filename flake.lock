@@ -19,7 +19,9 @@
     },
     "fenix": {
       "inputs": {
-        "nixpkgs": [ "nixpkgs" ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
         "rust-analyzer-src": "rust-analyzer-src"
       },
       "locked": {
@@ -52,11 +54,35 @@
         "type": "github"
       }
     },
-    "root": {
+    "rlib": {
       "inputs": {
         "dylint-src": "dylint-src",
+        "fenix": [
+          "fenix"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1790638985,
+        "narHash": "sha256-yY0j1DVd895Hb1h5QMbE0wbaIO+HYS9A9t4iJwPgQmw=",
+        "ref": "refs/heads/main",
+        "rev": "7e428c014b423e722daeb87801f2974014cfff6b",
+        "revCount": 234,
+        "type": "git",
+        "url": "file:../rlib"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:../rlib"
+      }
+    },
+    "root": {
+      "inputs": {
         "fenix": "fenix",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "rlib": "rlib"
       }
     },
     "rust-analyzer-src": {

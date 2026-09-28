@@ -1,5 +1,5 @@
 fmt:
-    cargo fmt --all
+    cargo-fmt fmt --all
     hurlfmt --in-place tests/http/public/*.hurl tests/http/auth/*.hurl
 
 chat:
@@ -18,13 +18,9 @@ example-rust-rig:
     cargo build --bin eliza --locked
     sh examples/with-eliza.sh cargo run -p example-rust-rig --locked
 
-rlib-library:
-    cargo build --manifest-path ../rlib/Cargo.toml -p rlib-lint --no-default-features --features bon,derive_more,miette,serde,strum,thiserror --locked
-    host=$(rustc --version --verbose | sed -n 's/^host: //p'); case "$host" in *darwin*) extension=dylib ;; *) extension=so ;; esac; source="../rlib/target/debug/librlib_lint.$extension"; target="../rlib/target/debug/librlib_lint@nightly-$host.$extension"; test -f "$source"; cp "$source" "$target"
-
-lint: rlib-library
+lint:
     cargo-clippy clippy --workspace --all-targets --locked -- -D warnings
-    host=$(rustc --version --verbose | sed -n 's/^host: //p'); case "$host" in *darwin*) extension=dylib ;; *) extension=so ;; esac; plugin="$PWD/../rlib/target/debug/librlib_lint@nightly-$host.$extension"; plugin_hash=$(cksum "$plugin" | awk '{print $1}'); CARGO_TARGET_DIR="$PWD/target/dylint/$plugin_hash" CARGO_BUILD_JOBS=1 DYLINT_LIBRARY_PATH="$PWD/../rlib/target/debug" DYLINT_RUSTFLAGS="-Dwarnings" cargo dylint --no-deps --lib rlib_lint --workspace -- --all-targets --locked
+    cargo-rlib rlib --workspace --all-targets --locked -- -D warnings
 
 check-hurl-layout:
     @for file in tests/http/public/*.hurl tests/http/auth/*.hurl; do request_count=$(rg -c '^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ' "$file"); test "$request_count" -eq 1 || { echo "$file: expected one HTTP request, found $request_count" >&2; exit 1; }; done
@@ -35,10 +31,10 @@ test:
 test-http: check-hurl-layout
     cargo test --test http --locked
 
-ok: rlib-library check-hurl-layout
-    cargo fmt --all --check
+ok: check-hurl-layout
+    cargo-fmt fmt --all -- --check
     hurlfmt --check tests/http/public/*.hurl tests/http/auth/*.hurl
     cargo check --workspace --all-targets --locked
     cargo test --workspace --all-targets --locked
     cargo-clippy clippy --workspace --all-targets --locked -- -D warnings
-    host=$(rustc --version --verbose | sed -n 's/^host: //p'); case "$host" in *darwin*) extension=dylib ;; *) extension=so ;; esac; plugin="$PWD/../rlib/target/debug/librlib_lint@nightly-$host.$extension"; plugin_hash=$(cksum "$plugin" | awk '{print $1}'); CARGO_TARGET_DIR="$PWD/target/dylint/$plugin_hash" CARGO_BUILD_JOBS=1 DYLINT_LIBRARY_PATH="$PWD/../rlib/target/debug" DYLINT_RUSTFLAGS="-Dwarnings" cargo dylint --no-deps --lib rlib_lint --workspace -- --all-targets --locked
+    cargo-rlib rlib --workspace --all-targets --locked -- -D warnings

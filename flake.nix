@@ -5,11 +5,12 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     fenix.url = "github:nix-community/fenix";
     fenix.inputs.nixpkgs.follows = "nixpkgs";
-    dylint-src.url = "github:trailofbits/dylint/v6.0.1";
-    dylint-src.flake = false;
+    rlib.url = "git+file:../rlib";
+    rlib.inputs.nixpkgs.follows = "nixpkgs";
+    rlib.inputs.fenix.follows = "fenix";
   };
 
-  outputs = { self, nixpkgs, fenix, dylint-src, ... }:
+  outputs = { self, nixpkgs, rlib, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -23,7 +24,12 @@
             inherit system;
             config.allowUnfreePredicate = package: (package.pname or "") == "eliza";
           };
-        in pkgs.rustPlatform.buildRustPackage {
+          rustToolchain = rlib.packages.${system}.rust-toolchain;
+          rustPlatform = pkgs.makeRustPlatform {
+            cargo = rustToolchain;
+            rustc = rustToolchain;
+          };
+        in rustPlatform.buildRustPackage {
           pname = "eliza";
           version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = pkgs.lib.fileset.toSource {
@@ -56,39 +62,19 @@
       devEnvironmentFor = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          rust = pkgs.callPackage ./nix/rust-toolchain.nix { inherit fenix system; };
-          rustPlatform = pkgs.makeRustPlatform {
-            cargo = rust.toolchain;
-            rustc = rust.toolchain;
-          };
-          dylintTools = pkgs.callPackage ./nix/dylint-tools.nix {
-            inherit rustPlatform;
-            dylintSrc = dylint-src;
-          };
-          dylintDriver = pkgs.callPackage ./nix/dylint-driver.nix {
-            inherit rustPlatform;
-            dylintSrc = dylint-src;
-            rustToolchain = rust.toolchain;
-            toolchainLabel = rust.toolchainLabel;
-          };
         in pkgs.mkShell {
+          inputsFrom = [ rlib.devShells.${system}.consumer ];
           packages = [
             pkgs.aichat
             pkgs.curl
             pkgs.hurl
-            pkgs.nodejs_22
-            pkgs.pnpm
-            rust.toolchain
-            dylintTools
             pkgs.just
+            pkgs.nodejs_22
             pkgs.openssl
+            pkgs.pnpm
             pkgs.pkg-config
             pkgs.stdenv.cc
           ];
-          RUSTC = "${rust.toolchain}/bin/rustc";
-          RUSTDOC = "${rust.toolchain}/bin/rustdoc";
-          RUSTUP_TOOLCHAIN = rust.toolchainLabel;
-          DYLINT_DRIVER_PATH = "${dylintDriver}";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl pkgs.stdenv.cc.cc.lib ];
         };
     in {
@@ -98,9 +84,13 @@
           eliza = package;
           default = package;
         });
+
       checks = forAllSystems (system: {
         package = self.packages.${system}.eliza;
       });
-      devShells = forAllSystems (system: { default = devEnvironmentFor system; });
+
+      devShells = forAllSystems (system: {
+        default = devEnvironmentFor system;
+      });
     };
 }
