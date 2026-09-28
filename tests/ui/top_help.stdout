@@ -1,8 +1,4 @@
-Top-level ELIZA CLI.
-
-``` use clap::Parser; use eliza::cli::{Cli, Commands};
-
-let cli = Cli::parse_from(["eliza", "serve", "--port", "8787"]); assert!(matches!(cli.command, Commands::Serve(_))); ```
+Serve classic ELIZA through OpenAI, Anthropic, Gemini, and Ollama-compatible HTTP APIs.
 
 Usage: eliza <COMMAND>
 
@@ -11,5 +7,4 @@ Commands:
   help   Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help
-          Print help (see a summary with '-h')
+  -h, --help  Print help
