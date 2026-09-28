@@ -2,7 +2,8 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogle } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { generateText, streamText } from 'ai';
+import { generateText, jsonSchema, stepCountIs, streamText, tool } from 'ai';
+import type { LanguageModel } from 'ai';
 
 const BASE_URL = process.env.ELIZA_BASE_URL ?? 'http://127.0.0.1:8787';
 const MODEL_ID = 'eliza-doctor';
@@ -11,20 +12,31 @@ const PROMPT = 'I am sad.';
 
 const openai = createOpenAI({
   apiKey: 'local',
-  baseURL: `${BASE_URL}/v1`,
+  baseURL: `${BASE_URL}/openai/v1`,
 });
 const geminiOpenAI = createOpenAICompatible({
   apiKey: 'local',
-  baseURL: `${BASE_URL}/v1beta/openai`,
+  baseURL: `${BASE_URL}/gemini/v1beta/openai`,
   name: 'eliza-gemini-openai',
 });
 const anthropic = createAnthropic({
   apiKey: 'local',
-  baseURL: `${BASE_URL}/v1`,
+  baseURL: `${BASE_URL}/anthropic/v1`,
 });
 const google = createGoogle({
   apiKey: 'local',
-  baseURL: `${BASE_URL}/v1beta`,
+  baseURL: `${BASE_URL}/gemini/v1beta`,
+});
+
+const echoTool = tool({
+  description: 'Echo a value',
+  inputSchema: jsonSchema<{ value: string }>({
+    type: 'object',
+    properties: { value: { type: 'string' } },
+    required: ['value'],
+    additionalProperties: false,
+  }),
+  execute: async ({ value }) => value,
 });
 
 type Example = {
@@ -38,6 +50,18 @@ async function collectText(stream: AsyncIterable<string>): Promise<string> {
     text += chunk;
   }
   return text;
+}
+
+async function toolRoundTrip(model: LanguageModel): Promise<string> {
+  return (
+    await generateText({
+      maxOutputTokens: MAX_OUTPUT_TOKEN,
+      model,
+      prompt: '@tool echo {"value":"hello"}',
+      tools: { echo: echoTool },
+      stopWhen: stepCountIs(2),
+    })
+  ).text;
 }
 
 const examples: Example[] = [
@@ -55,6 +79,14 @@ const examples: Example[] = [
     name: 'OpenAI Responses',
     run: async () =>
       (await generateText({ maxOutputTokens: MAX_OUTPUT_TOKEN, model: openai.responses(MODEL_ID), prompt: PROMPT })).text,
+  },
+  {
+    name: 'OpenAI Chat tool round trip',
+    run: () => toolRoundTrip(openai.chat(MODEL_ID)),
+  },
+  {
+    name: 'OpenAI Responses tool round trip',
+    run: () => toolRoundTrip(openai.responses(MODEL_ID)),
   },
   {
     name: 'Gemini OpenAI-compatible alias',
@@ -79,6 +111,10 @@ const examples: Example[] = [
       ),
   },
   {
+    name: 'Anthropic tool round trip',
+    run: () => toolRoundTrip(anthropic.messages(MODEL_ID)),
+  },
+  {
     name: 'Gemini generateContent',
     run: async () =>
       (await generateText({ maxOutputTokens: MAX_OUTPUT_TOKEN, model: google.chat(MODEL_ID), prompt: PROMPT })).text,
@@ -87,6 +123,10 @@ const examples: Example[] = [
     name: 'Gemini streamGenerateContent',
     run: () =>
       collectText(streamText({ maxOutputTokens: MAX_OUTPUT_TOKEN, model: google.chat(MODEL_ID), prompt: PROMPT }).textStream),
+  },
+  {
+    name: 'Gemini tool round trip',
+    run: () => toolRoundTrip(google.chat(MODEL_ID)),
   },
 ];
 
