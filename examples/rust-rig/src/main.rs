@@ -4,7 +4,7 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use rig::client::{CompletionClient, ModelListingClient};
 use rig::completion::{AssistantContent, CompletionModel};
-use rig::providers::{anthropic, gemini, openai};
+use rig::providers::{anthropic, gemini, ollama, openai};
 use rig::streaming::StreamedAssistantContent;
 
 // -----------------------------------------------------------------------------
@@ -16,6 +16,20 @@ const EXAMPLE_MODEL: &str = "eliza-doctor";
 
 /// Deterministic prompt used to make provider results easy to compare.
 const EXAMPLE_PROMPT: &str = "I am sad.";
+
+// -----------------------------------------------------------------------------
+// Exercise: Runs one model through both transports.
+// -----------------------------------------------------------------------------
+
+/// Exercise one model's unary and streaming transports.
+async fn exercise<M>(name: &str, model: &M) -> usize
+where
+    M: CompletionModel + Clone,
+{
+    let unary_failed = !is_successful(name, complete(model).await);
+    let stream_failed = !is_successful(&format!("{name} stream"), stream(model).await);
+    usize::from(unary_failed) + usize::from(stream_failed)
+}
 
 // -----------------------------------------------------------------------------
 // Main: Builds provider clients and runs every supported example.
@@ -37,21 +51,28 @@ async fn main() -> Result<()> {
 
     let openai = openai::Client::builder()
         .api_key("local")
-        .base_url(format!("{base_url}/v1"))
+        .base_url(format!("{base_url}/openai/v1"))
         .build()?;
     let openai_chat = openai.clone().completions_api();
     let gemini_openai = openai::Client::builder()
         .api_key("local")
-        .base_url(format!("{base_url}/v1beta/openai"))
+        .base_url(format!("{base_url}/gemini/v1beta/openai"))
         .build()?
         .completions_api();
+    let anthropic_base = format!("{base_url}/anthropic");
     let anthropic = anthropic::Client::builder()
         .api_key("local")
-        .base_url(&base_url)
+        .base_url(&anthropic_base)
         .build()?;
+    let gemini_base = format!("{base_url}/gemini");
     let gemini = gemini::Client::builder()
         .api_key("local")
-        .base_url(&base_url)
+        .base_url(&gemini_base)
+        .build()?;
+    let ollama_base = format!("{base_url}/ollama");
+    let ollama = ollama::Client::builder()
+        .api_key("local")
+        .base_url(&ollama_base)
         .build()?;
 
     let mut failures = 0;
@@ -63,34 +84,22 @@ async fn main() -> Result<()> {
             .map(|models| format!("{} model(s)", models.len()))
             .map_err(Into::into),
     ));
-    failures += usize::from(!is_successful(
+    failures += exercise(
         "OpenAI Chat Completions",
-        complete(&openai_chat.completion_model(EXAMPLE_MODEL)).await,
-    ));
-    failures += usize::from(!is_successful(
-        "OpenAI Chat Completions stream",
-        stream(&openai_chat.completion_model(EXAMPLE_MODEL)).await,
-    ));
-    failures += usize::from(!is_successful(
-        "OpenAI Responses",
-        complete(&openai.completion_model(EXAMPLE_MODEL)).await,
-    ));
-    failures += usize::from(!is_successful(
+        &openai_chat.completion_model(EXAMPLE_MODEL),
+    )
+    .await;
+    failures += exercise("OpenAI Responses", &openai.completion_model(EXAMPLE_MODEL)).await;
+    failures += exercise(
         "Gemini OpenAI-compatible alias",
-        complete(&gemini_openai.completion_model(EXAMPLE_MODEL)).await,
-    ));
-    failures += usize::from(!is_successful(
-        "Gemini OpenAI-compatible alias stream",
-        stream(&gemini_openai.completion_model(EXAMPLE_MODEL)).await,
-    ));
-    failures += usize::from(!is_successful(
+        &gemini_openai.completion_model(EXAMPLE_MODEL),
+    )
+    .await;
+    failures += exercise(
         "Anthropic Messages",
-        complete(&anthropic.completion_model(EXAMPLE_MODEL)).await,
-    ));
-    failures += usize::from(!is_successful(
-        "Anthropic Messages stream",
-        stream(&anthropic.completion_model(EXAMPLE_MODEL)).await,
-    ));
+        &anthropic.completion_model(EXAMPLE_MODEL),
+    )
+    .await;
     failures += usize::from(!is_successful(
         "Gemini models",
         gemini
@@ -99,14 +108,20 @@ async fn main() -> Result<()> {
             .map(|models| format!("{} model(s)", models.len()))
             .map_err(Into::into),
     ));
-    failures += usize::from(!is_successful(
+    failures += exercise(
         "Gemini generateContent",
-        complete(&gemini.completion_model(EXAMPLE_MODEL)).await,
-    ));
+        &gemini.completion_model(EXAMPLE_MODEL),
+    )
+    .await;
     failures += usize::from(!is_successful(
-        "Gemini streamGenerateContent",
-        stream(&gemini.completion_model(EXAMPLE_MODEL)).await,
+        "Ollama models",
+        ollama
+            .list_models()
+            .await
+            .map(|models| format!("{} model(s)", models.len()))
+            .map_err(Into::into),
     ));
+    failures += exercise("Ollama chat", &ollama.completion_model(EXAMPLE_MODEL)).await;
 
     if failures > 0 {
         anyhow::bail!("{failures} Rig example(s) failed");
