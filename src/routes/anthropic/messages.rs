@@ -1,12 +1,4 @@
 //! Anthropic Messages adapter.
-#![expect(
-    clippy::missing_errors_doc,
-    rlib::missing_section_dividers,
-    rlib::undocumented_early_returns,
-    rlib::undocumented_items,
-    reason = "private adapter stages stay in request flow; validation errors describe each guard"
-)]
-
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
@@ -20,9 +12,9 @@ use uuid::Uuid;
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use super::errors::{AnthropicError, AnthropicFailureResponse, AnthropicRejection};
 use super::types::{
-    Content, ContentBlock, MessageDelta, MessageRole, MessagesRequest, MessagesResponse,
-    OutputBlock, OutputUsage, StopReason, StreamDelta, StreamEvent, StreamMessage,
-    ToolResultContent, ToolResultTextBlock, Usage,
+    MessageContent, MessageContentBlock, MessageRole, MessagesOutputBlock, MessagesRequest,
+    MessagesResponse, MessagesStopReason, MessagesUsage, StreamDelta, StreamEvent, StreamMessage,
+    StreamMessageDelta, StreamOutputUsage, ToolResultContent, ToolResultTextBlock,
 };
 use crate::routes::errors::ExtractionError;
 use crate::types::errors::EncodingError;
@@ -31,7 +23,15 @@ use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
 };
 
-struct AnthropicTurn(CompatTurnRequest);
+// -----------------------------------------------------------------------------
+// AnthropicTurn: Lowers one Messages request into the neutral contract.
+// -----------------------------------------------------------------------------
+
+/// Provider-neutral request lowered from Anthropic Messages input.
+struct AnthropicTurn(
+    /// Validated conversation consumed by the shared executor.
+    CompatTurnRequest,
+);
 
 impl TryFrom<MessagesRequest> for AnthropicTurn {
     type Error = AnthropicError;
@@ -45,11 +45,10 @@ impl TryFrom<MessagesRequest> for AnthropicTurn {
         let mut turns = Vec::new();
         for message in payload.messages {
             match message.role {
-                MessageRole::User => lower_user_content(message.content, &mut turns)?,
-                MessageRole::Assistant => lower_assistant_content(message.content, &mut turns)?,
-                MessageRole::Unsupported => {
-                    return Err(AnthropicError::UnsupportedRole);
-                }
+                MessageRole::User => user_content_lower(message.content, &mut turns)?,
+                MessageRole::Assistant => assistant_content_lower(message.content, &mut turns)?,
+                // Unknown provider roles cannot be replayed safely.
+                MessageRole::Unsupported => return Err(AnthropicError::UnsupportedRole),
             }
         }
 
@@ -63,34 +62,82 @@ impl TryFrom<MessagesRequest> for AnthropicTurn {
     }
 }
 
-fn system_text(content: Content) -> Result<String, AnthropicError> {
-    match content {
-        Content::Text(text) => Ok(text),
-        Content::Blocks(blocks) => {
-            let mut text = Vec::with_capacity(blocks.len());
-            for block in blocks {
-                match block {
-                    ContentBlock::Text { text: part } => text.push(part),
-                    ContentBlock::ToolUse { .. }
-                    | ContentBlock::ToolResult { .. }
-                    | ContentBlock::Unsupported => {
-                        return Err(AnthropicError::UnsupportedSystemBlock);
-                    }
-                }
-            }
-            Ok(text.join("\n"))
-        }
+// -----------------------------------------------------------------------------
+// System: Lowers system content into instruction text.
+// -----------------------------------------------------------------------------
+
+/// Lower one system block into its text payload.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when the block is not text.
+fn system_block_text(block: MessageContentBlock) -> Result<String, AnthropicError> {
+    match block {
+        MessageContentBlock::Text { text } => Ok(text),
+        MessageContentBlock::ToolUse { .. }
+        | MessageContentBlock::ToolResult { .. }
+        | MessageContentBlock::Unsupported => Err(AnthropicError::UnsupportedSystemBlock),
     }
 }
 
-fn lower_user_content(content: Content, turns: &mut Vec<CompatTurn>) -> Result<(), AnthropicError> {
+/// Join validated text-only system blocks.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when any block is not text.
+fn system_blocks_text(blocks: Vec<MessageContentBlock>) -> Result<String, AnthropicError> {
+    let text = blocks
+        .into_iter()
+        .map(system_block_text)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(text.join("\n"))
+}
+
+/// Lower string or block system content into one instruction.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when block content contains a non-text item.
+fn system_text(content: MessageContent) -> Result<String, AnthropicError> {
+    match content {
+        MessageContent::Text(text) => Ok(text),
+        MessageContent::Blocks(blocks) => system_blocks_text(blocks),
+    }
+}
+
+// -----------------------------------------------------------------------------
+// User: Lowers user content and tool results in source order.
+// -----------------------------------------------------------------------------
+
+/// Flush accumulated user text before a tool-result boundary.
+fn user_text_flush(text: &mut Vec<String>, turns: &mut Vec<CompatTurn>) {
+    // Empty buffers do not represent a conversation turn.
+    if text.is_empty() {
+        return;
+    }
+    turns.push(CompatTurn::User(std::mem::take(text).join("\n")));
+}
+
+/// Lower one user message into neutral user and tool-result turns.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when content is empty, includes an unsupported
+/// block, or carries an invalid tool result.
+fn user_content_lower(
+    content: MessageContent,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), AnthropicError> {
     let blocks = match content {
-        Content::Text(text) => {
+        // A string message is already a complete user turn.
+        MessageContent::Text(text) => {
             turns.push(CompatTurn::User(text));
             return Ok(());
         }
-        Content::Blocks(blocks) => blocks,
+        MessageContent::Blocks(blocks) => blocks,
     };
+
+    // Block content must carry at least one user-facing item.
     if blocks.is_empty() {
         return Err(AnthropicError::MissingUserContent);
     }
@@ -98,53 +145,47 @@ fn lower_user_content(content: Content, turns: &mut Vec<CompatTurn>) -> Result<(
     let mut text = Vec::new();
     for block in blocks {
         match block {
-            ContentBlock::Text { text: part } => text.push(part),
-            ContentBlock::ToolResult { content } => {
-                flush_user_text(&mut text, turns);
+            MessageContentBlock::Text { text: part } => text.push(part),
+            MessageContentBlock::ToolResult { content } => {
+                user_text_flush(&mut text, turns);
                 turns.push(CompatTurn::ToolResult(tool_result_text(content)?));
             }
-            ContentBlock::ToolUse { .. } | ContentBlock::Unsupported => {
+            // User messages cannot originate assistant tool calls.
+            MessageContentBlock::ToolUse { .. } | MessageContentBlock::Unsupported => {
                 return Err(AnthropicError::UnsupportedUserBlock);
             }
         }
     }
-    flush_user_text(&mut text, turns);
+    user_text_flush(&mut text, turns);
     Ok(())
 }
 
-fn flush_user_text(text: &mut Vec<String>, turns: &mut Vec<CompatTurn>) {
-    if text.is_empty() {
-        return;
-    }
-    turns.push(CompatTurn::User(std::mem::take(text).join("\n")));
-}
+// -----------------------------------------------------------------------------
+// Assistant: Lowers assistant text and tool calls in source order.
+// -----------------------------------------------------------------------------
 
-fn lower_assistant_content(
-    content: Content,
-    turns: &mut Vec<CompatTurn>,
-) -> Result<(), AnthropicError> {
-    match content {
-        Content::Text(text) => turns.push(CompatTurn::Assistant(text)),
-        Content::Blocks(blocks) => lower_assistant_blocks(blocks, turns)?,
-    }
-    Ok(())
-}
-
-fn lower_assistant_blocks(
-    blocks: Vec<ContentBlock>,
+/// Lower each typed assistant content block.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when a tool call omits required data or an
+/// assistant block has an unsupported shape.
+fn assistant_blocks_lower(
+    blocks: Vec<MessageContentBlock>,
     turns: &mut Vec<CompatTurn>,
 ) -> Result<(), AnthropicError> {
     for block in blocks {
         match block {
-            ContentBlock::Text { text } => turns.push(CompatTurn::Assistant(text)),
-            ContentBlock::ToolUse { name, input } => {
+            MessageContentBlock::Text { text } => turns.push(CompatTurn::Assistant(text)),
+            MessageContentBlock::ToolUse { name, input } => {
                 let name = name
                     .filter(|name| !name.is_empty())
                     .ok_or(AnthropicError::MissingToolUseName)?;
                 let arguments = input.ok_or(AnthropicError::MissingToolUseInput)?;
                 turns.push(CompatTurn::ToolCall(FunctionCall { name, arguments }));
             }
-            ContentBlock::ToolResult { .. } | ContentBlock::Unsupported => {
+            // Assistant messages cannot contain client tool results.
+            MessageContentBlock::ToolResult { .. } | MessageContentBlock::Unsupported => {
                 return Err(AnthropicError::UnsupportedAssistantBlock);
             }
         }
@@ -152,29 +193,147 @@ fn lower_assistant_blocks(
     Ok(())
 }
 
+/// Lower one assistant message into neutral assistant and tool-call turns.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when block content cannot be represented by the
+/// neutral transcript.
+fn assistant_content_lower(
+    content: MessageContent,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), AnthropicError> {
+    match content {
+        MessageContent::Text(text) => turns.push(CompatTurn::Assistant(text)),
+        MessageContent::Blocks(blocks) => assistant_blocks_lower(blocks, turns)?,
+    }
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// ToolResult: Normalizes provider tool-result content.
+// -----------------------------------------------------------------------------
+
+/// Lower one tool-result block into its text payload.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when the block is not text.
+fn tool_result_block_text(block: ToolResultTextBlock) -> Result<String, AnthropicError> {
+    match block {
+        ToolResultTextBlock::Text { text } => Ok(text),
+        ToolResultTextBlock::Unsupported => Err(AnthropicError::UnsupportedToolResultBlock),
+    }
+}
+
+/// Join validated text-only tool-result blocks.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when any block is not text.
+fn tool_result_blocks_text(blocks: Vec<ToolResultTextBlock>) -> Result<String, AnthropicError> {
+    let text = blocks
+        .into_iter()
+        .map(tool_result_block_text)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(text.join("\n"))
+}
+
+/// Lower optional tool-result content into replayable text.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] when content is absent or includes a non-text block.
 fn tool_result_text(content: Option<ToolResultContent>) -> Result<String, AnthropicError> {
     match content {
         Some(ToolResultContent::Text(text)) => Ok(text),
         Some(ToolResultContent::Object(object)) => Ok(object.serialized()),
-        Some(ToolResultContent::Blocks(blocks)) => {
-            let mut text = Vec::with_capacity(blocks.len());
-            for block in blocks {
-                match block {
-                    ToolResultTextBlock::Text { text: part } => text.push(part),
-                    ToolResultTextBlock::Unsupported => {
-                        return Err(AnthropicError::UnsupportedToolResultBlock);
-                    }
-                }
-            }
-            Ok(text.join("\n"))
-        }
+        Some(ToolResultContent::Blocks(blocks)) => tool_result_blocks_text(blocks),
         None => Err(AnthropicError::MissingToolResultContent),
     }
 }
 
-fn response_events(response: &CompatTurnResponse) -> Result<SseEvents, EncodingError> {
+// -----------------------------------------------------------------------------
+// Events: Renders Anthropic's streaming event sequence.
+// -----------------------------------------------------------------------------
+
+/// Serialize and append one named Anthropic event.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when the event cannot be serialized.
+fn events_push(
+    events: &mut Vec<Event>,
+    name: &'static str,
+    event: &StreamEvent,
+) -> Result<(), EncodingError> {
+    events.push(json_event(event)?.event(name));
+    Ok(())
+}
+
+/// Append all text chunks for one streaming response.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when a text delta cannot be serialized.
+fn events_push_text(events: &mut Vec<Event>, text: &str) -> Result<(), EncodingError> {
+    for chunk in stream_chunks(text) {
+        let event = StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: StreamDelta::TextDelta { text: chunk },
+        };
+        events_push(events, "content_block_delta", &event)?;
+    }
+    Ok(())
+}
+
+/// Append the JSON delta for one tool call.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when the tool-call delta cannot be serialized.
+fn events_push_tool_call(
+    events: &mut Vec<Event>,
+    call: &FunctionCall,
+) -> Result<(), EncodingError> {
+    let event = StreamEvent::ContentBlockDelta {
+        index: 0,
+        delta: StreamDelta::InputJsonDelta {
+            partial_json: call.arguments.serialized(),
+        },
+    };
+    events_push(events, "content_block_delta", &event)
+}
+
+/// Append content deltas for one completed output and return its stop reason.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when an output delta cannot be serialized.
+fn events_push_output(
+    events: &mut Vec<Event>,
+    output: &CompatOutput,
+) -> Result<MessagesStopReason, EncodingError> {
+    match output {
+        CompatOutput::Text(text) => {
+            events_push_text(events, text)?;
+            Ok(MessagesStopReason::EndTurn)
+        }
+        CompatOutput::ToolCall(call) => {
+            events_push_tool_call(events, call)?;
+            Ok(MessagesStopReason::ToolUse)
+        }
+    }
+}
+
+/// Render the complete streaming event sequence for one response.
+///
+/// # Errors
+///
+/// Returns [`EncodingError`] when any stream event cannot be serialized.
+fn events_response(response: &CompatTurnResponse) -> Result<SseEvents, EncodingError> {
     let mut events = Vec::new();
-    push_event(
+    events_push(
         &mut events,
         "message_start",
         &StreamEvent::MessageStart {
@@ -186,85 +345,55 @@ fn response_events(response: &CompatTurnResponse) -> Result<SseEvents, EncodingE
                 content: Vec::new(),
                 stop_reason: None,
                 stop_sequence: None,
-                usage: Usage {
+                usage: MessagesUsage {
                     input_tokens: response.usage.prompt,
                     output_tokens: 0,
                 },
             },
         },
     )?;
-    push_event(
+    events_push(
         &mut events,
         "content_block_start",
         &StreamEvent::ContentBlockStart {
             index: 0,
-            content_block: OutputBlock::empty_for(&response.output),
+            content_block: MessagesOutputBlock::empty_for(&response.output),
         },
     )?;
-    let stop_reason = match &response.output {
-        CompatOutput::Text(text) => {
-            for chunk in stream_chunks(text) {
-                push_event(
-                    &mut events,
-                    "content_block_delta",
-                    &StreamEvent::ContentBlockDelta {
-                        index: 0,
-                        delta: StreamDelta::TextDelta { text: chunk },
-                    },
-                )?;
-            }
-            StopReason::EndTurn
-        }
-        CompatOutput::ToolCall(call) => {
-            push_event(
-                &mut events,
-                "content_block_delta",
-                &StreamEvent::ContentBlockDelta {
-                    index: 0,
-                    delta: StreamDelta::InputJsonDelta {
-                        partial_json: call.arguments.serialized(),
-                    },
-                },
-            )?;
-            StopReason::ToolUse
-        }
-    };
-    push_event(
+    let stop_reason = events_push_output(&mut events, &response.output)?;
+    events_push(
         &mut events,
         "content_block_stop",
         &StreamEvent::ContentBlockStop { index: 0 },
     )?;
-    push_event(
+    events_push(
         &mut events,
         "message_delta",
         &StreamEvent::MessageDelta {
-            delta: MessageDelta {
+            delta: StreamMessageDelta {
                 stop_reason,
                 stop_sequence: None,
             },
-            usage: OutputUsage {
+            usage: StreamOutputUsage {
                 output_tokens: response.usage.completion,
             },
         },
     )?;
-    push_event(&mut events, "message_stop", &StreamEvent::MessageStop)?;
+    events_push(&mut events, "message_stop", &StreamEvent::MessageStop)?;
     Ok(SseEvents::from(events))
 }
 
-fn push_event(
-    events: &mut Vec<Event>,
-    name: &'static str,
-    event: &StreamEvent,
-) -> Result<(), EncodingError> {
-    events.push(json_event(event)?.event(name));
-    Ok(())
-}
+// -----------------------------------------------------------------------------
+// AnthropicMessages: Authenticates, executes, and mounts the endpoint.
+// -----------------------------------------------------------------------------
 
-async fn messages(
+/// Handle one Anthropic Messages request.
+async fn anthropic_messages(
     headers: HeaderMap,
     State(state): State<AppState>,
     payload: Result<Json<MessagesRequest>, JsonRejection>,
 ) -> Response {
+    // Authentication failures use Anthropic's native error envelope.
     if let Err(error) =
         provider_authenticate(&headers, &state.config, ProviderAuth::ApiKey("x-api-key"))
     {
@@ -272,6 +401,7 @@ async fn messages(
     }
     let Json(payload) = match payload {
         Ok(payload) => payload,
+        // Extraction failures must retain their typed diagnostic code.
         Err(error) => {
             return AnthropicRejection::from_error(&ExtractionError::from(error)).into_response();
         }
@@ -281,19 +411,29 @@ async fn messages(
     let should_stream = payload.should_stream.unwrap_or(false);
     let request = match AnthropicTurn::try_from(payload) {
         Ok(request) => request.0,
-        Err(error) => return AnthropicRejection::from_error(&error).into_response(),
+        // Provider validation failures use Anthropic's native envelope.
+        Err(error) => {
+            return AnthropicRejection::from_error(&error).into_response();
+        }
     };
+
+    // Enforce shared request bounds after provider-specific lowering.
     let limits = RequestLimits::new(
         state.config.max_input_chars,
         state.config.max_history_messages,
     );
+
+    // Complete the validated neutral request before choosing a wire response.
     let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return AnthropicRejection::from_error(&error).into_response(),
+        // Shared execution failures still render as Anthropic errors.
+        Err(error) => {
+            return AnthropicRejection::from_error(&error).into_response();
+        }
     };
 
     if should_stream {
-        match response_events(&response) {
+        match events_response(&response) {
             Ok(events) => events
                 .with_delay(state.config.stream_delay_ms)
                 .into_response(),
@@ -312,7 +452,7 @@ impl AnthropicMessages {
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
             "/v1/messages",
-            post_with(messages, |operation| {
+            post_with(anthropic_messages, |operation| {
                 operation
                     .summary("Anthropic message")
                     .tag("anthropic")

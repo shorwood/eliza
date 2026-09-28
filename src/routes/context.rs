@@ -8,6 +8,7 @@ use axum::http::HeaderMap;
 use super::errors::AuthenticationError;
 use crate::cli::{AuthMode, BearerToken};
 use crate::types::model::ModelId;
+use crate::types::turn::RequestLimits;
 
 // -----------------------------------------------------------------------------
 // RouteConfig: Stores behavior consumed by HTTP routes.
@@ -37,16 +38,15 @@ impl RouteConfig {
         auth: AuthMode,
         bearer_token: Option<BearerToken>,
         stream_delay_ms: u64,
-        max_input_chars: NonZeroUsize,
-        max_history_messages: NonZeroUsize,
+        limits: RequestLimits,
     ) -> Self {
         Self {
             model,
             auth,
             bearer_token,
             stream_delay_ms,
-            max_input_chars,
-            max_history_messages,
+            max_input_chars: limits.max_input_chars(),
+            max_history_messages: limits.max_history_messages(),
         }
     }
 }
@@ -94,6 +94,24 @@ fn provider_authenticate_header_text(
     value.to_str().map(Some)
 }
 
+/// Read the credential represented by one provider's authentication scheme.
+///
+/// # Errors
+///
+/// Returns an error when the selected header is present but not valid text.
+fn provider_credential(
+    headers: &HeaderMap,
+    provider: ProviderAuth,
+) -> Result<Option<&str>, axum::http::header::ToStrError> {
+    match provider {
+        ProviderAuth::Bearer => {
+            provider_authenticate_header_text(headers, axum::http::header::AUTHORIZATION)
+                .map(|value| value.and_then(|text| text.strip_prefix("Bearer ")))
+        }
+        ProviderAuth::ApiKey(name) => provider_authenticate_header_text(headers, name),
+    }
+}
+
 /// Check provider authentication headers against route configuration.
 ///
 /// # Errors
@@ -113,18 +131,11 @@ pub(super) fn provider_authenticate(
     let Some(expected) = config.bearer_token.as_ref() else {
         return Err(AuthenticationError::Failed);
     };
-    let matches = match provider {
-        ProviderAuth::Bearer => {
-            provider_authenticate_header_text(headers, axum::http::header::AUTHORIZATION)
-                .map_err(|_| AuthenticationError::Failed)?
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .is_some_and(|token| token == expected.as_str())
-        }
-        ProviderAuth::ApiKey(name) => provider_authenticate_header_text(headers, name)
-            .map_err(|_| AuthenticationError::Failed)?
-            .is_some_and(|token| token == expected.as_str()),
-    };
-    if matches {
+
+    // Compare only successfully decoded provider credentials.
+    let supplied =
+        provider_credential(headers, provider).map_err(|_| AuthenticationError::Failed)?;
+    if supplied == Some(expected.as_str()) {
         Ok(())
     } else {
         Err(AuthenticationError::Failed)

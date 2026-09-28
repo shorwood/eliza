@@ -1,9 +1,4 @@
 //! Typed Ollama adapter failures and wire rendering.
-#![expect(
-    rlib::undocumented_items,
-    reason = "private variants and wire fields repeat their diagnostic and Serde contracts"
-)]
-
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use miette::Diagnostic;
@@ -18,6 +13,10 @@ use crate::problem::{Problem, ProblemClass, ProblemDetails};
 // -----------------------------------------------------------------------------
 
 /// Failure detected while lowering an Ollama request.
+#[expect(
+    rlib::undocumented_items,
+    reason = "thiserror messages and Miette codes are the canonical contracts for private adapter failures"
+)]
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OllamaError {
     #[error("structured {kind} output is not supported")]
@@ -90,6 +89,7 @@ impl ProblemDetails for OllamaError {
 /// Ollama top-level failure envelope.
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct OllamaFailureResponse {
+    /// Human-readable failure detail.
     error: String,
 }
 
@@ -98,7 +98,10 @@ pub(super) struct OllamaFailureResponse {
 // -----------------------------------------------------------------------------
 
 /// Provider-native renderer for one typed problem.
-pub(super) struct OllamaRejection(Problem);
+pub(super) struct OllamaRejection(
+    /// Neutral problem awaiting Ollama wire rendering.
+    Problem,
+);
 
 impl OllamaRejection {
     /// Capture a typed diagnostic for Ollama rendering.
@@ -110,13 +113,14 @@ impl OllamaRejection {
 impl IntoResponse for OllamaRejection {
     fn into_response(self) -> Response {
         let problem = self.0;
-        let response = (
+        let mut response = (
             problem.status(),
             Json(OllamaFailureResponse {
                 error: problem.message().to_owned(),
             }),
         )
             .into_response();
-        problem.finish_response(response)
+        problem.write_error_code(response.headers_mut());
+        response
     }
 }

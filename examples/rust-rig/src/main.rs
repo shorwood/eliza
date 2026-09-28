@@ -142,12 +142,11 @@ async fn complete<M>(model: &M) -> Result<String>
 where
     M: CompletionModel + Clone,
 {
-    let response = model
+    let request = model
         .clone()
         .completion_request(EXAMPLE_PROMPT)
-        .max_tokens(128)
-        .send()
-        .await?;
+        .max_tokens(128);
+    let response = request.send().await?;
     Ok(response
         .choice
         .into_iter()
@@ -171,12 +170,11 @@ async fn stream<M>(model: &M) -> Result<String>
 where
     M: CompletionModel + Clone,
 {
-    let mut response = model
+    let request = model
         .clone()
         .completion_request(EXAMPLE_PROMPT)
-        .max_tokens(128)
-        .stream()
-        .await?;
+        .max_tokens(128);
+    let mut response = request.stream().await?;
     let mut text = String::new();
     while let Some(content) = response.next().await {
         if let StreamedAssistantContent::Text(chunk) = content? {

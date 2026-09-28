@@ -1,9 +1,4 @@
 //! Typed Anthropic adapter failures and wire rendering.
-#![expect(
-    rlib::undocumented_items,
-    reason = "private variants and wire fields repeat their diagnostic and Serde contracts"
-)]
-
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use miette::Diagnostic;
@@ -18,6 +13,10 @@ use crate::problem::{Problem, ProblemClass, ProblemDetails};
 // -----------------------------------------------------------------------------
 
 /// Failure detected while lowering an Anthropic request.
+#[expect(
+    rlib::undocumented_items,
+    reason = "thiserror messages and Miette codes are the canonical contracts for private adapter failures"
+)]
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum AnthropicError {
     #[error("tool is missing its name")]
@@ -95,12 +94,17 @@ impl ProblemDetails for AnthropicError {
 // AnthropicErrorKind: Maps neutral failure classes to wire kinds.
 // -----------------------------------------------------------------------------
 
+/// Anthropic's serialized error classification.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum AnthropicErrorKind {
+    /// Invalid or unsupported request input.
     InvalidRequestError,
+    /// Missing or invalid authentication.
     AuthenticationError,
+    /// Request body exceeding the accepted limit.
     RequestTooLarge,
+    /// Internal server failure.
     ApiError,
 }
 
@@ -121,10 +125,13 @@ impl From<ProblemClass> for AnthropicErrorKind {
 // AnthropicFailureBody: Carries the nested wire error object.
 // -----------------------------------------------------------------------------
 
+/// Nested Anthropic error payload.
 #[derive(Debug, Serialize, JsonSchema)]
 struct AnthropicFailureBody {
+    /// Provider error classification.
     #[serde(rename = "type")]
     kind: AnthropicErrorKind,
+    /// Human-readable failure detail.
     message: String,
 }
 
@@ -135,8 +142,10 @@ struct AnthropicFailureBody {
 /// Anthropic top-level failure envelope.
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct AnthropicFailureResponse {
+    /// Envelope discriminator required by Anthropic clients.
     #[serde(rename = "type")]
     kind: &'static str,
+    /// Provider-native error payload.
     error: AnthropicFailureBody,
 }
 
@@ -145,7 +154,10 @@ pub(super) struct AnthropicFailureResponse {
 // -----------------------------------------------------------------------------
 
 /// Provider-native renderer for one typed problem.
-pub(super) struct AnthropicRejection(Problem);
+pub(super) struct AnthropicRejection(
+    /// Neutral problem awaiting Anthropic wire rendering.
+    Problem,
+);
 
 impl AnthropicRejection {
     /// Capture a typed diagnostic for Anthropic rendering.
@@ -157,7 +169,7 @@ impl AnthropicRejection {
 impl IntoResponse for AnthropicRejection {
     fn into_response(self) -> Response {
         let problem = self.0;
-        let response = (
+        let mut response = (
             problem.status(),
             Json(AnthropicFailureResponse {
                 kind: "error",
@@ -168,7 +180,8 @@ impl IntoResponse for AnthropicRejection {
             }),
         )
             .into_response();
-        problem.finish_response(response)
+        problem.write_error_code(response.headers_mut());
+        response
     }
 }
 

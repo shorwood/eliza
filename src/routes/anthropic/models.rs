@@ -20,19 +20,23 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return AnthropicRejection::from_error(&error).into_response();
     }
 
+    // Render the configured model with Anthropic's fixed catalog metadata.
     let model = state.config.model.clone();
-    Json(ModelListResponse {
-        data: vec![ModelDescriptor {
-            kind: "model",
-            id: model.clone(),
-            display_name: "ELIZA DOCTOR",
-            created_at: "1966-01-01T00:00:00Z",
-        }],
+    let descriptor = ModelDescriptor {
+        kind: "model",
+        id: model.clone(),
+        display_name: "ELIZA DOCTOR",
+        created_at: "1966-01-01T00:00:00Z",
+    };
+
+    // Wrap the descriptor with Anthropic's pagination contract.
+    let response = ModelListResponse {
+        data: vec![descriptor],
         has_more: false,
         first_id: model.clone(),
         last_id: model,
-    })
-    .into_response()
+    };
+    Json(response).into_response()
 }
 
 /// Anthropic model-list endpoint.
