@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{NdjsonResponse, ProviderRejection, stream_chunks};
 use crate::types::model::ModelId;
 use crate::types::turn::{
@@ -341,7 +341,7 @@ impl Ollama {
     /// Mount the Ollama API surface.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         let router = router.api_route(
-            "/ollama/api/tags",
+            "/api/tags",
             get_with(tags, |operation| {
                 operation
                     .summary("Ollama models")
@@ -351,7 +351,7 @@ impl Ollama {
             }),
         );
         router.api_route(
-            "/ollama/api/chat",
+            "/api/chat",
             post_with(chat, |operation| {
                 operation
                     .summary("Ollama chat")

@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{
     JsonEventExt, ProviderRejection, SseEvents, TextArrayKind, optional_text_content, stream_chunks,
 };
@@ -486,7 +486,7 @@ impl AnthropicMessages {
     /// Mount the Anthropic Messages route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/anthropic/v1/messages",
+            "/v1/messages",
             post_with(messages, |operation| {
                 operation
                     .summary("Anthropic message")
