@@ -1,31 +1,9 @@
 [rlib-lint]
 
-# Maximum lines in one undocumented function phase.
-function-phase-lines-threshold = 15
+# Keep compact provider contracts and scenario suites in one navigable section.
+declarations-per-section-threshold = 12
 
-# Maximum nested control-flow depth.
-control-flow-depth-threshold = 4
-
-# Maximum source lines in one match arm.
-match-arm-lines-threshold = 15
-
-# Maximum calls in one method chain.
-method-chain-calls-threshold = 5
-
-# Maximum declarations grouped under one section.
-declarations-per-section-threshold = 40
-
-# Maximum methods before an extension trait is split.
-extension-trait-methods-threshold = 8
-
-# Property prefixes accepted for boolean fields and callable results.
-boolean-predicate-prefixes = [".."]
-
-# Standard query roots accepted only for boolean-result callables.
-boolean-query-roots = [".."]
-
-# Published Bon builders and their established required members.
-bon-api-baseline = []
-
-# Generic diagnostic help phrases; ".." retains the built-in vocabulary.
-miette-generic-help-phrases = [".."]
+# ELIZA uses thiserror for error contracts and derive_more for wire enum parsing.
+error-implementation-provider = "thiserror_error"
+error-variant-conversion-provider = "thiserror_from"
+enum-string-parsing-provider = "derive_more_from_str"
