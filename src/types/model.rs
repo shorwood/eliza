@@ -6,7 +6,7 @@ use std::str::FromStr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use crate::errors::AppError;
+use super::errors::ModelError;
 
 /// Provider-visible model identifier accepted from CLI and JSON bodies.
 ///
@@ -49,11 +49,11 @@ impl fmt::Display for ModelId {
 }
 
 impl TryFrom<String> for ModelId {
-    type Error = AppError;
+    type Error = ModelError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.trim().is_empty() {
-            Err(AppError::EmptyModelId)
+            Err(ModelError::Empty)
         } else {
             Ok(Self(value))
         }
@@ -71,7 +71,7 @@ impl<'de> Deserialize<'de> for ModelId {
 }
 
 impl FromStr for ModelId {
-    type Err = AppError;
+    type Err = ModelError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         value.to_owned().try_into()

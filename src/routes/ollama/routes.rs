@@ -10,15 +10,18 @@ use aide::axum::ApiRouter;
 use aide::axum::routing::{get_with, post_with};
 use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::errors::{OllamaError, OllamaFailureResponse, OllamaRejection};
 use super::types::{
     ChatRequest, ChatResponse, MessageContent, MessageRole, ModelDescriptor, ModelDetails,
-    OllamaFailureResponse, OllamaRejection, OutputMessage, TagsResponse,
+    OutputMessage, TagsResponse,
 };
-use crate::types::http::{NdjsonResponse, ProviderRejection, stream_chunks};
+use crate::routes::errors::ExtractionError;
+use crate::types::http::{NdjsonResponse, stream_chunks};
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, RequestLimits,
 };
@@ -28,23 +31,16 @@ const CREATED_AT: &str = "1966-01-01T00:00:00Z";
 struct OllamaTurn(CompatTurnRequest);
 
 impl TryFrom<ChatRequest> for OllamaTurn {
-    type Error = ProviderRejection;
+    type Error = OllamaError;
 
     fn try_from(payload: ChatRequest) -> Result<Self, Self::Error> {
         if let Some(format) = &payload.format {
-            return Err(ProviderRejection::unsupported(
-                "format",
-                format!(
-                    "structured {kind} output is not supported",
-                    kind = format.label()
-                ),
-            ));
+            return Err(OllamaError::StructuredOutputUnsupported {
+                kind: format.label(),
+            });
         }
         if payload.think.is_some() {
-            return Err(ProviderRejection::unsupported(
-                "think",
-                "reasoning output is not supported",
-            ));
+            return Err(OllamaError::ReasoningUnsupported);
         }
 
         let mut system = Vec::new();
@@ -64,10 +60,7 @@ impl TryFrom<ChatRequest> for OllamaTurn {
                 }
                 MessageRole::Tool => turns.push(CompatTurn::ToolResult(content)),
                 MessageRole::Unsupported => {
-                    return Err(ProviderRejection::unsupported(
-                        "messages.role",
-                        "unsupported Ollama role",
-                    ));
+                    return Err(OllamaError::UnsupportedRole);
                 }
             }
         }
@@ -145,17 +138,23 @@ fn text_stream_records(response: &CompatTurnResponse, text: &str) -> Vec<ChatRes
 async fn chat(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<ChatRequest>,
+    payload: Result<Json<ChatRequest>, JsonRejection>,
 ) -> Response {
     if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-        return OllamaRejection::from(error).into_response();
+        return OllamaRejection::from_error(&error).into_response();
     }
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            return OllamaRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
 
     // Capture transport policy before lowering consumes the request body.
     let should_stream = payload.should_stream.unwrap_or(true);
     let request = match OllamaTurn::try_from(payload) {
         Ok(request) => request.0,
-        Err(error) => return OllamaRejection::from(error).into_response(),
+        Err(error) => return OllamaRejection::from_error(&error).into_response(),
     };
     let limits = RequestLimits::new(
         state.config.max_input_chars,
@@ -163,13 +162,13 @@ async fn chat(
     );
     let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return OllamaRejection::from(error).into_response(),
+        Err(error) => return OllamaRejection::from_error(&error).into_response(),
     };
 
     if should_stream {
         match NdjsonResponse::new(stream_records(&response), state.config.stream_delay_ms) {
             Ok(response) => response.into_response(),
-            Err(error) => OllamaRejection::from(error).into_response(),
+            Err(error) => OllamaRejection::from_error(&error).into_response(),
         }
     } else {
         Json(ChatResponse::from(&response)).into_response()
@@ -178,7 +177,7 @@ async fn chat(
 
 async fn tags(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-        return OllamaRejection::from(error).into_response();
+        return OllamaRejection::from_error(&error).into_response();
     }
     let model = state.config.model.clone();
     Json(TagsResponse {
