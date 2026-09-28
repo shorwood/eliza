@@ -22,15 +22,6 @@ module-item-order-groupings = [
     ]],
 ]
 module-items-ordered-within-groupings = "none"
-
-disallowed-names = [
-    "foo", "bar", "baz", "qux", "quux",
-    "tmp", "temp",
-    "val", "v2", "v3",
-    "thing", "stuff",
-    "x", "y", "z",
-]
-
 disallowed-methods = []
 disallowed-types = []
 disallowed-macros = []

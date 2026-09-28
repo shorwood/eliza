@@ -182,10 +182,14 @@ fn response_item_text(item: &Value) -> Result<Option<String>, ProviderRejection>
     if role != "user" {
         return Ok(None);
     }
+
+    // User-authored content is required for a replay turn.
     let content = item.get("content").ok_or_else(|| {
         ProviderRejection::invalid("input.content", "input item is missing content")
     })?;
-    optional_text_content(content, "input.content", TextArrayKind::Parts)
+
+    // Only textual content is supported for replay.
+    optional_text_content(content, "input.content", TextArrayKind::ResponsesParts)
 }
 
 // -----------------------------------------------------------------------------
