@@ -69,7 +69,7 @@ at `http://127.0.0.1:8787/openapi.json`.
 ## OpenAI Chat Completions
 
 ```sh
-curl -s http://127.0.0.1:8787/v1/chat/completions \
+curl -s http://127.0.0.1:8787/openai/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"eliza-doctor","messages":[{"role":"user","content":"I am sad."}]}'
 ```
@@ -77,13 +77,13 @@ curl -s http://127.0.0.1:8787/v1/chat/completions \
 The Gemini OpenAI-compatible alias is also available:
 
 ```text
-http://127.0.0.1:8787/v1beta/openai/chat/completions
+http://127.0.0.1:8787/gemini/v1beta/openai/chat/completions
 ```
 
 ## Anthropic Messages
 
 ```sh
-curl -s http://127.0.0.1:8787/v1/messages \
+curl -s http://127.0.0.1:8787/anthropic/v1/messages \
   -H 'Content-Type: application/json' \
   -H 'anthropic-version: 2023-06-01' \
   -d '{"model":"eliza-doctor","max_tokens":128,"messages":[{"role":"user","content":"I am sad."}]}'
@@ -92,12 +92,44 @@ curl -s http://127.0.0.1:8787/v1/messages \
 ## Gemini Generate Content
 
 ```sh
-curl -s http://127.0.0.1:8787/v1beta/models/eliza-doctor:generateContent \
+curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-doctor:generateContent \
   -H 'Content-Type: application/json' \
   -d '{"contents":[{"role":"user","parts":[{"text":"I am sad."}]}]}'
 ```
 
+## Ollama Chat
+
+Ollama streams newline-delimited JSON unless `"stream": false` is supplied:
+
+```sh
+curl -s http://127.0.0.1:8787/ollama/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"eliza-doctor","stream":false,"messages":[{"role":"user","content":"I am sad."}]}'
+```
+
+Model catalogs are available at `/openai/v1/models`, `/anthropic/v1/models`,
+`/gemini/v1beta/models`, and `/ollama/api/tags`.
+
+## Deterministic tool calls
+
+Every chat surface accepts client-defined function tools. Tools do not change
+ordinary ELIZA prompts. To request one call, make the complete latest user
+message `@tool <offered-name> <json-object>`, for example:
+
+```text
+@tool echo {"value":"hello"}
+```
+
+ELIZA returns that call in the selected provider's native shape. Submit the
+provider-native tool result in the next request and ELIZA replies
+`TOOL CALL COMPLETE`. The fixture is stateless, supports one call at a time,
+and does not validate arguments against the supplied JSON Schema.
+
+With `--auth bearer`, OpenAI, Gemini's OpenAI alias, and Ollama use
+`Authorization: Bearer`; Anthropic uses `x-api-key`; native Gemini uses
+`x-goog-api-key`.
+
 Streaming surfaces return provider-shaped SSE events where provider SDKs expect
-them, but the engine still computes one deterministic ELIZA response and splits
-it into chunks. This is a historical chatbot adapter, not a medical or
-therapeutic system.
+them, while Ollama uses NDJSON. The engine still computes one deterministic
+ELIZA response and splits it into chunks. This is a historical chatbot adapter,
+not a medical or therapeutic system.
