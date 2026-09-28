@@ -32,11 +32,9 @@ struct UiOutput {
 impl UiOutput {
     /// Run the compiled executable with one fixture's arguments.
     fn from_process(case: &UiCase) -> Self {
-        let output = Command::new(env!("CARGO_BIN_EXE_eliza"))
-            .args(&case.args)
-            .env("NO_COLOR", "1")
-            .output()
-            .expect("ELIZA process should run");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_eliza"));
+        command.args(&case.args).env("NO_COLOR", "1");
+        let output = command.output().expect("ELIZA process should run");
         Self {
             code: output.status.code(),
             stdout: String::from_utf8(output.stdout).expect("stdout should be UTF-8"),
@@ -77,8 +75,9 @@ impl UiCase {
 
 /// Find every JSON fixture in stable path order.
 fn ui_cases_load() -> Vec<PathBuf> {
-    let mut paths = fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ui"))
-        .expect("UI fixture directory should be readable")
+    let entries = fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ui"))
+        .expect("UI fixture directory should be readable");
+    let mut paths = entries
         .map(|entry| entry.expect("UI fixture should be readable").path())
         .filter(|path| {
             path.extension()

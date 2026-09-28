@@ -6,11 +6,19 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use std::{io, thread};
 
+// -----------------------------------------------------------------------------
+// Startup: Bounds server readiness probes.
+// -----------------------------------------------------------------------------
+
 /// Maximum time allowed for the server to bind its test port.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Delay between server readiness probes.
 const STARTUP_RETRY: Duration = Duration::from_millis(20);
+
+// -----------------------------------------------------------------------------
+// TestServer: Owns one isolated HTTP test process.
+// -----------------------------------------------------------------------------
 
 /// Spawned ELIZA process bound to an ephemeral local address.
 struct TestServer {
@@ -31,12 +39,15 @@ impl TestServer {
         let address = listener.local_addr()?;
         drop(listener);
 
+        // Launch the server without polluting Hurl's contract output.
         let mut command = Command::new(env!("CARGO_BIN_EXE_eliza"));
         command.args(["serve", "--host", "127.0.0.1", "--port"]);
         command.arg(address.port().to_string());
         command.args(extra_args);
         command.stdout(Stdio::null());
         command.stderr(Stdio::inherit());
+
+        // Prove the child is ready before handing its address to Hurl.
         let mut child = command.spawn()?;
         wait_until_ready(&mut child, address)?;
 
@@ -93,6 +104,10 @@ impl Drop for TestServer {
     }
 }
 
+// -----------------------------------------------------------------------------
+// WaitUntilReady: Waits for the server before running contracts.
+// -----------------------------------------------------------------------------
+
 /// Wait until the child accepts local TCP connections or exits.
 ///
 /// # Errors
@@ -124,13 +139,17 @@ fn wait_until_ready(child: &mut Child, address: SocketAddr) -> io::Result<()> {
     }
 }
 
+// -----------------------------------------------------------------------------
+// HttpContracts: Exercises public and authenticated route surfaces.
+// -----------------------------------------------------------------------------
+
 /// Run the unauthenticated HTTP contracts.
 ///
 /// # Errors
 ///
 /// Returns an I/O error when the server or Hurl fails.
 #[test]
-fn public_http_contracts() -> io::Result<()> {
+fn http_contracts_public() -> io::Result<()> {
     let server = TestServer::spawn(&[])?;
     server.run_hurl(Path::new("tests/http/public"), None)
 }
@@ -141,7 +160,7 @@ fn public_http_contracts() -> io::Result<()> {
 ///
 /// Returns an I/O error when the server or Hurl fails.
 #[test]
-fn authenticated_http_contracts() -> io::Result<()> {
+fn http_contracts_authenticated() -> io::Result<()> {
     let server = TestServer::spawn(&["--auth", "bearer", "--bearer-token", "secret"])?;
     server.run_hurl(Path::new("tests/http/auth"), Some("secret"))
 }
