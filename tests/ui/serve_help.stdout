@@ -23,7 +23,7 @@ Options:
 
           Possible values:
           - none:   Do not require provider authentication
-          - bearer: Accept `Authorization: Bearer` or `x-api-key`
+          - bearer: Require each provider's native bearer or API-key header
           
           [default: none]
 
@@ -67,8 +67,9 @@ Options:
           Print help (see a summary with '-h')
 
 Provider paths:
-  OpenAI:    GET /v1/models, POST /v1/chat/completions, POST /v1/responses
-  Gemini OA: POST /v1beta/openai/chat/completions
-  Anthropic: POST /v1/messages
-  Gemini:    GET /v1beta/models, POST /v1beta/models/{model}:generateContent, POST /v1beta/models/{model}:streamGenerateContent
+  OpenAI:    GET /openai/v1/models, POST /openai/v1/chat/completions, POST /openai/v1/responses
+  Gemini OA: POST /gemini/v1beta/openai/chat/completions
+  Anthropic: GET /anthropic/v1/models, POST /anthropic/v1/messages
+  Gemini:    GET /gemini/v1beta/models, POST /gemini/v1beta/models/{model}:generateContent, POST /gemini/v1beta/models/{model}:streamGenerateContent
+  Ollama:    GET /ollama/api/tags, POST /ollama/api/chat
   Docs:      GET /docs, GET /openapi.json

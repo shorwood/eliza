@@ -21,7 +21,7 @@ use crate::types::model::ModelId;
 pub(super) enum AuthMode {
     /// Do not require provider authentication.
     None,
-    /// Accept `Authorization: Bearer` or `x-api-key`.
+    /// Require each provider's native bearer or API-key header.
     Bearer,
 }
 
@@ -125,10 +125,11 @@ impl std::fmt::Debug for BearerToken {
 #[derive(Debug, Clone, Parser)]
 #[command(after_long_help = "\
 Provider paths:
-  OpenAI:    GET /v1/models, POST /v1/chat/completions, POST /v1/responses
-  Gemini OA: POST /v1beta/openai/chat/completions
-  Anthropic: POST /v1/messages
-  Gemini:    GET /v1beta/models, POST /v1beta/models/{model}:generateContent, POST /v1beta/models/{model}:streamGenerateContent
+  OpenAI:    GET /openai/v1/models, POST /openai/v1/chat/completions, POST /openai/v1/responses
+  Gemini OA: POST /gemini/v1beta/openai/chat/completions
+  Anthropic: GET /anthropic/v1/models, POST /anthropic/v1/messages
+  Gemini:    GET /gemini/v1beta/models, POST /gemini/v1beta/models/{model}:generateContent, POST /gemini/v1beta/models/{model}:streamGenerateContent
+  Ollama:    GET /ollama/api/tags, POST /ollama/api/chat
   Docs:      GET /docs, GET /openapi.json
 ")]
 pub(super) struct ServeArgs {
@@ -203,7 +204,7 @@ pub(super) enum Commands {
 #[derive(Debug, Parser)]
 #[command(name = "eliza")]
 #[command(
-    about = "Serve classic ELIZA through OpenAI, Anthropic, and Gemini-compatible HTTP APIs."
+    about = "Serve classic ELIZA through OpenAI, Anthropic, Gemini, and Ollama-compatible HTTP APIs."
 )]
 pub(super) struct Cli {
     /// Selected command.
