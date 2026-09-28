@@ -1,5 +1,5 @@
 //! Provider-neutral conversation execution.
-#![allow(
+#![expect(
     rlib::missing_section_dividers,
     rlib::undocumented_early_returns,
     reason = "the compact execution pipeline needs no per-type dividers, and validation errors explain their guards"
@@ -481,7 +481,7 @@ fn approximate_tokens<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::missing_panics_doc,
     reason = "test assertions are the intended panic contract"
 )]
