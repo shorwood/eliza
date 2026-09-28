@@ -522,7 +522,7 @@ mod tests {
             response.output,
             CompatOutput::ToolCall(FunctionCall {
                 name: "echo".to_owned(),
-                arguments: JsonObject::from_value(serde_json::json!({"value":"hello"})).unwrap(),
+                arguments: serde_json::from_value(serde_json::json!({"value":"hello"})).unwrap(),
             })
         );
     }
@@ -546,7 +546,7 @@ mod tests {
     fn matching_tool_result_finishes_the_fixture() {
         let call = FunctionCall {
             name: "echo".to_owned(),
-            arguments: JsonObject::from_value(serde_json::json!({"value":"hello"})).unwrap(),
+            arguments: serde_json::from_value(serde_json::json!({"value":"hello"})).unwrap(),
         };
         let response = CompatTurnRequest::new(
             ModelId::default(),
@@ -617,7 +617,7 @@ mod tests {
     fn ordinary_turn_after_tool_history_resumes_eliza() {
         let call = FunctionCall {
             name: "echo".to_owned(),
-            arguments: JsonObject::from_value(serde_json::json!({"value":"hello"})).unwrap(),
+            arguments: serde_json::from_value(serde_json::json!({"value":"hello"})).unwrap(),
         };
         let response = CompatTurnRequest::new(
             ModelId::default(),
