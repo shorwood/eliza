@@ -1,10 +1,10 @@
-//! Anthropic Messages wire adapter.
-//!
-//! The Messages route accepts Anthropic text blocks, lowers them into
-//! `CompatTurnRequest`, and renders either a single message body or Anthropic's
-//! named SSE event sequence.
-//! The adapter accepts only text blocks because image/tool/content-block
-//! variants have no representation in the historical ELIZA script.
+//! Anthropic Messages adapter.
+#![allow(
+    rlib::missing_section_dividers,
+    rlib::undocumented_early_returns,
+    rlib::undocumented_items,
+    reason = "private wire plumbing stays clearer without per-field docs, per-concept dividers, or comments restating errors"
+)]
 
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
@@ -14,202 +14,75 @@ use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::context::{AppState, provider_authenticate};
+use super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{
-    ProviderRejection, SseEvents, TextArrayKind, optional_text_content, stream_chunks,
+    JsonEventExt, ProviderRejection, SseEvents, TextArrayKind, optional_text_content, stream_chunks,
 };
 use crate::types::model::ModelId;
-use crate::types::turn::{CompatTurnRequest, RequestLimits, TokenUsage};
+use crate::types::turn::{
+    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, FunctionTool,
+    RequestLimits, TokenUsage, ToolChoice,
+};
 
-// -----------------------------------------------------------------------------
-// AnthropicMessage: Models one replayable input message.
-// -----------------------------------------------------------------------------
-
-/// Represents `AnthropicMessage` state within this module.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AnthropicMessage {
-    /// Stores the role value owned by this contract.
     role: String,
-    /// Stores the content value owned by this contract.
     #[serde(default = "missing_content_is_null")]
     content: Value,
 }
 
-// -----------------------------------------------------------------------------
-// MessagesRequest: Models the accepted Anthropic request.
-// -----------------------------------------------------------------------------
-
-/// Represents `MessagesRequest` state within this module.
+/// Accepted Anthropic Messages input.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct MessagesRequest {
-    /// Stores the model value owned by this contract.
     model: ModelId,
-    /// Stores the system value owned by this contract.
     #[serde(default = "missing_content_is_null")]
     system: Value,
-    /// Stores the messages value owned by this contract.
     messages: Vec<AnthropicMessage>,
-    /// Stores the stream value owned by this contract.
-    #[serde(default = "should_stream_by_default", rename = "stream")]
+    #[serde(default = "should_not_stream", rename = "stream")]
     should_stream: bool,
+    #[serde(default = "missing_values_are_empty")]
+    tools: Vec<Value>,
+    #[serde(default)]
+    tool_choice: Option<Value>,
 }
 
-/// Preserve provider compatibility by treating omitted content as JSON null.
 fn missing_content_is_null() -> Value {
     Value::Null
 }
 
-/// Preserve non-streaming behavior when clients omit the stream flag.
-const fn should_stream_by_default() -> bool {
+fn missing_values_are_empty() -> Vec<Value> {
+    Vec::new()
+}
+
+const fn should_not_stream() -> bool {
     false
 }
 
-// -----------------------------------------------------------------------------
-// TextBlock: Models one Anthropic output text block.
-// -----------------------------------------------------------------------------
-
-/// Represents `TextBlock` state within this module.
-#[derive(Debug, Serialize, JsonSchema)]
-struct TextBlock {
-    /// Stores the block type value owned by this contract.
-    #[serde(rename = "type")]
-    block_type: &'static str,
-    /// Stores the text value owned by this contract.
-    text: String,
-}
-
-// -----------------------------------------------------------------------------
-// AnthropicUsage: Models Anthropic token accounting.
-// -----------------------------------------------------------------------------
-
-/// Represents `AnthropicUsage` state within this module.
-#[derive(Debug, Serialize, JsonSchema)]
-struct AnthropicUsage {
-    /// Stores the input tokens value owned by this contract.
-    input_tokens: usize,
-    /// Stores the output tokens value owned by this contract.
-    output_tokens: usize,
-}
-
-impl From<TokenUsage> for AnthropicUsage {
-    fn from(usage: TokenUsage) -> Self {
-        Self {
-            input_tokens: usage.prompt,
-            output_tokens: usage.completion,
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// MessagesResponse: Models one successful Anthropic response.
-// -----------------------------------------------------------------------------
-
-/// Represents `MessagesResponse` state within this module.
-#[derive(Debug, Serialize, JsonSchema)]
-struct MessagesResponse {
-    /// Stores the id value owned by this contract.
-    id: String,
-    /// Stores the response type value owned by this contract.
-    #[serde(rename = "type")]
-    response_type: &'static str,
-    /// Stores the role value owned by this contract.
-    role: &'static str,
-    /// Stores the model value owned by this contract.
-    model: ModelId,
-    /// Stores the content value owned by this contract.
-    content: Vec<TextBlock>,
-    /// Stores the stop reason value owned by this contract.
-    stop_reason: &'static str,
-    /// Stores the stop sequence value owned by this contract.
-    stop_sequence: Option<&'static str>,
-    /// Stores the usage value owned by this contract.
-    usage: AnthropicUsage,
-}
-
-// -----------------------------------------------------------------------------
-// AnthropicFailure: Models Anthropic error envelopes.
-// -----------------------------------------------------------------------------
-
-/// Represents `AnthropicFailureBody` state within this module.
-#[derive(Debug, Serialize, JsonSchema)]
-struct AnthropicFailureBody {
-    /// Stores the error type value owned by this contract.
-    #[serde(rename = "type")]
-    error_type: &'static str,
-    /// Stores the message value owned by this contract.
-    message: String,
-}
-
-/// Represents `AnthropicFailureResponse` state within this module.
-#[derive(Debug, Serialize, JsonSchema)]
-struct AnthropicFailureResponse {
-    /// Stores the response type value owned by this contract.
-    #[serde(rename = "type")]
-    response_type: &'static str,
-    /// Stores the error value owned by this contract.
-    error: AnthropicFailureBody,
-}
-
-// -----------------------------------------------------------------------------
-// AnthropicTurn: Lowers messages into bounded replay turns.
-// -----------------------------------------------------------------------------
-
-/// Lower an Anthropic Messages request into the provider-neutral replay shape.
-///
-/// # Errors
-///
-/// Returns [`ProviderRejection`] when message roles are unsupported or content
-/// blocks are not textual.
-struct AnthropicTurn(
-    /// Provider-neutral request produced from Anthropic input.
-    CompatTurnRequest,
-);
+struct AnthropicTurn(CompatTurnRequest);
 
 impl TryFrom<MessagesRequest> for AnthropicTurn {
     type Error = ProviderRejection;
 
     fn try_from(payload: MessagesRequest) -> Result<Self, Self::Error> {
-        let mut system_text = Vec::new();
-
-        // Anthropic allows system text outside the message list; keep it for
-        // limits and accounting without replaying it as a user turn.
+        let mut system = Vec::new();
         if let Some(text) = optional_text_content(&payload.system, "system", TextArrayKind::Blocks)?
         {
-            system_text.push(text);
+            system.push(text);
         }
 
-        let mut user_turns = Vec::new();
+        let mut turns = Vec::new();
         for message in payload.messages {
             match message.role.as_str() {
-                // User turns are the only Anthropic messages that become ELIZA
-                // conversation input.
-                "user" => {
-                    // User turns must contain text that ELIZA can replay.
-                    let Some(text) = optional_text_content(
-                        &message.content,
-                        "messages.content",
-                        TextArrayKind::Blocks,
-                    )?
-                    else {
-                        return Err(ProviderRejection::invalid(
-                            "messages",
-                            "user message content must contain text",
-                        ));
-                    };
-                    user_turns.push(text);
-                }
-                // Assistant turns are previous model output supplied by the
-                // client; they are history context, not new ELIZA input.
-                "assistant" => {}
-                // Other roles cannot be represented in the shared transcript.
-                _ => {
+                "user" => lower_user_content(&message.content, &mut turns)?,
+                "assistant" => lower_assistant_content(&message.content, &mut turns)?,
+                role => {
                     return Err(ProviderRejection::unsupported(
                         "messages.role",
-                        format!("unsupported message role `{}`", message.role),
+                        format!("unsupported Anthropic role `{role}`"),
                     ));
                 }
             }
@@ -217,150 +90,375 @@ impl TryFrom<MessagesRequest> for AnthropicTurn {
 
         Ok(Self(CompatTurnRequest::new(
             payload.model,
-            system_text,
-            user_turns,
+            system,
+            turns,
+            lower_tools(payload.tools)?,
+            lower_tool_choice(payload.tool_choice)?,
         )))
     }
 }
 
-// -----------------------------------------------------------------------------
-// AnthropicStream: Renders named Anthropic SSE events.
-// -----------------------------------------------------------------------------
-
-/// Render Anthropic's named SSE event sequence.
+/// Lower one Anthropic user message without changing content-block order.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics only if the locally constructed JSON event payload cannot serialize.
-fn anthropic_stream(output: &str, model: &ModelId, output_tokens: usize) -> SseEvents {
-    let id = format!("msg_{}", Uuid::now_v7().simple());
-    let mut events = Vec::new();
-
-    // Anthropic streams open with a message envelope before any content
-    // block exists.
-    events.push(
-        Event::default()
-            .event("message_start")
-            .json_data(json!({
-                "type": "message_start",
-                "message": {
-                    "id": id,
-                    "type": "message",
-                    "role": "assistant",
-                    "model": model.as_str(),
-                    "content": [],
-                    "stop_reason": null,
-                    "stop_sequence": null,
-                    "usage": { "input_tokens": 0, "output_tokens": 0 }
-                }
-            }))
-            .expect("Anthropic message_start should serialize"),
-    );
-
-    // The single ELIZA response is represented as one text content block.
-    events.push(
-        Event::default()
-            .event("content_block_start")
-            .json_data(json!({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": { "type": "text", "text": "" }
-            }))
-            .expect("Anthropic content_block_start should serialize"),
-    );
-
-    // Chunk only the text delta; the surrounding block/message events stay
-    // stable so SDK state machines can parse the stream.
-    for chunk in stream_chunks(output) {
-        events.push(
-            Event::default()
-                .event("content_block_delta")
-                .json_data(json!({
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": { "type": "text_delta", "text": chunk }
-                }))
-                .expect("Anthropic content_block_delta should serialize"),
-        );
+/// Returns a rejection for empty, malformed, or unsupported content blocks.
+fn lower_user_content(
+    content: &Value,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), ProviderRejection> {
+    if let Value::String(text) = content {
+        turns.push(CompatTurn::User(text.clone()));
+        return Ok(());
+    }
+    let Value::Array(blocks) = content else {
+        return Err(ProviderRejection::unsupported(
+            "messages.content",
+            "user content must be text or content blocks",
+        ));
+    };
+    if blocks.is_empty() {
+        return Err(ProviderRejection::invalid(
+            "messages.content",
+            "user content blocks are required",
+        ));
     }
 
-    // Close the content block before emitting final message-level usage.
-    events.push(
-        Event::default()
-            .event("content_block_stop")
-            .json_data(json!({ "type": "content_block_stop", "index": 0 }))
-            .expect("Anthropic content_block_stop should serialize"),
-    );
-    events.push(
-        Event::default()
-            .event("message_delta")
-            .json_data(json!({
-                "type": "message_delta",
-                "delta": { "stop_reason": "end_turn", "stop_sequence": null },
-                "usage": { "output_tokens": output_tokens }
-            }))
-            .expect("Anthropic message_delta should serialize"),
-    );
-
-    // Anthropic clients expect a distinct terminal event after the delta.
-    events.push(
-        Event::default()
-            .event("message_stop")
-            .json_data(json!({ "type": "message_stop" }))
-            .expect("Anthropic message_stop should serialize"),
-    );
-
-    SseEvents::from(events)
+    let mut text = Vec::new();
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                let part = block.get("text").and_then(Value::as_str).ok_or_else(|| {
+                    ProviderRejection::invalid("messages.content", "text block is missing text")
+                })?;
+                text.push(part.to_owned());
+            }
+            Some("tool_result") => {
+                flush_user_text(&mut text, turns);
+                let result = block.get("content").ok_or_else(|| {
+                    ProviderRejection::invalid(
+                        "messages.content",
+                        "tool_result block is missing content",
+                    )
+                })?;
+                turns.push(CompatTurn::ToolResult(block_text(result)?));
+            }
+            _ => {
+                return Err(ProviderRejection::unsupported(
+                    "messages.content",
+                    "only text and tool_result blocks are supported",
+                ));
+            }
+        }
+    }
+    flush_user_text(&mut text, turns);
+    Ok(())
 }
 
-// -----------------------------------------------------------------------------
-// AnthropicRejection: Renders Anthropic failures.
-// -----------------------------------------------------------------------------
+fn flush_user_text(text: &mut Vec<String>, turns: &mut Vec<CompatTurn>) {
+    if text.is_empty() {
+        return;
+    }
+    turns.push(CompatTurn::User(std::mem::take(text).join("\n")));
+}
 
-/// Provider rejection rendered in Anthropic's error envelope.
-struct AnthropicRejection(
-    /// Rejection facts rendered by this provider.
-    ProviderRejection,
-);
+/// Lower one Anthropic assistant message into text and function-call turns.
+///
+/// # Errors
+///
+/// Returns a rejection for malformed or unsupported content blocks.
+fn lower_assistant_content(
+    content: &Value,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), ProviderRejection> {
+    if let Value::String(text) = content {
+        turns.push(CompatTurn::Assistant(text.clone()));
+        return Ok(());
+    }
+    let Value::Array(blocks) = content else {
+        return Err(ProviderRejection::unsupported(
+            "messages.content",
+            "assistant content must be text or content blocks",
+        ));
+    };
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                let text = block.get("text").and_then(Value::as_str).ok_or_else(|| {
+                    ProviderRejection::invalid("messages.content", "text block is missing text")
+                })?;
+                turns.push(CompatTurn::Assistant(text.to_owned()));
+            }
+            Some("tool_use") => turns.push(CompatTurn::ToolCall(lower_tool_use(block)?)),
+            _ => {
+                return Err(ProviderRejection::unsupported(
+                    "messages.content",
+                    "only text and tool_use blocks are supported",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
-impl IntoResponse for AnthropicRejection {
-    fn into_response(self) -> Response {
-        let error = self.0;
-        (
-            error.status,
-            Json(AnthropicFailureResponse {
-                response_type: "error",
-                error: AnthropicFailureBody {
-                    error_type: error.openai_type,
-                    message: error.message,
-                },
+/// Decode one Anthropic `tool_use` content block.
+///
+/// # Errors
+///
+/// Returns a rejection when the name or object-valued input is missing.
+fn lower_tool_use(block: &Value) -> Result<FunctionCall, ProviderRejection> {
+    let name = block
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            ProviderRejection::invalid("messages.content", "tool_use block is missing name")
+        })?;
+    let input = block.get("input").cloned().ok_or_else(|| {
+        ProviderRejection::invalid("messages.content", "tool_use block is missing input")
+    })?;
+    if !input.is_object() {
+        return Err(ProviderRejection::invalid(
+            "messages.content",
+            "tool_use input must be a JSON object",
+        ));
+    }
+    Ok(FunctionCall {
+        name: name.to_owned(),
+        arguments: input,
+    })
+}
+
+/// Decode the textual payload of an Anthropic tool result.
+///
+/// # Errors
+///
+/// Returns a rejection for empty or non-text content blocks.
+fn block_text(value: &Value) -> Result<String, ProviderRejection> {
+    match value {
+        Value::String(text) => Ok(text.clone()),
+        Value::Array(_) => optional_text_content(value, "messages.content", TextArrayKind::Blocks)?
+            .ok_or_else(|| {
+                ProviderRejection::invalid("messages.content", "tool result content is required")
+            }),
+        other => Ok(other.to_string()),
+    }
+}
+
+/// Validate and retain Anthropic function definitions.
+///
+/// # Errors
+///
+/// Returns a rejection when a definition lacks a name or input schema.
+fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection> {
+    tools
+        .into_iter()
+        .map(|tool| {
+            let name = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| ProviderRejection::invalid("tools", "tool is missing its name"))?;
+            if tool.get("input_schema").is_none() {
+                return Err(ProviderRejection::invalid(
+                    "tools",
+                    "function tool is missing input_schema",
+                ));
+            }
+            Ok(FunctionTool::new(name.to_owned(), tool.clone()))
+        })
+        .collect()
+}
+
+/// Normalize Anthropic tool-selection policy.
+///
+/// # Errors
+///
+/// Returns a rejection for malformed or unsupported policy values.
+fn lower_tool_choice(choice: Option<Value>) -> Result<ToolChoice, ProviderRejection> {
+    let Some(choice) = choice else {
+        return Ok(ToolChoice::Auto);
+    };
+    let choice_type = choice
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ProviderRejection::invalid("tool_choice", "tool_choice is missing type"))?;
+    match choice_type {
+        "auto" => Ok(ToolChoice::Auto),
+        "none" => Ok(ToolChoice::None),
+        "any" => Ok(ToolChoice::Required),
+        "tool" => choice
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|name| ToolChoice::Named(name.to_owned()))
+            .ok_or_else(|| {
+                ProviderRejection::invalid("tool_choice", "named tool_choice is missing name")
+            }),
+        _ => Err(ProviderRejection::invalid(
+            "tool_choice",
+            format!("unsupported tool_choice `{choice_type}`"),
+        )),
+    }
+}
+
+fn response_json(response: CompatTurnResponse) -> Value {
+    let (content, stop_reason) = match response.output {
+        CompatOutput::Text(text) => (vec![json!({"type":"text","text":text})], "end_turn"),
+        CompatOutput::ToolCall(call) => (
+            vec![json!({
+                "type":"tool_use",
+                "id":format!("toolu_{}", Uuid::now_v7().simple()),
+                "name":call.name,
+                "input":call.arguments
+            })],
+            "tool_use",
+        ),
+    };
+    json!({
+        "id":format!("msg_{}", Uuid::now_v7().simple()),
+        "type":"message",
+        "role":"assistant",
+        "model":response.model,
+        "content":content,
+        "stop_reason":stop_reason,
+        "stop_sequence":null,
+        "usage":usage_json(response.usage)
+    })
+}
+
+fn usage_json(usage: TokenUsage) -> Value {
+    json!({
+        "input_tokens":usage.prompt,
+        "output_tokens":usage.completion
+    })
+}
+
+struct AnthropicStream<'a>(&'a CompatTurnResponse);
+
+struct AnthropicEvents(SseEvents);
+
+impl From<AnthropicStream<'_>> for AnthropicEvents {
+    fn from(stream: AnthropicStream<'_>) -> Self {
+        let response = stream.0;
+        let id = format!("msg_{}", Uuid::now_v7().simple());
+        let mut events = vec![anthropic_event(
+            "message_start",
+            &json!({
+                "type":"message_start",
+                "message":{
+                    "id":id,
+                    "type":"message",
+                    "role":"assistant",
+                    "model":response.model,
+                    "content":[],
+                    "stop_reason":null,
+                    "stop_sequence":null,
+                    "usage":{"input_tokens":response.usage.prompt,"output_tokens":0}
+                }
+            }),
+        )];
+
+        let stop_reason = push_content_events(&mut events, &response.output);
+        events.push(anthropic_event(
+            "content_block_stop",
+            &json!({"type":"content_block_stop","index":0}),
+        ));
+        events.push(anthropic_event(
+            "message_delta",
+            &json!({
+                "type":"message_delta",
+                "delta":{"stop_reason":stop_reason,"stop_sequence":null},
+                "usage":{"output_tokens":response.usage.completion}
+            }),
+        ));
+        events.push(anthropic_event(
+            "message_stop",
+            &json!({"type":"message_stop"}),
+        ));
+        Self(SseEvents::from(events))
+    }
+}
+
+fn push_content_events(events: &mut Vec<Event>, output: &CompatOutput) -> &'static str {
+    match output {
+        CompatOutput::Text(text) => {
+            push_text_events(events, text);
+            "end_turn"
+        }
+        CompatOutput::ToolCall(call) => {
+            push_tool_events(events, call);
+            "tool_use"
+        }
+    }
+}
+
+fn push_text_events(events: &mut Vec<Event>, text: &str) {
+    events.push(anthropic_event(
+        "content_block_start",
+        &json!({
+            "type":"content_block_start",
+            "index":0,
+            "content_block":{"type":"text","text":""}
+        }),
+    ));
+    events.extend(stream_chunks(text).into_iter().map(|chunk| {
+        anthropic_event(
+            "content_block_delta",
+            &json!({
+                "type":"content_block_delta",
+                "index":0,
+                "delta":{"type":"text_delta","text":chunk}
             }),
         )
-            .into_response()
-    }
+    }));
 }
 
-// -----------------------------------------------------------------------------
-// Messages: Authenticates and executes Messages requests.
-// -----------------------------------------------------------------------------
+fn push_tool_events(events: &mut Vec<Event>, call: &FunctionCall) {
+    events.push(anthropic_event(
+        "content_block_start",
+        &json!({
+            "type":"content_block_start",
+            "index":0,
+            "content_block":{
+                "type":"tool_use",
+                "id":format!("toolu_{}", Uuid::now_v7().simple()),
+                "name":call.name,
+                "input":{}
+            }
+        }),
+    ));
+    events.push(anthropic_event(
+        "content_block_delta",
+        &json!({
+            "type":"content_block_delta",
+            "index":0,
+            "delta":{
+                "type":"input_json_delta",
+                "partial_json":call.arguments.to_string()
+            }
+        }),
+    ));
+}
 
-/// Performs the messages operation for this abstraction.
+fn anthropic_event(name: &'static str, value: &Value) -> Event {
+    value.to_sse_event().event(name)
+}
+
 async fn messages(
     headers: HeaderMap,
     State(state): State<AppState>,
     Json(payload): Json<MessagesRequest>,
 ) -> Response {
-    // Render authentication failures in Anthropic's envelope immediately.
-    if let Err(error) = provider_authenticate(&headers, &state.config) {
-        return AnthropicRejection(error).into_response();
+    if let Err(error) =
+        provider_authenticate(&headers, &state.config, ProviderAuth::ApiKey("x-api-key"))
+    {
+        return error.anthropic_response();
     }
 
-    // Capture the stream preference before lowering consumes the payload.
-    let stream = payload.should_stream;
+    let should_stream = payload.should_stream;
     let request = match AnthropicTurn::try_from(payload) {
         Ok(request) => request.0,
-        // Invalid payloads stop before the ELIZA engine is invoked.
-        Err(error) => return AnthropicRejection(error).into_response(),
+        Err(error) => return error.anthropic_response(),
     };
     let limits = RequestLimits::new(
         state.config.max_input_chars,
@@ -368,50 +466,33 @@ async fn messages(
     );
     let response = match request.complete(limits) {
         Ok(response) => response,
-        // Engine rejections retain Anthropic's error shape.
-        Err(error) => return AnthropicRejection(error).into_response(),
+        Err(error) => return error.anthropic_response(),
     };
 
-    if stream {
-        anthropic_stream(&response.output, &response.model, response.usage.completion)
+    if should_stream {
+        AnthropicEvents::from(AnthropicStream(&response))
+            .0
             .with_delay(state.config.stream_delay_ms)
             .into_response()
     } else {
-        Json(MessagesResponse {
-            id: format!("msg_{}", Uuid::now_v7().simple()),
-            response_type: "message",
-            role: "assistant",
-            model: response.model,
-            content: vec![TextBlock {
-                block_type: "text",
-                text: response.output,
-            }],
-            stop_reason: "end_turn",
-            stop_sequence: None,
-            usage: AnthropicUsage::from(response.usage),
-        })
-        .into_response()
+        Json(response_json(response)).into_response()
     }
 }
 
-// -----------------------------------------------------------------------------
-// AnthropicMessages: Mounts the typed Messages contract into Aide.
-// -----------------------------------------------------------------------------
-
-/// Anthropic Messages endpoint and contract.
+/// Anthropic Messages endpoint.
 pub(super) struct AnthropicMessages;
 
 impl AnthropicMessages {
-    /// Mount the Anthropic Messages route from its owning contracts.
+    /// Mount the Anthropic Messages route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
         router.api_route(
-            "/v1/messages",
+            "/anthropic/v1/messages",
             post_with(messages, |operation| {
                 operation
                     .summary("Anthropic message")
                     .tag("anthropic")
-                    .response::<200, Json<MessagesResponse>>()
-                    .default_response::<Json<AnthropicFailureResponse>>()
+                    .response::<200, Json<Value>>()
+                    .default_response::<Json<Value>>()
             }),
         )
     }
