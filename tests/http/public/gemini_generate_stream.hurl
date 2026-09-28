@@ -4,5 +4,11 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 header "Content-Type" startsWith "text/event-stream"
-body contains "data:"
-body contains "finishReason"
+body contains "data: {\"candidates\""
+body contains "\"role\":\"model\""
+body contains "\"modelVersion\":\"eliza-doctor\""
+body contains "\"finishReason\":\"STOP\""
+body contains "\"usageMetadata\""
+body contains "\"promptTokenCount\""
+body contains "\"candidatesTokenCount\""
+body contains "\"totalTokenCount\""

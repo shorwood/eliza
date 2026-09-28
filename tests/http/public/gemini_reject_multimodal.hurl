@@ -8,4 +8,10 @@ Content-Type: application/json
 }
 HTTP 400
 [Asserts]
+header "Content-Type" startsWith "application/json"
+header "x-eliza-error-code" == "eliza::gemini::unsupported_user_part"
+jsonpath "$" isObject
+jsonpath "$.error.*" count == 3
+jsonpath "$.error.code" == 400
+jsonpath "$.error.message" == "only text and functionResponse parts are supported"
 jsonpath "$.error.status" == "INVALID_ARGUMENT"
