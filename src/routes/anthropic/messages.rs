@@ -22,6 +22,7 @@ use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{
     JsonEventExt, ProviderRejection, SseEvents, TextArrayKind, optional_text_content, stream_chunks,
 };
+use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, FunctionTool,
@@ -217,12 +218,9 @@ fn lower_tool_use(block: &Value) -> Result<FunctionCall, ProviderRejection> {
     let input = block.get("input").cloned().ok_or_else(|| {
         ProviderRejection::invalid("messages.content", "tool_use block is missing input")
     })?;
-    if !input.is_object() {
-        return Err(ProviderRejection::invalid(
-            "messages.content",
-            "tool_use input must be a JSON object",
-        ));
-    }
+    let input = JsonObject::from_value(input).ok_or_else(|| {
+        ProviderRejection::invalid("messages.content", "tool_use input must be a JSON object")
+    })?;
     Ok(FunctionCall {
         name: name.to_owned(),
         arguments: input,
@@ -265,7 +263,10 @@ fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection
                     "function tool is missing input_schema",
                 ));
             }
-            Ok(FunctionTool::new(name.to_owned(), tool.clone()))
+            Ok(FunctionTool::new(
+                name.to_owned(),
+                tool.to_string().chars().count(),
+            ))
         })
         .collect()
 }
@@ -434,7 +435,7 @@ fn push_tool_events(events: &mut Vec<Event>, call: &FunctionCall) {
             "index":0,
             "delta":{
                 "type":"input_json_delta",
-                "partial_json":call.arguments.to_string()
+                "partial_json":call.arguments.serialized()
             }
         }),
     ));
