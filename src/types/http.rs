@@ -82,15 +82,25 @@ impl ProviderRejection {
 pub(crate) enum TextArrayKind {
     /// OpenAI/Gemini-style parts.
     Parts,
+    /// `OpenAI` Responses input parts.
+    ResponsesParts,
     /// Anthropic-style blocks.
     Blocks,
 }
 
 impl TextArrayKind {
+    /// Return whether a wire type represents text for this provider shape.
+    fn is_text_type(self, item_type: Option<&str>) -> bool {
+        match self {
+            Self::Parts | Self::Blocks => item_type == Some("text"),
+            Self::ResponsesParts => matches!(item_type, Some("input_text" | "text")),
+        }
+    }
+
     /// Return the rejection for a non-text typed item.
     const fn unsupported_message(self) -> &'static str {
         match self {
-            Self::Parts => "only text content parts are supported",
+            Self::Parts | Self::ResponsesParts => "only text content parts are supported",
             Self::Blocks => "only text content blocks are supported",
         }
     }
@@ -98,7 +108,7 @@ impl TextArrayKind {
     /// Return the rejection for a typed item without text.
     const fn missing_text_message(self) -> &'static str {
         match self {
-            Self::Parts => "text content part is missing text",
+            Self::Parts | Self::ResponsesParts => "text content part is missing text",
             Self::Blocks => "text content block is missing text",
         }
     }
@@ -106,7 +116,7 @@ impl TextArrayKind {
     /// Return the rejection for a non-textual outer content shape.
     const fn outer_message(self) -> &'static str {
         match self {
-            Self::Parts => "content must be a string or text parts",
+            Self::Parts | Self::ResponsesParts => "content must be a string or text parts",
             Self::Blocks => "content must be a string or text blocks",
         }
     }
@@ -204,7 +214,7 @@ fn join_typed_text_items(
     let mut text = JoinedText::default();
     for item in items {
         // Reject non-text blocks before provider-neutral lowering.
-        if item.get("type").and_then(Value::as_str) != Some("text") {
+        if !kind.is_text_type(item.get("type").and_then(Value::as_str)) {
             return Err(ProviderRejection::unsupported(
                 param,
                 kind.unsupported_message(),
@@ -257,11 +267,14 @@ impl IntoResponse for SseResponse {
                 .into_iter()
                 .map(Ok::<_, std::convert::Infallible>),
         );
+
+        // If no pacing is requested, return the base stream directly.
         if self.delay_ms == 0 {
             Sse::new(base)
                 .keep_alive(KeepAlive::default())
                 .into_response()
         } else {
+            // Insert a pacing delay before each event.
             let delay_ms = self.delay_ms;
             Sse::new(base.then(move |event| async move {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
