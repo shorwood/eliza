@@ -30,18 +30,6 @@ pub(crate) enum ProviderRejectionKind {
     Internal,
 }
 
-impl ProviderRejectionKind {
-    /// Return the legacy Gemini-compatible status name.
-    const fn gemini_name(self) -> &'static str {
-        match self {
-            Self::Invalid | Self::Unsupported => "INVALID_ARGUMENT",
-            Self::Unauthorized => "UNAUTHENTICATED",
-            Self::TooLarge => "RESOURCE_EXHAUSTED",
-            Self::Internal => "INTERNAL",
-        }
-    }
-}
-
 /// Provider-neutral rejection facts rendered by each adapter.
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderRejection {
@@ -106,21 +94,6 @@ impl ProviderRejection {
         }
     }
 
-    /// Render this rejection using the native Gemini error envelope.
-    pub(crate) fn gemini_response(self) -> Response {
-        (
-            self.status,
-            Json(json!({
-                "error": {
-                    "code": self.status.as_u16(),
-                    "message": self.message,
-                    "status": self.kind.gemini_name()
-                }
-            })),
-        )
-            .into_response()
-    }
-
     /// Render this rejection using the Ollama error envelope.
     pub(crate) fn ollama_response(self) -> Response {
         (self.status, Json(json!({ "error": self.message }))).into_response()
@@ -144,22 +117,6 @@ pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
         chunks.push(current);
     }
     chunks
-}
-
-// -----------------------------------------------------------------------------
-// JsonEventExt: Encodes materialized JSON as SSE data.
-// -----------------------------------------------------------------------------
-
-/// SSE encoding behavior for already-materialized JSON values.
-pub(crate) trait JsonEventExt {
-    /// Encode this value as one SSE data event without a fallible re-serialization step.
-    fn to_sse_event(&self) -> Event;
-}
-
-impl JsonEventExt for Value {
-    fn to_sse_event(&self) -> Event {
-        Event::default().data(self.to_string())
-    }
 }
 
 /// Encode a typed provider record as one SSE data event.

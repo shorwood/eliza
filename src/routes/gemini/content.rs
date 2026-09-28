@@ -1,12 +1,12 @@
 //! Native Gemini Generate Content adapter.
-#![allow(
+#![expect(
+    clippy::missing_errors_doc,
     rlib::missing_section_dividers,
     rlib::undocumented_early_returns,
     rlib::undocumented_items,
-    reason = "private wire plumbing stays clearer without per-field docs, per-concept dividers, or comments restating errors"
+    reason = "private adapter stages stay in request flow; validation errors describe each guard"
 )]
 
-use std::collections::HashMap;
 use std::str::FromStr;
 
 use aide::axum::ApiRouter;
@@ -16,48 +16,19 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
-use crate::types::http::{JsonEventExt, ProviderRejection, SseEvents, stream_chunks};
-use crate::types::json::JsonObject;
+use super::types::{
+    Candidate, ContentRole, FinishReason, FunctionCallOutput, FunctionResponseValue, GeminiContent,
+    GeminiFailureResponse, GeminiRejection, GenerateContentRequest, GenerateContentResponse,
+    GenerateQuery, OutputContent, OutputPart, Part, StreamFormat, ToolConfig,
+};
+use crate::types::http::{ProviderRejection, SseEvents, json_event, stream_chunks};
 use crate::types::model::ModelId;
 use crate::types::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, FunctionTool,
-    RequestLimits, TokenUsage, ToolChoice,
+    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
 };
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct GeminiContent {
-    role: Option<String>,
-    #[serde(default = "missing_parts_are_empty")]
-    parts: Vec<Value>,
-}
-
-/// Accepted native Gemini input.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct GenerateContentRequest {
-    #[serde(default = "missing_contents_are_empty")]
-    contents: Vec<GeminiContent>,
-    #[serde(default)]
-    system_instruction: Option<GeminiContent>,
-    #[serde(default = "missing_parts_are_empty")]
-    tools: Vec<Value>,
-    #[serde(default)]
-    tool_config: Option<Value>,
-}
-
-fn missing_contents_are_empty() -> Vec<GeminiContent> {
-    Vec::new()
-}
-
-fn missing_parts_are_empty() -> Vec<Value> {
-    Vec::new()
-}
 
 #[derive(Debug, Clone, Copy)]
 enum GeminiActionKind {
@@ -111,44 +82,50 @@ impl FromStr for GeminiAction {
     }
 }
 
-/// Lower a native Gemini request into the shared execution model.
-///
-/// # Errors
-///
-/// Returns a rejection for malformed content, tools, or tool configuration.
 fn lower_request(
     model: ModelId,
     payload: GenerateContentRequest,
 ) -> Result<CompatTurnRequest, ProviderRejection> {
     let mut system = Vec::new();
     if let Some(instruction) = payload.system_instruction {
-        system.push(text_parts(&instruction.parts, "systemInstruction.parts")?);
+        system.push(text_parts(
+            instruction.parts.unwrap_or_default(),
+            "systemInstruction.parts",
+        )?);
     }
 
     let mut turns = Vec::new();
-    for content in payload.contents {
-        match content.role.as_deref().unwrap_or("user") {
-            "user" => lower_user_parts(&content.parts, &mut turns)?,
-            "model" => lower_model_parts(&content.parts, &mut turns)?,
-            role => {
-                return Err(ProviderRejection::unsupported(
-                    "contents.role",
-                    format!("unsupported Gemini role `{role}`"),
-                ));
-            }
-        }
+    for content in payload.contents.unwrap_or_default() {
+        lower_content(content, &mut turns)?;
     }
-    let tools = lower_tools(payload.tools)?;
-    let choice = ToolChoice::try_from(GeminiToolConfig(payload.tool_config.as_ref()))?;
-    Ok(CompatTurnRequest::new(model, system, turns, tools, choice))
+    Ok(CompatTurnRequest::new(
+        model,
+        system,
+        turns,
+        payload.tools.unwrap_or_default().into_domain()?,
+        ToolConfig::into_domain(payload.tool_config, "toolConfig")?,
+    ))
 }
 
-/// Lower ordered Gemini user parts into text and function-result turns.
-///
-/// # Errors
-///
-/// Returns a rejection for empty, malformed, or unsupported parts.
-fn lower_user_parts(parts: &[Value], turns: &mut Vec<CompatTurn>) -> Result<(), ProviderRejection> {
+fn lower_content(
+    content: GeminiContent,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), ProviderRejection> {
+    let parts = content.parts.unwrap_or_default();
+    match content.role.unwrap_or(ContentRole::User) {
+        ContentRole::User | ContentRole::Function => lower_user_parts(parts, turns),
+        ContentRole::Model => lower_model_parts(parts, turns),
+        ContentRole::Unsupported => Err(ProviderRejection::unsupported(
+            "contents.role",
+            "unsupported Gemini role",
+        )),
+    }
+}
+
+fn lower_user_parts(
+    parts: Vec<Part>,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), ProviderRejection> {
     if parts.is_empty() {
         return Err(ProviderRejection::invalid(
             "contents.parts",
@@ -157,248 +134,143 @@ fn lower_user_parts(parts: &[Value], turns: &mut Vec<CompatTurn>) -> Result<(), 
     }
     let mut text = Vec::new();
     for part in parts {
-        if let Some(value) = part.get("text").and_then(Value::as_str) {
-            text.push(value.to_owned());
-            continue;
+        match part {
+            Part::Text { text: part } => text.push(part),
+            Part::FunctionResponse { function_response } => {
+                flush_user_text(&mut text, turns);
+                let response = function_response.response.ok_or_else(|| {
+                    ProviderRejection::invalid(
+                        "contents.parts",
+                        "functionResponse is missing response",
+                    )
+                })?;
+                turns.push(CompatTurn::ToolResult(match response {
+                    FunctionResponseValue::Text(text) => text,
+                    FunctionResponseValue::Object(object) => object.serialized(),
+                }));
+            }
+            Part::FunctionCall { .. } | Part::Unsupported { .. } => {
+                return Err(ProviderRejection::unsupported(
+                    "contents.parts",
+                    "only text and functionResponse parts are supported",
+                ));
+            }
         }
-        let Some(function) = part.get("functionResponse") else {
-            return Err(ProviderRejection::unsupported(
-                "contents.parts",
-                "only text and functionResponse parts are supported",
-            ));
-        };
-        if !text.is_empty() {
-            turns.push(CompatTurn::User(std::mem::take(&mut text).join("\n")));
-        }
-        let response = function.get("response").ok_or_else(|| {
-            ProviderRejection::invalid("contents.parts", "functionResponse is missing response")
-        })?;
-        turns.push(CompatTurn::ToolResult(response.to_string()));
     }
-    if !text.is_empty() {
-        turns.push(CompatTurn::User(text.join("\n")));
-    }
+    flush_user_text(&mut text, turns);
     Ok(())
 }
 
-/// Lower ordered Gemini model parts into text and function-call turns.
-///
-/// # Errors
-///
-/// Returns a rejection for malformed or unsupported parts.
+fn flush_user_text(text: &mut Vec<String>, turns: &mut Vec<CompatTurn>) {
+    if text.is_empty() {
+        return;
+    }
+    turns.push(CompatTurn::User(std::mem::take(text).join("\n")));
+}
+
 fn lower_model_parts(
-    parts: &[Value],
+    parts: Vec<Part>,
     turns: &mut Vec<CompatTurn>,
 ) -> Result<(), ProviderRejection> {
     for part in parts {
-        if let Some(text) = part.get("text").and_then(Value::as_str) {
-            turns.push(CompatTurn::Assistant(text.to_owned()));
-            continue;
+        match part {
+            Part::Text { text } => turns.push(CompatTurn::Assistant(text)),
+            Part::FunctionCall { function_call } => {
+                let name = function_call
+                    .name
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| {
+                        ProviderRejection::invalid("contents.parts", "functionCall is missing name")
+                    })?;
+                turns.push(CompatTurn::ToolCall(FunctionCall {
+                    name,
+                    arguments: function_call.args.unwrap_or_default(),
+                }));
+            }
+            Part::FunctionResponse { .. } | Part::Unsupported { .. } => {
+                return Err(ProviderRejection::unsupported(
+                    "contents.parts",
+                    "only text and functionCall parts are supported",
+                ));
+            }
         }
-        let Some(function) = part.get("functionCall") else {
-            return Err(ProviderRejection::unsupported(
-                "contents.parts",
-                "only text and functionCall parts are supported",
-            ));
-        };
-        let name = function
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| {
-                ProviderRejection::invalid("contents.parts", "functionCall is missing name")
-            })?;
-        let arguments = function.get("args").cloned().unwrap_or_else(|| json!({}));
-        let arguments = JsonObject::from_value(arguments).ok_or_else(|| {
-            ProviderRejection::invalid("contents.parts", "functionCall args must be a JSON object")
-        })?;
-        turns.push(CompatTurn::ToolCall(FunctionCall {
-            name: name.to_owned(),
-            arguments,
-        }));
     }
     Ok(())
 }
 
-/// Join a required list of native Gemini text parts.
-///
-/// # Errors
-///
-/// Returns a rejection when the list is empty or contains a non-text part.
-fn text_parts(parts: &[Value], param: &'static str) -> Result<String, ProviderRejection> {
+fn text_parts(parts: Vec<Part>, param: &'static str) -> Result<String, ProviderRejection> {
     if parts.is_empty() {
         return Err(ProviderRejection::invalid(param, "text parts are required"));
     }
     parts
-        .iter()
-        .map(|part| {
-            part.get("text")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    ProviderRejection::unsupported(param, "only text parts are supported")
-                })
+        .into_iter()
+        .map(|part| match part {
+            Part::Text { text } => Ok(text),
+            Part::FunctionCall { .. }
+            | Part::FunctionResponse { .. }
+            | Part::Unsupported { .. } => Err(ProviderRejection::unsupported(
+                param,
+                "only text parts are supported",
+            )),
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|parts| parts.join("\n"))
 }
 
-/// Flatten native Gemini function-declaration groups.
-///
-/// # Errors
-///
-/// Returns a rejection for unsupported groups or declarations without names.
-fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection> {
-    let mut functions = Vec::new();
-    for tool in tools {
-        let Some(declarations) = tool.get("functionDeclarations").and_then(Value::as_array) else {
-            return Err(ProviderRejection::unsupported(
-                "tools",
-                "only client function declarations are supported",
-            ));
-        };
-        for declaration in declarations {
-            let name = declaration
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| {
-                    ProviderRejection::invalid("tools", "function declaration is missing name")
-                })?;
-            functions.push(FunctionTool::new(
-                name.to_owned(),
-                declaration.to_string().chars().count(),
-            ));
-        }
-    }
-    Ok(functions)
-}
-
-struct GeminiToolConfig<'a>(Option<&'a Value>);
-
-struct GeminiAllowedFunctions<'a>(&'a Value);
-
-impl From<GeminiAllowedFunctions<'_>> for ToolChoice {
-    fn from(config: GeminiAllowedFunctions<'_>) -> Self {
-        let allowed = config
-            .0
-            .get("allowedFunctionNames")
-            .and_then(Value::as_array)
-            .map(|names| {
-                names
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        match allowed.as_slice() {
-            [] => Self::Required,
-            [name] => Self::Named(name.clone()),
-            _ => Self::Allowed(allowed),
-        }
-    }
-}
-
-impl TryFrom<GeminiToolConfig<'_>> for ToolChoice {
-    type Error = ProviderRejection;
-
-    fn try_from(config: GeminiToolConfig<'_>) -> Result<Self, Self::Error> {
-        let Some(calling) = config
-            .0
-            .and_then(|config| config.get("functionCallingConfig"))
-        else {
-            return Ok(Self::Auto);
-        };
-        let mode = calling
-            .get("mode")
-            .and_then(Value::as_str)
-            .unwrap_or("AUTO");
-        match mode {
-            "AUTO" | "VALIDATED" => Ok(Self::Auto),
-            "NONE" => Ok(Self::None),
-            "ANY" => Ok(Self::from(GeminiAllowedFunctions(calling))),
-            _ => Err(ProviderRejection::invalid(
-                "toolConfig",
-                format!("unsupported function calling mode `{mode}`"),
-            )),
-        }
-    }
-}
-
-fn usage_json(usage: TokenUsage) -> Value {
-    json!({
-        "promptTokenCount":usage.prompt,
-        "candidatesTokenCount":usage.completion,
-        "totalTokenCount":usage.total
-    })
-}
-
-fn response_json(response: CompatTurnResponse) -> Value {
-    let part = match response.output {
-        CompatOutput::Text(text) => json!({"text":text}),
-        CompatOutput::ToolCall(call) => json!({
-            "functionCall":{
-                "id":format!("call_{}", Uuid::now_v7().simple()),
-                "name":call.name,
-                "args":call.arguments
-            }
-        }),
-    };
-    json!({
-        "candidates":[{
-            "content":{"role":"model","parts":[part]},
-            "finishReason":"STOP",
-            "index":0
-        }],
-        "modelVersion":response.model,
-        "usageMetadata":usage_json(response.usage)
-    })
-}
-
-fn stream_records(response: &CompatTurnResponse) -> Vec<Value> {
+fn stream_records(response: &CompatTurnResponse) -> Vec<GenerateContentResponse> {
     match &response.output {
         CompatOutput::Text(text) => text_stream_records(response, text),
-        CompatOutput::ToolCall(call) => vec![json!({
-            "candidates":[{
-                "content":{"role":"model","parts":[{
-                    "functionCall":{
-                        "id":format!("call_{}", Uuid::now_v7().simple()),
-                        "name":call.name,
-                        "args":call.arguments
-                    }
-                }]},
-                "finishReason":"STOP",
-                "index":0
+        CompatOutput::ToolCall(call) => vec![GenerateContentResponse {
+            candidates: vec![Candidate {
+                content: OutputContent {
+                    role: "model",
+                    parts: vec![OutputPart::FunctionCall {
+                        function_call: FunctionCallOutput {
+                            id: format!("call_{}", Uuid::now_v7().simple()),
+                            name: call.name.clone(),
+                            args: call.arguments.clone(),
+                        },
+                    }],
+                },
+                finish_reason: Some(FinishReason::Stop),
+                index: 0,
             }],
-            "modelVersion":response.model,
-            "usageMetadata":usage_json(response.usage)
-        })],
+            model_version: response.model.clone(),
+            usage_metadata: Some(response.usage.into()),
+        }],
     }
 }
 
-fn text_stream_records(response: &CompatTurnResponse, text: &str) -> Vec<Value> {
+fn text_stream_records(response: &CompatTurnResponse, text: &str) -> Vec<GenerateContentResponse> {
     let mut records = stream_chunks(text)
         .into_iter()
-        .map(|chunk| {
-            json!({
-                "candidates":[{
-                    "content":{"role":"model","parts":[{"text":chunk}]},
-                    "index":0
-                }],
-                "modelVersion":response.model
-            })
+        .map(|chunk| GenerateContentResponse {
+            candidates: vec![Candidate {
+                content: OutputContent {
+                    role: "model",
+                    parts: vec![OutputPart::Text { text: chunk }],
+                },
+                finish_reason: None,
+                index: 0,
+            }],
+            model_version: response.model.clone(),
+            usage_metadata: None,
         })
         .collect::<Vec<_>>();
-    records.push(json!({
-        "candidates":[{
-            "content":{"role":"model","parts":[{"text":""}]},
-            "finishReason":"STOP",
-            "index":0
+    records.push(GenerateContentResponse {
+        candidates: vec![Candidate {
+            content: OutputContent {
+                role: "model",
+                parts: vec![OutputPart::Text {
+                    text: String::new(),
+                }],
+            },
+            finish_reason: Some(FinishReason::Stop),
+            index: 0,
         }],
-        "modelVersion":response.model,
-        "usageMetadata":usage_json(response.usage)
-    }));
+        model_version: response.model.clone(),
+        usage_metadata: Some(response.usage.into()),
+    });
     records
 }
 
@@ -406,28 +278,27 @@ async fn generate(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(model_action): Path<String>,
-    Query(query): Query<HashMap<String, String>>,
+    Query(query): Query<GenerateQuery>,
     Json(payload): Json<GenerateContentRequest>,
 ) -> Response {
-    // Authenticate with Gemini's native API-key header before lowering input.
     if let Err(error) = provider_authenticate(
         &headers,
         &state.config,
         ProviderAuth::ApiKey("x-goog-api-key"),
     ) {
-        return error.gemini_response();
+        return GeminiRejection::from(error).into_response();
     }
 
-    // The path selects both the model identifier and streaming behavior.
+    // Decode the model and generation action carried by Gemini's path grammar.
     let action = match model_action.parse::<GeminiAction>() {
         Ok(action) => action,
-        Err(error) => return error.gemini_response(),
+        Err(error) => return GeminiRejection::from(error).into_response(),
     };
 
-    // Lower and execute the submitted provider transcript under shared limits.
+    // Lower and execute the provider request under shared resource limits.
     let request = match lower_request(action.model.clone(), payload) {
         Ok(request) => request,
-        Err(error) => return error.gemini_response(),
+        Err(error) => return GeminiRejection::from(error).into_response(),
     };
     let limits = RequestLimits::new(
         state.config.max_input_chars,
@@ -435,24 +306,26 @@ async fn generate(
     );
     let response = match request.complete(limits) {
         Ok(response) => response,
-        Err(error) => return error.gemini_response(),
+        Err(error) => return GeminiRejection::from(error).into_response(),
     };
 
     if !action.kind.is_stream() {
-        return Json(response_json(response)).into_response();
+        return Json(GenerateContentResponse::from(response)).into_response();
     }
     let records = stream_records(&response);
-    if query.get("alt").is_some_and(|value| value == "sse") {
-        let events: Vec<Event> = records
-            .into_iter()
-            .map(|record| record.to_sse_event())
-            .collect();
-        SseEvents::from(events)
-            .with_delay(state.config.stream_delay_ms)
-            .into_response()
-    } else {
-        Json(Value::Array(records)).into_response()
+    if matches!(query.alt, Some(StreamFormat::Sse)) {
+        let events = records
+            .iter()
+            .map(json_event)
+            .collect::<Result<Vec<Event>, _>>();
+        return match events {
+            Ok(events) => SseEvents::from(events)
+                .with_delay(state.config.stream_delay_ms)
+                .into_response(),
+            Err(error) => GeminiRejection::from(error).into_response(),
+        };
     }
+    Json(records).into_response()
 }
 
 /// Native Gemini generation route.
@@ -467,8 +340,8 @@ impl Route {
                 operation
                     .summary("Gemini content")
                     .tag("gemini")
-                    .response::<200, Json<Value>>()
-                    .default_response::<Json<Value>>()
+                    .response::<200, Json<GenerateContentResponse>>()
+                    .default_response::<Json<GeminiFailureResponse>>()
             }),
         )
     }
