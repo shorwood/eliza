@@ -341,6 +341,50 @@ mod openai {
     }
 
     #[test]
+    fn it_should_accept_openai_responses_sdk_input() {
+        let server = TestServer::spawn(&[]);
+        let TestResponse { status, body } = server.post_json_with(
+            "/v1/responses",
+            &json!({
+                "model": "eliza-doctor",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "I am sad" }]
+                }]
+            }),
+            &[],
+        );
+        let body: Value = serde_json::from_str(&body).expect("response should be JSON");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["output"][0]["content"][0]["text"],
+            "I AM SORRY TO HEAR YOU ARE SAD"
+        );
+    }
+
+    #[test]
+    fn it_should_reject_non_text_openai_responses_input() {
+        let server = TestServer::spawn(&[]);
+        let TestResponse { status, body } = server.post_json_with(
+            "/v1/responses",
+            &json!({
+                "model": "eliza-doctor",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_image", "image_url": "https://example.com/image.png" }]
+                }]
+            }),
+            &[],
+        );
+        let body: Value = serde_json::from_str(&body).expect("response should be JSON");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["type"], "unsupported_request_error");
+        assert_eq!(body["error"]["param"], "input.content");
+    }
+
+    #[test]
     fn it_should_bearer_auth_rejects_missing_token() {
         let server = TestServer::spawn(&["--auth", "bearer", "--bearer-token", "secret"]);
         let TestResponse { status, body } = server.post_json_with(

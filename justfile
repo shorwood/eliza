@@ -2,7 +2,10 @@ fmt:
     cargo fmt --all
 
 chat:
-    AICHAT_CONFIG_FILE="$PWD/fixtures/aichat.yaml" aichat
+    cargo build --bin eliza --locked
+    ELIZA_EXAMPLE_PORT=8787 \
+    AICHAT_CONFIG_FILE="$PWD/fixtures/aichat.yaml" \
+    sh examples/with-eliza.sh aichat
 
 example-vercel-ai:
     pnpm --dir examples/vercel-ai install --frozen-lockfile
