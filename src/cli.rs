@@ -204,7 +204,8 @@ pub(super) enum Commands {
 #[derive(Debug, Parser)]
 #[command(name = "eliza")]
 #[command(
-    about = "Serve classic ELIZA through OpenAI, Anthropic, Gemini, and Ollama-compatible HTTP APIs."
+    about = "Serve classic ELIZA through OpenAI, Anthropic, Gemini, and Ollama-compatible HTTP APIs.",
+    long_about = None
 )]
 pub(super) struct Cli {
     /// Selected command.
