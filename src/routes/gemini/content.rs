@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{JsonEventExt, ProviderRejection, SseEvents, stream_chunks};
+use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, FunctionTool,
@@ -208,12 +209,9 @@ fn lower_model_parts(
                 ProviderRejection::invalid("contents.parts", "functionCall is missing name")
             })?;
         let arguments = function.get("args").cloned().unwrap_or_else(|| json!({}));
-        if !arguments.is_object() {
-            return Err(ProviderRejection::invalid(
-                "contents.parts",
-                "functionCall args must be a JSON object",
-            ));
-        }
+        let arguments = JsonObject::from_value(arguments).ok_or_else(|| {
+            ProviderRejection::invalid("contents.parts", "functionCall args must be a JSON object")
+        })?;
         turns.push(CompatTurn::ToolCall(FunctionCall {
             name: name.to_owned(),
             arguments,
@@ -267,7 +265,10 @@ fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection
                 .ok_or_else(|| {
                     ProviderRejection::invalid("tools", "function declaration is missing name")
                 })?;
-            functions.push(FunctionTool::new(name.to_owned(), declaration.clone()));
+            functions.push(FunctionTool::new(
+                name.to_owned(),
+                declaration.to_string().chars().count(),
+            ));
         }
     }
     Ok(functions)
