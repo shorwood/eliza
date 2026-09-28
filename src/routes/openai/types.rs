@@ -6,13 +6,12 @@
     reason = "wire types stay grouped by endpoint; private Serde names are self-describing"
 )]
 
-use axum::Json;
-use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::types::http::{ProviderRejection, ProviderRejectionKind, unix_timestamp};
+use super::errors::{OpenAiError, OpenAiFailureBody};
+use crate::types::http::unix_timestamp;
 use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{
@@ -111,12 +110,11 @@ pub(super) enum FunctionArguments {
 }
 
 impl FunctionArguments {
-    pub(super) fn into_object(self, param: &'static str) -> Result<JsonObject, ProviderRejection> {
+    pub(super) fn into_object(self, param: &'static str) -> Result<JsonObject, OpenAiError> {
         match self {
             Self::Object(arguments) => Ok(arguments),
-            Self::Encoded(arguments) => serde_json::from_str(&arguments).map_err(|error| {
-                ProviderRejection::invalid(param, format!("invalid function arguments: {error}"))
-            }),
+            Self::Encoded(arguments) => serde_json::from_str(&arguments)
+                .map_err(|source| OpenAiError::InvalidFunctionArguments { param, source }),
         }
     }
 }
@@ -143,24 +141,21 @@ pub(super) struct ChatToolCall {
 }
 
 impl ChatToolCall {
-    pub(super) fn lower(self, param: &'static str) -> Result<FunctionCall, ProviderRejection> {
+    pub(super) fn lower(self, param: &'static str) -> Result<FunctionCall, OpenAiError> {
         // Reject non-function calls before interpreting function-only fields.
         if matches!(self.kind, FunctionKind::Unsupported) {
-            return Err(ProviderRejection::unsupported(
-                param,
-                "only function tool calls are supported",
-            ));
+            return Err(OpenAiError::UnsupportedToolCallKind { param });
         }
-        let function = self.function.ok_or_else(|| {
-            ProviderRejection::invalid(param, "function tool call is missing function")
-        })?;
+        let function = self
+            .function
+            .ok_or(OpenAiError::MissingToolCallFunction { param })?;
         let name = function
             .name
             .filter(|name| !name.is_empty())
-            .ok_or_else(|| ProviderRejection::invalid(param, "function is missing its name"))?;
-        let arguments = function.arguments.ok_or_else(|| {
-            ProviderRejection::invalid(param, "function tool call is missing arguments")
-        })?;
+            .ok_or(OpenAiError::MissingFunctionName { param })?;
+        let arguments = function
+            .arguments
+            .ok_or(OpenAiError::MissingToolCallArguments { param })?;
         Ok(FunctionCall {
             name,
             arguments: arguments.into_object(param)?,
@@ -211,27 +206,20 @@ impl ChatFunctionDefinition {
 pub(super) struct ChatToolList(Vec<ChatTool>);
 
 impl ChatToolList {
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, ProviderRejection> {
+    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, OpenAiError> {
         self.0
             .into_iter()
             .map(|tool| {
                 // A function list cannot normalize provider extension tools.
                 if matches!(tool.kind, FunctionKind::Unsupported) {
-                    return Err(ProviderRejection::unsupported(
-                        "tools",
-                        "only client function tools are supported",
-                    ));
+                    return Err(OpenAiError::UnsupportedToolDefinition);
                 }
                 let definition_chars = tool.char_count();
-                let function = tool.function.ok_or_else(|| {
-                    ProviderRejection::invalid("tools", "function tool is missing function")
-                })?;
+                let function = tool.function.ok_or(OpenAiError::MissingToolDefinition)?;
                 let name = function
                     .name
                     .filter(|name| !name.is_empty())
-                    .ok_or_else(|| {
-                        ProviderRejection::invalid("tools", "function is missing its name")
-                    })?;
+                    .ok_or(OpenAiError::MissingFunctionName { param: "tools" })?;
                 Ok(FunctionTool::new(name, definition_chars))
             })
             .collect()
@@ -246,25 +234,22 @@ pub(super) enum ChatToolChoice {
 }
 
 impl TryFrom<Option<ChatToolChoice>> for ToolChoice {
-    type Error = ProviderRejection;
+    type Error = OpenAiError;
 
     fn try_from(choice: Option<ChatToolChoice>) -> Result<Self, Self::Error> {
         match choice {
             None | Some(ChatToolChoice::Mode(ToolChoiceMode::Auto)) => Ok(Self::Auto),
             Some(ChatToolChoice::Mode(ToolChoiceMode::None)) => Ok(Self::None),
             Some(ChatToolChoice::Mode(ToolChoiceMode::Required)) => Ok(Self::Required),
-            Some(ChatToolChoice::Mode(ToolChoiceMode::Unsupported)) => Err(
-                ProviderRejection::invalid("tool_choice", "unsupported tool_choice mode"),
-            ),
+            Some(ChatToolChoice::Mode(ToolChoiceMode::Unsupported)) => {
+                Err(OpenAiError::UnsupportedToolChoiceMode)
+            }
             Some(ChatToolChoice::Named(choice))
                 if matches!(choice.kind, FunctionKind::Function) =>
             {
                 Ok(Self::Named(choice.function.name))
             }
-            Some(ChatToolChoice::Named(_)) => Err(ProviderRejection::unsupported(
-                "tool_choice",
-                "only named function choices are supported",
-            )),
+            Some(ChatToolChoice::Named(_)) => Err(OpenAiError::UnsupportedNamedToolChoice),
         }
     }
 }
@@ -373,21 +358,19 @@ impl ResponsesTool {
 pub(super) struct ResponsesToolList(Vec<ResponsesTool>);
 
 impl ResponsesToolList {
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, ProviderRejection> {
+    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, OpenAiError> {
         self.0
             .into_iter()
             .map(|tool| {
                 // A function list cannot normalize provider extension tools.
                 if matches!(tool.kind, FunctionKind::Unsupported) {
-                    return Err(ProviderRejection::unsupported(
-                        "tools",
-                        "only client function tools are supported",
-                    ));
+                    return Err(OpenAiError::UnsupportedToolDefinition);
                 }
                 let definition_chars = tool.char_count();
-                let name = tool.name.filter(|name| !name.is_empty()).ok_or_else(|| {
-                    ProviderRejection::invalid("tools", "function is missing its name")
-                })?;
+                let name = tool
+                    .name
+                    .filter(|name| !name.is_empty())
+                    .ok_or(OpenAiError::MissingFunctionName { param: "tools" })?;
                 Ok(FunctionTool::new(name, definition_chars))
             })
             .collect()
@@ -402,28 +385,27 @@ pub(super) enum ResponsesToolChoice {
 }
 
 impl TryFrom<Option<ResponsesToolChoice>> for ToolChoice {
-    type Error = ProviderRejection;
+    type Error = OpenAiError;
 
     fn try_from(choice: Option<ResponsesToolChoice>) -> Result<Self, Self::Error> {
         match choice {
             None | Some(ResponsesToolChoice::Mode(ToolChoiceMode::Auto)) => Ok(Self::Auto),
             Some(ResponsesToolChoice::Mode(ToolChoiceMode::None)) => Ok(Self::None),
             Some(ResponsesToolChoice::Mode(ToolChoiceMode::Required)) => Ok(Self::Required),
-            Some(ResponsesToolChoice::Mode(ToolChoiceMode::Unsupported)) => Err(
-                ProviderRejection::invalid("tool_choice", "unsupported tool_choice mode"),
-            ),
+            Some(ResponsesToolChoice::Mode(ToolChoiceMode::Unsupported)) => {
+                Err(OpenAiError::UnsupportedToolChoiceMode)
+            }
             Some(ResponsesToolChoice::Named(choice))
                 if matches!(choice.kind, FunctionKind::Function) =>
             {
-                let name = choice.name.filter(|name| !name.is_empty()).ok_or_else(|| {
-                    ProviderRejection::invalid("tool_choice", "function is missing its name")
-                })?;
+                let name = choice.name.filter(|name| !name.is_empty()).ok_or(
+                    OpenAiError::MissingFunctionName {
+                        param: "tool_choice",
+                    },
+                )?;
                 Ok(Self::Named(name))
             }
-            Some(ResponsesToolChoice::Named(_)) => Err(ProviderRejection::unsupported(
-                "tool_choice",
-                "only named function choices are supported",
-            )),
+            Some(ResponsesToolChoice::Named(_)) => Err(OpenAiError::UnsupportedNamedToolChoice),
         }
     }
 }
@@ -810,63 +792,6 @@ pub(super) struct ModelDescriptor {
 pub(super) struct ModelListResponse {
     pub(super) object: &'static str,
     pub(super) data: Vec<ModelDescriptor>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum OpenAiErrorKind {
-    InvalidRequestError,
-    UnsupportedRequestError,
-    AuthenticationError,
-    RequestTooLarge,
-    ServerError,
-}
-
-impl From<ProviderRejectionKind> for OpenAiErrorKind {
-    fn from(kind: ProviderRejectionKind) -> Self {
-        match kind {
-            ProviderRejectionKind::Invalid => Self::InvalidRequestError,
-            ProviderRejectionKind::Unsupported => Self::UnsupportedRequestError,
-            ProviderRejectionKind::Unauthorized => Self::AuthenticationError,
-            ProviderRejectionKind::TooLarge => Self::RequestTooLarge,
-            ProviderRejectionKind::Internal => Self::ServerError,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub(super) struct OpenAiFailureBody {
-    message: String,
-    #[serde(rename = "type")]
-    kind: OpenAiErrorKind,
-    param: Option<&'static str>,
-    code: Option<&'static str>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub(crate) struct OpenAiFailureResponse {
-    error: OpenAiFailureBody,
-}
-
-#[derive(derive_more::From)]
-pub(super) struct OpenAiRejection(ProviderRejection);
-
-impl IntoResponse for OpenAiRejection {
-    fn into_response(self) -> Response {
-        let rejection = self.0;
-        (
-            rejection.status,
-            Json(OpenAiFailureResponse {
-                error: OpenAiFailureBody {
-                    message: rejection.message,
-                    kind: rejection.kind.into(),
-                    param: rejection.param,
-                    code: None,
-                },
-            }),
-        )
-            .into_response()
-    }
 }
 
 pub(super) fn response_output_text(response: &CompatTurnResponse) -> String {

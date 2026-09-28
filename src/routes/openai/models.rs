@@ -8,13 +8,14 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
-use super::types::{ModelDescriptor, ModelListResponse, OpenAiFailureResponse, OpenAiRejection};
+use super::errors::{OpenAiFailureResponse, OpenAiRejection};
+use super::types::{ModelDescriptor, ModelListResponse};
 
 /// List the configured model in `OpenAI`'s native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Authentication failures use the provider's own error envelope.
     if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-        return OpenAiRejection::from(error).into_response();
+        return OpenAiRejection::from_error(&error).into_response();
     }
 
     Json(ModelListResponse {

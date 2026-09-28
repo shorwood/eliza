@@ -8,7 +8,8 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
-use super::types::{GeminiFailureResponse, GeminiModel, GeminiModelsResponse, GeminiRejection};
+use super::errors::{GeminiFailureResponse, GeminiRejection};
+use super::types::{GeminiModel, GeminiModelsResponse};
 
 /// List the configured model in Gemini's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -18,7 +19,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         &state.config,
         ProviderAuth::ApiKey("x-goog-api-key"),
     ) {
-        return GeminiRejection::from(error).into_response();
+        return GeminiRejection::from_error(&error).into_response();
     }
 
     Json(GeminiModelsResponse {

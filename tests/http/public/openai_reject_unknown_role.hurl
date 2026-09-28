@@ -6,4 +6,6 @@ Content-Type: application/json
 }
 HTTP 400
 [Asserts]
-jsonpath "$.error.type" == "unsupported_request_error"
+header "x-eliza-error-code" == "eliza::openai::unsupported_message_role"
+jsonpath "$.error.type" == "invalid_request_error"
+jsonpath "$.error.code" == "eliza::openai::unsupported_message_role"
