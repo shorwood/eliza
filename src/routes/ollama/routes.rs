@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{NdjsonResponse, ProviderRejection, stream_chunks};
+use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, FunctionTool,
@@ -147,12 +148,12 @@ fn lower_call(value: &Value) -> Result<FunctionCall, ProviderRejection> {
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    if !arguments.is_object() {
-        return Err(ProviderRejection::invalid(
+    let arguments = JsonObject::from_value(arguments).ok_or_else(|| {
+        ProviderRejection::invalid(
             "messages.tool_calls",
             "tool call arguments must be a JSON object",
-        ));
-    }
+        )
+    })?;
     Ok(FunctionCall {
         name: name.to_owned(),
         arguments,
@@ -181,7 +182,10 @@ fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection
                 .ok_or_else(|| {
                     ProviderRejection::invalid("tools", "function tool is missing name")
                 })?;
-            Ok(FunctionTool::new(name.to_owned(), tool.clone()))
+            Ok(FunctionTool::new(
+                name.to_owned(),
+                tool.to_string().chars().count(),
+            ))
         })
         .collect()
 }

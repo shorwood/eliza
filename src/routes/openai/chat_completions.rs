@@ -23,6 +23,7 @@ use crate::types::http::{
     JsonEventExt, ProviderRejection, SseEvents, TextArrayKind, optional_text_content,
     stream_chunks, unix_timestamp,
 };
+use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, FunctionTool,
@@ -192,7 +193,10 @@ fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection
                 .ok_or_else(|| {
                     ProviderRejection::invalid("tools", "function tool is missing its name")
                 })?;
-            Ok(FunctionTool::new(name.to_owned(), tool.clone()))
+            Ok(FunctionTool::new(
+                name.to_owned(),
+                tool.to_string().chars().count(),
+            ))
         })
         .collect()
 }
@@ -264,12 +268,9 @@ fn lower_openai_call(
         })?,
         arguments => arguments.clone(),
     };
-    if !arguments.is_object() {
-        return Err(ProviderRejection::invalid(
-            param,
-            "function arguments must be a JSON object",
-        ));
-    }
+    let arguments = JsonObject::from_value(arguments).ok_or_else(|| {
+        ProviderRejection::invalid(param, "function arguments must be a JSON object")
+    })?;
     Ok(FunctionCall {
         name: name.to_owned(),
         arguments,
@@ -305,7 +306,7 @@ fn completion_json(response: CompatTurnResponse) -> Value {
     let (message, finish_reason) = match response.output {
         CompatOutput::Text(text) => (json!({"role":"assistant","content":text}), "stop"),
         CompatOutput::ToolCall(call) => {
-            let arguments = call.arguments.to_string();
+            let arguments = call.arguments.serialized();
             (
                 json!({
                     "role": "assistant",
@@ -442,7 +443,7 @@ fn push_tool_events(events: &mut Vec<Event>, context: &ChatStreamContext<'_>, ca
             "model": context.model,
             "choices": [{"index":0,"delta":{"tool_calls":[{
                 "index":0,
-                "function":{"arguments":call.arguments.to_string()}
+                "function":{"arguments":call.arguments.serialized()}
             }]},"finish_reason":null}]
         })
         .to_sse_event(),

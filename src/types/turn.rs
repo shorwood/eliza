@@ -9,9 +9,9 @@ use std::num::NonZeroUsize;
 
 use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::Value;
 
 use super::http::ProviderRejection;
+use super::json::JsonObject;
 use super::model::ModelId;
 use crate::eliza::engine::{ElizaSession, doctor_script};
 
@@ -23,19 +23,22 @@ const TOOL_COMPLETE_TEXT: &str = "TOOL CALL COMPLETE";
 pub(crate) struct FunctionTool {
     /// Function name used by the wire adapter.
     name: String,
-    /// Complete definition retained for limits and accounting.
-    definition: Value,
+    /// Serialized definition size retained for limits and accounting.
+    definition_chars: usize,
 }
 
 impl FunctionTool {
     /// Retain a validated function name and its provider definition.
-    pub(crate) fn new(name: String, definition: Value) -> Self {
-        Self { name, definition }
+    pub(crate) fn new(name: String, definition_chars: usize) -> Self {
+        Self {
+            name,
+            definition_chars,
+        }
     }
 
     /// Count the serialized definition for request-size enforcement.
     fn char_count(&self) -> usize {
-        self.definition.to_string().chars().count()
+        self.definition_chars
     }
 }
 
@@ -45,7 +48,7 @@ pub(crate) struct FunctionCall {
     /// Function selected by the explicit fixture directive.
     pub(crate) name: String,
     /// Caller-supplied JSON object passed through unchanged.
-    pub(crate) arguments: Value,
+    pub(crate) arguments: JsonObject,
 }
 
 impl FunctionCall {
@@ -77,15 +80,10 @@ impl FunctionCall {
                 "tool directive must include a function name",
             ));
         }
-        let arguments = serde_json::from_str::<Value>(arguments.trim_start()).map_err(|error| {
-            ProviderRejection::invalid("messages", format!("invalid tool arguments: {error}"))
-        })?;
-        if !arguments.is_object() {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "tool arguments must be a JSON object",
-            ));
-        }
+        let arguments =
+            serde_json::from_str::<JsonObject>(arguments.trim_start()).map_err(|error| {
+                ProviderRejection::invalid("messages", format!("invalid tool arguments: {error}"))
+            })?;
         Ok(Some(Self {
             name: name.to_owned(),
             arguments,
@@ -94,7 +92,7 @@ impl FunctionCall {
 
     /// Count the provider-visible name and serialized arguments.
     fn char_count(&self) -> usize {
-        self.name.chars().count() + self.arguments.to_string().chars().count()
+        self.name.chars().count() + self.arguments.serialized().chars().count()
     }
 }
 
@@ -241,10 +239,14 @@ impl CompatTurnRequest {
             CompatTurn::User(text) | CompatTurn::Assistant(text) | CompatTurn::ToolResult(text) => {
                 text.clone()
             }
-            CompatTurn::ToolCall(call) => format!("{} {}", call.name, call.arguments),
+            CompatTurn::ToolCall(call) => format!("{} {}", call.name, call.arguments.serialized()),
         }));
-        texts.extend(self.tools.iter().map(|tool| tool.definition.to_string()));
-        approximate_tokens(texts.iter().map(String::as_str))
+        let definition_chars = self
+            .tools
+            .iter()
+            .map(FunctionTool::char_count)
+            .sum::<usize>();
+        approximate_tokens(texts.iter().map(String::as_str)) + definition_chars.div_ceil(4)
     }
 
     /// Replay ordinary user turns through a fresh deterministic ELIZA session.
@@ -409,7 +411,7 @@ impl CompatTurnRequest {
         let completion = match &output {
             CompatOutput::Text(text) => approximate_tokens(std::iter::once(text.as_str())),
             CompatOutput::ToolCall(call) => {
-                let arguments = call.arguments.to_string();
+                let arguments = call.arguments.serialized();
                 approximate_tokens([call.name.as_str(), arguments.as_str()].into_iter())
             }
         };
@@ -495,7 +497,10 @@ mod tests {
     fn tool() -> FunctionTool {
         FunctionTool::new(
             "echo".to_owned(),
-            serde_json::json!({"type":"function","name":"echo"}),
+            serde_json::json!({"type":"function","name":"echo"})
+                .to_string()
+                .chars()
+                .count(),
         )
     }
 
@@ -517,7 +522,7 @@ mod tests {
             response.output,
             CompatOutput::ToolCall(FunctionCall {
                 name: "echo".to_owned(),
-                arguments: serde_json::json!({"value":"hello"}),
+                arguments: JsonObject::from_value(serde_json::json!({"value":"hello"})).unwrap(),
             })
         );
     }
@@ -541,7 +546,7 @@ mod tests {
     fn matching_tool_result_finishes_the_fixture() {
         let call = FunctionCall {
             name: "echo".to_owned(),
-            arguments: serde_json::json!({"value":"hello"}),
+            arguments: JsonObject::from_value(serde_json::json!({"value":"hello"})).unwrap(),
         };
         let response = CompatTurnRequest::new(
             ModelId::default(),
@@ -612,7 +617,7 @@ mod tests {
     fn ordinary_turn_after_tool_history_resumes_eliza() {
         let call = FunctionCall {
             name: "echo".to_owned(),
-            arguments: serde_json::json!({"value":"hello"}),
+            arguments: JsonObject::from_value(serde_json::json!({"value":"hello"})).unwrap(),
         };
         let response = CompatTurnRequest::new(
             ModelId::default(),
