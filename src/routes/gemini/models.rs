@@ -9,7 +9,9 @@ use axum::response::{IntoResponse, Response};
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use super::errors::{GeminiFailureResponse, GeminiRejection};
-use super::types::{GeminiModel, GeminiModelsResponse};
+use super::types::{
+    GeminiModel, GeminiModelCapabilities, GeminiModelIdentity, GeminiModelListResponse,
+};
 
 /// List the configured model in Gemini's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -22,16 +24,30 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return GeminiRejection::from_error(&error).into_response();
     }
 
-    Json(GeminiModelsResponse {
-        models: vec![GeminiModel {
-            name: format!("models/{}", state.config.model),
-            version: "1966-doctor",
-            display_name: "ELIZA DOCTOR",
-            description: "Classic ELIZA DOCTOR script served through Gemini-compatible JSON.",
-            supported_generation_methods: vec!["generateContent", "streamGenerateContent"],
-            input_token_limit: state.config.max_input_chars.get(),
-            output_token_limit: 512,
-        }],
+    // Render the configured model with Gemini's fixed capability metadata.
+    let identity = GeminiModelIdentity {
+        name: format!("models/{}", state.config.model),
+        version: "1966-doctor",
+        display_name: "ELIZA DOCTOR",
+        description: "Classic ELIZA DOCTOR script served through Gemini-compatible JSON.",
+    };
+
+    // Advertise the generation modes and configured input bound.
+    let capabilities = GeminiModelCapabilities {
+        supported_generation_methods: vec!["generateContent", "streamGenerateContent"],
+        input_token_limit: state.config.max_input_chars.get(),
+        output_token_limit: 512,
+    };
+
+    // Keep identity and capabilities explicit in the typed wire contract.
+    let model = GeminiModel {
+        identity,
+        capabilities,
+    };
+
+    // Return the model through Gemini's catalog envelope.
+    Json(GeminiModelListResponse {
+        models: vec![model],
     })
     .into_response()
 }
@@ -48,7 +64,7 @@ impl GeminiModels {
                 operation
                     .summary("Gemini models")
                     .tag("gemini")
-                    .response::<200, Json<GeminiModelsResponse>>()
+                    .response::<200, Json<GeminiModelListResponse>>()
                     .default_response::<Json<GeminiFailureResponse>>()
             }),
         )

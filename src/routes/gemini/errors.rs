@@ -1,9 +1,4 @@
 //! Typed Gemini adapter failures and wire rendering.
-#![expect(
-    rlib::undocumented_items,
-    reason = "private variants and wire fields repeat their diagnostic and Serde contracts"
-)]
-
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use miette::Diagnostic;
@@ -18,6 +13,10 @@ use crate::problem::{Problem, ProblemClass, ProblemDetails};
 // -----------------------------------------------------------------------------
 
 /// Failure detected while lowering a Gemini request.
+#[expect(
+    rlib::undocumented_items,
+    reason = "thiserror messages and Miette codes are the canonical contracts for private adapter failures"
+)]
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum GeminiError {
     #[error("only client function declarations are supported")]
@@ -101,12 +100,17 @@ impl ProblemDetails for GeminiError {
 // GeminiErrorStatus: Maps neutral failure classes to wire statuses.
 // -----------------------------------------------------------------------------
 
+/// Gemini's serialized error classification.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum GeminiErrorStatus {
+    /// Invalid or unsupported request input.
     InvalidArgument,
+    /// Missing or invalid authentication.
     Unauthenticated,
+    /// Request body exceeding the accepted limit.
     ResourceExhausted,
+    /// Internal server failure.
     Internal,
 }
 
@@ -127,10 +131,14 @@ impl From<ProblemClass> for GeminiErrorStatus {
 // GeminiFailureBody: Carries the nested wire error object.
 // -----------------------------------------------------------------------------
 
+/// Nested Gemini error payload.
 #[derive(Debug, Serialize, JsonSchema)]
 struct GeminiFailureBody {
+    /// Numeric HTTP status.
     code: u16,
+    /// Human-readable failure detail.
     message: String,
+    /// Provider error classification.
     status: GeminiErrorStatus,
 }
 
@@ -141,6 +149,7 @@ struct GeminiFailureBody {
 /// Gemini top-level failure envelope.
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct GeminiFailureResponse {
+    /// Provider-native error payload.
     error: GeminiFailureBody,
 }
 
@@ -149,7 +158,10 @@ pub(super) struct GeminiFailureResponse {
 // -----------------------------------------------------------------------------
 
 /// Provider-native renderer for one typed problem.
-pub(super) struct GeminiRejection(Problem);
+pub(super) struct GeminiRejection(
+    /// Neutral problem awaiting Gemini wire rendering.
+    Problem,
+);
 
 impl GeminiRejection {
     /// Capture a typed diagnostic for Gemini rendering.
@@ -161,7 +173,7 @@ impl GeminiRejection {
 impl IntoResponse for GeminiRejection {
     fn into_response(self) -> Response {
         let problem = self.0;
-        let response = (
+        let mut response = (
             problem.status(),
             Json(GeminiFailureResponse {
                 error: GeminiFailureBody {
@@ -172,7 +184,8 @@ impl IntoResponse for GeminiRejection {
             }),
         )
             .into_response();
-        problem.finish_response(response)
+        problem.write_error_code(response.headers_mut());
+        response
     }
 }
 

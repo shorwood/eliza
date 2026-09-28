@@ -52,10 +52,9 @@ impl Docs {
         let docs = Scalar::new("/openapi.json")
             .with_title("ELIZA API")
             .axum_route();
-        router
+        let router = router
             .route("/openapi.json", get(openapi_json))
-            .route("/docs", docs)
-            .finish_api(&mut api)
-            .layer(Extension(api))
+            .route("/docs", docs);
+        router.finish_api(&mut api).layer(Extension(api))
     }
 }

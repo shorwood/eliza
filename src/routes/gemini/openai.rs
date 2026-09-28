@@ -7,7 +7,7 @@ use axum::Json;
 use crate::routes::context::AppState;
 use crate::routes::openai::chat_completions::OpenAiChatCompletions;
 use crate::routes::openai::errors::OpenAiFailureResponse;
-use crate::routes::openai::types::ChatCompletionResponse;
+use crate::routes::openai::types::ChatResponse;
 
 /// `OpenAI`-compatible route exposed below the Gemini namespace.
 pub(super) struct OpenAiAlias;
@@ -21,7 +21,7 @@ impl OpenAiAlias {
                 operation
                     .summary("Gemini OpenAI chat")
                     .tag("gemini")
-                    .response::<200, Json<ChatCompletionResponse>>()
+                    .response::<200, Json<ChatResponse>>()
                     .default_response::<Json<OpenAiFailureResponse>>()
             }),
         )
