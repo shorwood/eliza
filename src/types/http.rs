@@ -8,21 +8,58 @@ use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::{StreamExt, stream};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 // -----------------------------------------------------------------------------
 // ProviderRejection: Stores failures rendered by provider adapters.
 // -----------------------------------------------------------------------------
 
+/// Provider-neutral failure category.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ProviderRejectionKind {
+    /// Input does not satisfy the provider contract.
+    Invalid,
+    /// Input requests a feature this server does not implement.
+    Unsupported,
+    /// Provider credentials are missing or invalid.
+    Unauthorized,
+    /// Input exceeds a configured bound.
+    TooLarge,
+    /// The server could not encode a valid provider response.
+    Internal,
+}
+
+impl ProviderRejectionKind {
+    /// Return the legacy OpenAI-compatible error name.
+    const fn openai_name(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid_request_error",
+            Self::Unsupported => "unsupported_request_error",
+            Self::Unauthorized => "authentication_error",
+            Self::TooLarge => "request_too_large",
+            Self::Internal => "server_error",
+        }
+    }
+
+    /// Return the legacy Gemini-compatible status name.
+    const fn gemini_name(self) -> &'static str {
+        match self {
+            Self::Invalid | Self::Unsupported => "INVALID_ARGUMENT",
+            Self::Unauthorized => "UNAUTHENTICATED",
+            Self::TooLarge => "RESOURCE_EXHAUSTED",
+            Self::Internal => "INTERNAL",
+        }
+    }
+}
+
 /// Provider-neutral rejection facts rendered by each adapter.
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderRejection {
     /// HTTP status returned to the client.
     pub(crate) status: StatusCode,
-    /// OpenAI-compatible error type.
-    pub(crate) openai_type: &'static str,
-    /// Gemini-compatible status.
-    pub(crate) gemini_status: &'static str,
+    /// Provider-neutral failure category.
+    pub(crate) kind: ProviderRejectionKind,
     /// Human-readable failure message.
     pub(crate) message: String,
     /// Invalid provider parameter, when applicable.
@@ -34,8 +71,7 @@ impl ProviderRejection {
     pub(crate) fn invalid(param: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
-            openai_type: "invalid_request_error",
-            gemini_status: "INVALID_ARGUMENT",
+            kind: ProviderRejectionKind::Invalid,
             message: message.into(),
             param: Some(param),
         }
@@ -45,8 +81,7 @@ impl ProviderRejection {
     pub(crate) fn unsupported(param: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
-            openai_type: "unsupported_request_error",
-            gemini_status: "INVALID_ARGUMENT",
+            kind: ProviderRejectionKind::Unsupported,
             message: message.into(),
             param: Some(param),
         }
@@ -56,8 +91,7 @@ impl ProviderRejection {
     pub(crate) fn unauthorized() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
-            openai_type: "authentication_error",
-            gemini_status: "UNAUTHENTICATED",
+            kind: ProviderRejectionKind::Unauthorized,
             message: "authentication failed".to_owned(),
             param: None,
         }
@@ -67,27 +101,20 @@ impl ProviderRejection {
     pub(super) fn too_large(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
-            openai_type: "request_too_large",
-            gemini_status: "RESOURCE_EXHAUSTED",
+            kind: ProviderRejectionKind::TooLarge,
             message: message.into(),
             param: None,
         }
     }
 
-    /// Render this rejection using the `OpenAI` error envelope.
-    pub(crate) fn openai_response(self) -> Response {
-        (
-            self.status,
-            Json(json!({
-                "error": {
-                    "message": self.message,
-                    "type": self.openai_type,
-                    "param": self.param,
-                    "code": null
-                }
-            })),
-        )
-            .into_response()
+    /// Build a response-encoding failure.
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            kind: ProviderRejectionKind::Internal,
+            message: message.into(),
+            param: None,
+        }
     }
 
     /// Render this rejection using the Anthropic error envelope.
@@ -96,7 +123,7 @@ impl ProviderRejection {
             self.status,
             Json(json!({
                 "type": "error",
-                "error": { "type": self.openai_type, "message": self.message }
+                "error": { "type": self.kind.openai_name(), "message": self.message }
             })),
         )
             .into_response()
@@ -110,7 +137,7 @@ impl ProviderRejection {
                 "error": {
                     "code": self.status.as_u16(),
                     "message": self.message,
-                    "status": self.gemini_status
+                    "status": self.kind.gemini_name()
                 }
             })),
         )
@@ -130,10 +157,6 @@ impl ProviderRejection {
 /// Provider-specific typed text array shape.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TextArrayKind {
-    /// OpenAI/Gemini-style parts.
-    Parts,
-    /// `OpenAI` Responses input parts.
-    ResponsesParts,
     /// Anthropic-style blocks.
     Blocks,
 }
@@ -142,17 +165,13 @@ impl TextArrayKind {
     /// Return whether a wire type represents text for this provider shape.
     fn is_text_type(self, item_type: Option<&str>) -> bool {
         match self {
-            Self::Parts | Self::Blocks => item_type == Some("text"),
-            Self::ResponsesParts => {
-                matches!(item_type, Some("input_text" | "output_text" | "text"))
-            }
+            Self::Blocks => item_type == Some("text"),
         }
     }
 
     /// Return the rejection for a non-text typed item.
     const fn unsupported_message(self) -> &'static str {
         match self {
-            Self::Parts | Self::ResponsesParts => "only text content parts are supported",
             Self::Blocks => "only text content blocks are supported",
         }
     }
@@ -160,7 +179,6 @@ impl TextArrayKind {
     /// Return the rejection for a typed item without text.
     const fn missing_text_message(self) -> &'static str {
         match self {
-            Self::Parts | Self::ResponsesParts => "text content part is missing text",
             Self::Blocks => "text content block is missing text",
         }
     }
@@ -168,7 +186,6 @@ impl TextArrayKind {
     /// Return the rejection for a non-textual outer content shape.
     const fn outer_message(self) -> &'static str {
         match self {
-            Self::Parts | Self::ResponsesParts => "content must be a string or text parts",
             Self::Blocks => "content must be a string or text blocks",
         }
     }
@@ -280,6 +297,17 @@ impl JsonEventExt for Value {
     fn to_sse_event(&self) -> Event {
         Event::default().data(self.to_string())
     }
+}
+
+/// Encode a typed provider record as one SSE data event.
+///
+/// # Errors
+///
+/// Returns an internal rejection when response serialization fails.
+pub(crate) fn json_event<T: Serialize>(value: &T) -> Result<Event, ProviderRejection> {
+    Event::default()
+        .json_data(value)
+        .map_err(|error| ProviderRejection::internal(format!("failed to encode event: {error}")))
 }
 
 // -----------------------------------------------------------------------------

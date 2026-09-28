@@ -3,10 +3,10 @@
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
-use serde_json::Value;
 
 use crate::routes::context::AppState;
 use crate::routes::openai::chat_completions::OpenAiChatCompletions;
+use crate::routes::openai::types::{ChatCompletionResponse, OpenAiFailureResponse};
 
 /// `OpenAI`-compatible route exposed below the Gemini namespace.
 pub(super) struct OpenAiAlias;
@@ -20,8 +20,8 @@ impl OpenAiAlias {
                 operation
                     .summary("Gemini OpenAI chat")
                     .tag("gemini")
-                    .response::<200, Json<Value>>()
-                    .default_response::<Json<Value>>()
+                    .response::<200, Json<ChatCompletionResponse>>()
+                    .default_response::<Json<OpenAiFailureResponse>>()
             }),
         )
     }
