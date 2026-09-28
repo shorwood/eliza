@@ -1,5 +1,6 @@
 fmt:
     cargo fmt --all
+    hurlfmt --in-place tests/http/public/*.hurl tests/http/auth/*.hurl
 
 chat:
     cargo build --bin eliza --locked
@@ -28,8 +29,12 @@ lint: rlib-library
 test:
     cargo test --workspace --all-targets --locked
 
+test-http:
+    cargo test --test http --locked
+
 ok: rlib-library
     cargo fmt --all --check
+    hurlfmt --check tests/http/public/*.hurl tests/http/auth/*.hurl
     cargo check --workspace --all-targets --locked
     cargo test --workspace --all-targets --locked
     cargo-clippy clippy --workspace --all-targets --locked -- -D warnings
