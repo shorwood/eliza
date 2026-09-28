@@ -11,5 +11,13 @@ HTTP 200
 [Asserts]
 header "Content-Type" startsWith "text/event-stream"
 body contains "event: message_start"
+body contains "\"type\":\"message_start\""
+body contains "\"role\":\"assistant\""
+body contains "\"model\":\"eliza-doctor\""
+body contains "event: content_block_start"
 body contains "event: content_block_delta"
+body contains "\"type\":\"text_delta\""
+body contains "event: content_block_stop"
+body contains "event: message_delta"
+body contains "\"stop_reason\":\"end_turn\""
 body contains "event: message_stop"

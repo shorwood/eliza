@@ -9,5 +9,15 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-body contains "input_json_delta"
-body contains "tool_use"
+header "Content-Type" startsWith "text/event-stream"
+body contains "event: message_start"
+body contains "\"model\":\"eliza-doctor\""
+body contains "event: content_block_start"
+body contains "\"type\":\"tool_use\""
+body contains "\"name\":\"echo\""
+body contains "event: content_block_delta"
+body contains "\"type\":\"input_json_delta\""
+body contains "\"partial_json\":\"{\\\"value\\\":\\\"hello\\\"}\""
+body contains "event: content_block_stop"
+body contains "\"stop_reason\":\"tool_use\""
+body contains "event: message_stop"

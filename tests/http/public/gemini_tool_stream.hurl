@@ -11,5 +11,12 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-body contains "functionCall"
-body contains "echo"
+header "Content-Type" startsWith "text/event-stream"
+body contains "data: {\"candidates\""
+body contains "\"role\":\"model\""
+body contains "\"functionCall\""
+body contains "\"name\":\"echo\""
+body contains "\"args\":{\"value\":\"hello\"}"
+body contains "\"modelVersion\":\"eliza-doctor\""
+body contains "\"finishReason\":\"STOP\""
+body contains "\"usageMetadata\""

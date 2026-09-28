@@ -8,5 +8,8 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 header "Content-Type" startsWith "text/event-stream"
-body contains "chat.completion.chunk"
+body contains "\"object\":\"chat.completion.chunk\""
+body contains "\"model\":\"eliza-doctor\""
+body contains "\"role\":\"assistant\""
+body contains "\"finish_reason\":\"stop\""
 body contains "data: [DONE]"
