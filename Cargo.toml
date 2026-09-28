@@ -27,9 +27,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1.23.4", features = ["v7", "serde"] }
 
-[dev-dependencies]
-ureq = { version = "3.4.0", default-features = false, features = ["json"] }
-
 [lints.clippy]
 pedantic = "warn"
 arbitrary_source_item_ordering = "warn"
