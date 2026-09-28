@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use axum::http::HeaderMap;
 
+use super::errors::AuthenticationError;
 use crate::cli::{AuthMode, BearerToken};
-use crate::types::http::ProviderRejection;
 use crate::types::model::ModelId;
 
 // -----------------------------------------------------------------------------
@@ -103,7 +103,7 @@ pub(super) fn provider_authenticate(
     headers: &HeaderMap,
     config: &RouteConfig,
     provider: ProviderAuth,
-) -> Result<(), ProviderRejection> {
+) -> Result<(), AuthenticationError> {
     // Endpoints are public when authentication is disabled.
     if config.auth == AuthMode::None {
         return Ok(());
@@ -111,22 +111,22 @@ pub(super) fn provider_authenticate(
 
     // Bearer mode without a configured token is always unauthorized.
     let Some(expected) = config.bearer_token.as_ref() else {
-        return Err(ProviderRejection::unauthorized());
+        return Err(AuthenticationError::Failed);
     };
     let matches = match provider {
         ProviderAuth::Bearer => {
             provider_authenticate_header_text(headers, axum::http::header::AUTHORIZATION)
-                .map_err(|_| ProviderRejection::unauthorized())?
+                .map_err(|_| AuthenticationError::Failed)?
                 .and_then(|value| value.strip_prefix("Bearer "))
                 .is_some_and(|token| token == expected.as_str())
         }
         ProviderAuth::ApiKey(name) => provider_authenticate_header_text(headers, name)
-            .map_err(|_| ProviderRejection::unauthorized())?
+            .map_err(|_| AuthenticationError::Failed)?
             .is_some_and(|token| token == expected.as_str()),
     };
     if matches {
         Ok(())
     } else {
-        Err(ProviderRejection::unauthorized())
+        Err(AuthenticationError::Failed)
     }
 }

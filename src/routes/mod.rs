@@ -3,6 +3,7 @@
 pub(crate) mod context;
 mod anthropic;
 mod docs;
+mod errors;
 mod gemini;
 mod health;
 mod ollama;

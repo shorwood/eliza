@@ -4,6 +4,7 @@
 
 mod errors;
 mod eliza;
+mod problem;
 mod routes;
 mod serve;
 mod cli;

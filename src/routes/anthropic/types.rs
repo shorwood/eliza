@@ -6,13 +6,11 @@
     reason = "private Serde fields mirror Anthropic's published wire names"
 )]
 
-use axum::Json;
-use axum::response::{IntoResponse, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::types::http::{ProviderRejection, ProviderRejectionKind};
+use super::errors::AnthropicError;
 use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{CompatOutput, CompatTurnResponse, FunctionTool, TokenUsage, ToolChoice};
@@ -97,20 +95,18 @@ impl Tool {
 pub(super) struct ToolList(Vec<Tool>);
 
 impl ToolList {
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, ProviderRejection> {
+    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, AnthropicError> {
         self.0
             .into_iter()
             .map(|tool| {
                 let definition_chars = tool.char_count();
-                let name = tool.name.filter(|name| !name.is_empty()).ok_or_else(|| {
-                    ProviderRejection::invalid("tools", "tool is missing its name")
-                })?;
+                let name = tool
+                    .name
+                    .filter(|name| !name.is_empty())
+                    .ok_or(AnthropicError::MissingToolName)?;
                 // An Anthropic tool without a schema is not a callable contract.
                 if tool.input_schema.is_none() {
-                    return Err(ProviderRejection::invalid(
-                        "tools",
-                        "function tool is missing input_schema",
-                    ));
+                    return Err(AnthropicError::MissingToolInputSchema);
                 }
                 Ok(FunctionTool::new(name, definition_chars))
             })
@@ -132,7 +128,7 @@ pub(super) enum AnthropicToolChoice {
 }
 
 impl TryFrom<Option<AnthropicToolChoice>> for ToolChoice {
-    type Error = ProviderRejection;
+    type Error = AnthropicError;
 
     fn try_from(choice: Option<AnthropicToolChoice>) -> Result<Self, Self::Error> {
         match choice {
@@ -142,13 +138,8 @@ impl TryFrom<Option<AnthropicToolChoice>> for ToolChoice {
             Some(AnthropicToolChoice::Tool { name }) => name
                 .filter(|name| !name.is_empty())
                 .map(Self::Named)
-                .ok_or_else(|| {
-                    ProviderRejection::invalid("tool_choice", "named tool_choice is missing name")
-                }),
-            Some(AnthropicToolChoice::Unsupported) => Err(ProviderRejection::invalid(
-                "tool_choice",
-                "unsupported tool_choice type",
-            )),
+                .ok_or(AnthropicError::MissingNamedToolChoice),
+            Some(AnthropicToolChoice::Unsupported) => Err(AnthropicError::UnsupportedToolChoice),
         }
     }
 }
@@ -329,60 +320,4 @@ pub(super) struct ModelListResponse {
     pub(super) has_more: bool,
     pub(super) first_id: ModelId,
     pub(super) last_id: ModelId,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum AnthropicErrorKind {
-    InvalidRequestError,
-    UnsupportedRequestError,
-    AuthenticationError,
-    RequestTooLarge,
-    ServerError,
-}
-
-impl From<ProviderRejectionKind> for AnthropicErrorKind {
-    fn from(kind: ProviderRejectionKind) -> Self {
-        match kind {
-            ProviderRejectionKind::Invalid => Self::InvalidRequestError,
-            ProviderRejectionKind::Unsupported => Self::UnsupportedRequestError,
-            ProviderRejectionKind::Unauthorized => Self::AuthenticationError,
-            ProviderRejectionKind::TooLarge => Self::RequestTooLarge,
-            ProviderRejectionKind::Internal => Self::ServerError,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-struct AnthropicFailureBody {
-    #[serde(rename = "type")]
-    kind: AnthropicErrorKind,
-    message: String,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub(super) struct AnthropicFailureResponse {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    error: AnthropicFailureBody,
-}
-
-#[derive(derive_more::From)]
-pub(super) struct AnthropicRejection(ProviderRejection);
-
-impl IntoResponse for AnthropicRejection {
-    fn into_response(self) -> Response {
-        let rejection = self.0;
-        (
-            rejection.status,
-            Json(AnthropicFailureResponse {
-                kind: "error",
-                error: AnthropicFailureBody {
-                    kind: rejection.kind.into(),
-                    message: rejection.message,
-                },
-            }),
-        )
-            .into_response()
-    }
 }

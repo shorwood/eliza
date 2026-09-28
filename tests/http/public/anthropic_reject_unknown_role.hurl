@@ -7,5 +7,6 @@ Content-Type: application/json
 }
 HTTP 400
 [Asserts]
+header "x-eliza-error-code" == "eliza::anthropic::unsupported_role"
 jsonpath "$.type" == "error"
-jsonpath "$.error.type" == "unsupported_request_error"
+jsonpath "$.error.type" == "invalid_request_error"

@@ -3,95 +3,17 @@
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::http::{StatusCode, header};
+use axum::http::header;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::{StreamExt, stream};
 use serde::Serialize;
 
+use super::errors::EncodingError;
+
 // -----------------------------------------------------------------------------
-// ProviderRejection: Stores failures rendered by provider adapters.
+// StreamChunks: Splits provider output at readable boundaries.
 // -----------------------------------------------------------------------------
-
-/// Provider-neutral failure category.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum ProviderRejectionKind {
-    /// Input does not satisfy the provider contract.
-    Invalid,
-    /// Input requests a feature this server does not implement.
-    Unsupported,
-    /// Provider credentials are missing or invalid.
-    Unauthorized,
-    /// Input exceeds a configured bound.
-    TooLarge,
-    /// The server could not encode a valid provider response.
-    Internal,
-}
-
-/// Provider-neutral rejection facts rendered by each adapter.
-#[derive(Debug, Clone)]
-pub(crate) struct ProviderRejection {
-    /// HTTP status returned to the client.
-    pub(crate) status: StatusCode,
-    /// Provider-neutral failure category.
-    pub(crate) kind: ProviderRejectionKind,
-    /// Human-readable failure message.
-    pub(crate) message: String,
-    /// Invalid provider parameter, when applicable.
-    pub(crate) param: Option<&'static str>,
-}
-
-impl ProviderRejection {
-    /// Build a provider validation rejection for malformed input.
-    pub(crate) fn invalid(param: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            kind: ProviderRejectionKind::Invalid,
-            message: message.into(),
-            param: Some(param),
-        }
-    }
-
-    /// Build a provider validation rejection for unsupported features.
-    pub(crate) fn unsupported(param: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            kind: ProviderRejectionKind::Unsupported,
-            message: message.into(),
-            param: Some(param),
-        }
-    }
-
-    /// Build a provider authentication rejection.
-    pub(crate) fn unauthorized() -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            kind: ProviderRejectionKind::Unauthorized,
-            message: "authentication failed".to_owned(),
-            param: None,
-        }
-    }
-
-    /// Build a provider validation rejection for configured size limits.
-    pub(super) fn too_large(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::PAYLOAD_TOO_LARGE,
-            kind: ProviderRejectionKind::TooLarge,
-            message: message.into(),
-            param: None,
-        }
-    }
-
-    /// Build a response-encoding failure.
-    pub(crate) fn internal(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            kind: ProviderRejectionKind::Internal,
-            message: message.into(),
-            param: None,
-        }
-    }
-}
 
 /// Split provider output into readable streaming chunks.
 pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
@@ -112,15 +34,19 @@ pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
     chunks
 }
 
+// -----------------------------------------------------------------------------
+// JsonEvent: Encodes one typed server-sent event.
+// -----------------------------------------------------------------------------
+
 /// Encode a typed provider record as one SSE data event.
 ///
 /// # Errors
 ///
 /// Returns an internal rejection when response serialization fails.
-pub(crate) fn json_event<T: Serialize>(value: &T) -> Result<Event, ProviderRejection> {
+pub(crate) fn json_event<T: Serialize>(value: &T) -> Result<Event, EncodingError> {
     Event::default()
         .json_data(value)
-        .map_err(|error| ProviderRejection::internal(format!("failed to encode event: {error}")))
+        .map_err(|source| EncodingError::Sse { source })
 }
 
 // -----------------------------------------------------------------------------
@@ -200,16 +126,12 @@ impl NdjsonResponse {
     /// # Errors
     ///
     /// Returns an internal rejection when a typed record cannot be serialized.
-    pub(crate) fn new(
-        records: Vec<impl Serialize>,
-        delay_ms: u64,
-    ) -> Result<Self, ProviderRejection> {
+    pub(crate) fn new(records: Vec<impl Serialize>, delay_ms: u64) -> Result<Self, EncodingError> {
         let records = records
             .into_iter()
             .map(|record| {
-                let mut line = serde_json::to_vec(&record).map_err(|error| {
-                    ProviderRejection::internal(format!("failed to encode record: {error}"))
-                })?;
+                let mut line = serde_json::to_vec(&record)
+                    .map_err(|source| EncodingError::Ndjson { source })?;
                 line.push(b'\n');
                 Ok(Bytes::from(line))
             })

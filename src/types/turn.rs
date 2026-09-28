@@ -10,7 +10,7 @@ use std::num::NonZeroUsize;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::http::ProviderRejection;
+use super::errors::TurnError;
 use super::json::JsonObject;
 use super::model::ModelId;
 use crate::eliza::engine::{ElizaSession, doctor_script};
@@ -58,32 +58,21 @@ impl FunctionCall {
     ///
     /// Returns a rejection when a message begins with `@tool` but does not
     /// contain a function name followed by a JSON object.
-    fn parse_directive(text: &str) -> Result<Option<Self>, ProviderRejection> {
+    fn parse_directive(text: &str) -> Result<Option<Self>, TurnError> {
         if !text.starts_with("@tool") {
             return Ok(None);
         }
         let Some(rest) = text.strip_prefix("@tool ") else {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "tool directive must be `@tool <name> <json-object>`",
-            ));
+            return Err(TurnError::MalformedToolDirective);
         };
         let Some((name, arguments)) = rest.split_once(char::is_whitespace) else {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "tool directive must include a JSON object",
-            ));
+            return Err(TurnError::MissingToolArguments);
         };
         if name.is_empty() {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "tool directive must include a function name",
-            ));
+            return Err(TurnError::MissingToolName);
         }
-        let arguments =
-            serde_json::from_str::<JsonObject>(arguments.trim_start()).map_err(|error| {
-                ProviderRejection::invalid("messages", format!("invalid tool arguments: {error}"))
-            })?;
+        let arguments = serde_json::from_str::<JsonObject>(arguments.trim_start())
+            .map_err(|source| TurnError::InvalidToolArguments { source })?;
         Ok(Some(Self {
             name: name.to_owned(),
             arguments,
@@ -130,19 +119,15 @@ impl ToolChoice {
     ///
     /// Returns a rejection when tool calls are disabled or the selected name
     /// is outside the client's named allowlist.
-    fn validate_call(&self, name: &str) -> Result<(), ProviderRejection> {
+    fn validate_call(&self, name: &str) -> Result<(), TurnError> {
         match self {
             Self::Auto | Self::Required => Ok(()),
-            Self::None => Err(ProviderRejection::invalid(
-                "tool_choice",
-                "tool_choice forbids the explicit @tool directive",
-            )),
+            Self::None => Err(TurnError::ToolDirectiveForbidden),
             Self::Named(expected) if expected == name => Ok(()),
             Self::Allowed(names) if names.iter().any(|allowed| allowed == name) => Ok(()),
-            Self::Named(_) | Self::Allowed(_) => Err(ProviderRejection::invalid(
-                "tool_choice",
-                format!("tool_choice does not allow function `{name}`"),
-            )),
+            Self::Named(_) | Self::Allowed(_) => Err(TurnError::ToolChoiceDisallows {
+                name: name.to_owned(),
+            }),
         }
     }
 }
@@ -254,7 +239,7 @@ impl CompatTurnRequest {
     /// # Errors
     ///
     /// Returns a rejection when the history has no ordinary user message.
-    fn replay_eliza(&self) -> Result<String, ProviderRejection> {
+    fn replay_eliza(&self) -> Result<String, TurnError> {
         let mut session = ElizaSession::from(doctor_script());
         let mut output = None;
         for turn in &self.turns {
@@ -266,9 +251,7 @@ impl CompatTurnRequest {
             }
             output = Some(session.respond(text).output);
         }
-        output.ok_or_else(|| {
-            ProviderRejection::invalid("messages", "at least one ordinary user turn is required")
-        })
+        output.ok_or(TurnError::MissingOrdinaryUserTurn)
     }
 
     /// Enforce configured history and serialized-input bounds.
@@ -276,13 +259,12 @@ impl CompatTurnRequest {
     /// # Errors
     ///
     /// Returns a rejection when either configured bound is exceeded.
-    fn validate_limits(&self, limits: RequestLimits) -> Result<(), ProviderRejection> {
+    fn validate_limits(&self, limits: RequestLimits) -> Result<(), TurnError> {
         if self.turns.len() > limits.max_history_messages.get() {
-            return Err(ProviderRejection::too_large(format!(
-                "too many conversation turns: {} > {}",
-                self.turns.len(),
-                limits.max_history_messages
-            )));
+            return Err(TurnError::TooManyTurns {
+                actual: self.turns.len(),
+                limit: limits.max_history_messages.get(),
+            });
         }
 
         let input_chars = self
@@ -293,10 +275,10 @@ impl CompatTurnRequest {
             .chain(self.tools.iter().map(FunctionTool::char_count))
             .sum::<usize>();
         if input_chars > limits.max_input_chars.get() {
-            return Err(ProviderRejection::too_large(format!(
-                "input text is too large: {input_chars} > {}",
-                limits.max_input_chars
-            )));
+            return Err(TurnError::InputTooLarge {
+                actual: input_chars,
+                limit: limits.max_input_chars.get(),
+            });
         }
         Ok(())
     }
@@ -306,12 +288,11 @@ impl CompatTurnRequest {
     /// # Errors
     ///
     /// Returns a rejection for an unknown or disallowed function name.
-    fn validate_tool_call(&self, call: &FunctionCall) -> Result<(), ProviderRejection> {
+    fn validate_tool_call(&self, call: &FunctionCall) -> Result<(), TurnError> {
         if !self.tools.iter().any(|tool| tool.name == call.name) {
-            return Err(ProviderRejection::invalid(
-                "tools",
-                format!("function `{}` was not offered", call.name),
-            ));
+            return Err(TurnError::ToolNotOffered {
+                name: call.name.clone(),
+            });
         }
         self.tool_choice.validate_call(&call.name)
     }
@@ -322,17 +303,14 @@ impl CompatTurnRequest {
     ///
     /// Returns a rejection when the history lacks a matching directive and
     /// provider-native call before the result.
-    fn validate_tool_result(&self, result_index: usize) -> Result<(), ProviderRejection> {
+    fn validate_tool_result(&self, result_index: usize) -> Result<(), TurnError> {
         let Some((call_index, CompatTurn::ToolCall(call))) = self.turns[..result_index]
             .iter()
             .enumerate()
             .rev()
             .find(|(_, turn)| matches!(turn, CompatTurn::ToolCall(_)))
         else {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "tool result is missing its preceding tool call",
-            ));
+            return Err(TurnError::OrphanToolResult);
         };
         let Some(marker) = self.turns[..call_index].iter().rev().find_map(|turn| {
             if let CompatTurn::User(text) = turn {
@@ -341,22 +319,13 @@ impl CompatTurnRequest {
                 None
             }
         }) else {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "tool call is missing its @tool directive",
-            ));
+            return Err(TurnError::MissingToolDirective);
         };
         let Some(expected) = FunctionCall::parse_directive(marker)? else {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "tool call is missing its @tool directive",
-            ));
+            return Err(TurnError::MissingToolDirective);
         };
         if expected != *call {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "tool call does not match its @tool directive",
-            ));
+            return Err(TurnError::MismatchedToolDirective);
         }
         Ok(())
     }
@@ -367,10 +336,7 @@ impl CompatTurnRequest {
     ///
     /// Returns a provider rejection for invalid history, directives, choices,
     /// or configured request limits.
-    pub(crate) fn complete(
-        self,
-        limits: RequestLimits,
-    ) -> Result<CompatTurnResponse, ProviderRejection> {
+    pub(crate) fn complete(self, limits: RequestLimits) -> Result<CompatTurnResponse, TurnError> {
         self.validate_limits(limits)?;
 
         let Some((index, latest)) = self
@@ -380,10 +346,7 @@ impl CompatTurnRequest {
             .rev()
             .find(|(_, turn)| matches!(turn, CompatTurn::User(_) | CompatTurn::ToolResult(_)))
         else {
-            return Err(ProviderRejection::invalid(
-                "messages",
-                "at least one user text turn is required",
-            ));
+            return Err(TurnError::MissingUserText);
         };
 
         let output = match latest {
@@ -397,10 +360,7 @@ impl CompatTurnRequest {
                     CompatOutput::ToolCall(call)
                 }
                 None if self.tool_choice.should_require_call() => {
-                    return Err(ProviderRejection::invalid(
-                        "tool_choice",
-                        "an explicit @tool directive is required by tool_choice",
-                    ));
+                    return Err(TurnError::RequiredToolDirective);
                 }
                 None => CompatOutput::Text(self.replay_eliza()?),
             },
@@ -580,7 +540,7 @@ mod tests {
         .complete(limits())
         .unwrap_err();
 
-        assert_eq!(error.param, Some("messages"));
+        assert!(matches!(error, TurnError::InvalidToolArguments { .. }));
     }
 
     #[test]
@@ -595,7 +555,7 @@ mod tests {
         .complete(limits())
         .unwrap_err();
 
-        assert_eq!(error.param, Some("tool_choice"));
+        assert!(matches!(error, TurnError::RequiredToolDirective));
     }
 
     #[test]
@@ -610,7 +570,7 @@ mod tests {
         .complete(limits())
         .unwrap_err();
 
-        assert_eq!(error.param, Some("tool_choice"));
+        assert!(matches!(error, TurnError::ToolChoiceDisallows { .. }));
     }
 
     #[test]
