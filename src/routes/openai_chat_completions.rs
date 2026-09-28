@@ -56,7 +56,6 @@ pub(crate) struct ChatCompletionRequest {
     should_stream: bool,
 }
 
-// -----------------------------------------------------------------------------
 /// Supply JSON null when message content is omitted.
 fn missing_content_is_null() -> Value {
     Value::Null
