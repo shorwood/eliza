@@ -1,9 +1,10 @@
 //! `OpenAI` Chat Completions and Gemini's OpenAI-compatible alias.
-#![allow(
+#![expect(
+    clippy::missing_errors_doc,
     rlib::missing_section_dividers,
-    rlib::undocumented_early_returns,
     rlib::undocumented_items,
-    reason = "private wire plumbing stays clearer without per-field docs, per-concept dividers, or comments restating errors"
+    rlib::undocumented_early_returns,
+    reason = "private adapter stages stay in request flow; wire names and validation errors are self-describing"
 )]
 
 use aide::axum::ApiRouter;
@@ -13,133 +14,19 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
-use crate::types::http::{
-    JsonEventExt, ProviderRejection, SseEvents, TextArrayKind, optional_text_content,
-    stream_chunks, unix_timestamp,
+use super::types::{
+    AssistantRole, ChatChunk, ChatChunkChoice, ChatCompletionRequest, ChatCompletionResponse,
+    ChatContent, ChatContentPart, ChatDelta, ChatToolCall, ChatToolCallDelta, FinishReason,
+    FunctionCallDelta, FunctionKind, MessageRole, OpenAiFailureResponse, OpenAiRejection,
+    StreamOptions,
 };
-use crate::types::json::JsonObject;
-use crate::types::model::ModelId;
+use crate::types::http::{ProviderRejection, SseEvents, json_event, stream_chunks, unix_timestamp};
 use crate::types::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, FunctionTool,
-    RequestLimits, TokenUsage, ToolChoice,
+    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
 };
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct OpenAiMessage {
-    role: String,
-    #[serde(default = "missing_content_is_null")]
-    content: Value,
-    #[serde(default = "missing_values_are_empty")]
-    tool_calls: Vec<Value>,
-}
-
-impl OpenAiMessage {
-    /// Append this wire message to normalized system or conversation state.
-    ///
-    /// # Errors
-    ///
-    /// Returns a rejection for malformed content, calls, or unsupported roles.
-    fn lower_into(
-        self,
-        system: &mut Vec<String>,
-        turns: &mut Vec<CompatTurn>,
-    ) -> Result<(), ProviderRejection> {
-        let Self {
-            role,
-            content,
-            tool_calls,
-        } = self;
-        match role.as_str() {
-            "system" | "developer" => {
-                if let Some(text) =
-                    optional_text_content(&content, "messages.content", TextArrayKind::Parts)?
-                {
-                    system.push(text);
-                }
-            }
-            "user" => {
-                let Some(text) =
-                    optional_text_content(&content, "messages.content", TextArrayKind::Parts)?
-                else {
-                    return Err(ProviderRejection::invalid(
-                        "messages",
-                        "user message content must contain text",
-                    ));
-                };
-                turns.push(CompatTurn::User(text));
-            }
-            "assistant" => {
-                if let Some(text) =
-                    optional_text_content(&content, "messages.content", TextArrayKind::Parts)?
-                {
-                    turns.push(CompatTurn::Assistant(text));
-                }
-                for call in tool_calls {
-                    turns.push(CompatTurn::ToolCall(lower_openai_call(
-                        &call,
-                        "messages.tool_calls",
-                    )?));
-                }
-            }
-            "tool" => turns.push(CompatTurn::ToolResult(value_text(
-                &content,
-                "messages.content",
-            )?)),
-            role => {
-                return Err(ProviderRejection::unsupported(
-                    "messages.role",
-                    format!("unsupported message role `{role}`"),
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
-struct StreamOptions {
-    #[serde(default = "should_not_include_usage", rename = "include_usage")]
-    should_include_usage: bool,
-}
-
-/// Accepted `OpenAI` Chat Completions input.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct ChatCompletionRequest {
-    model: ModelId,
-    messages: Vec<OpenAiMessage>,
-    #[serde(default = "should_not_stream", rename = "stream")]
-    should_stream: bool,
-    #[serde(default = "StreamOptions::default")]
-    stream_options: StreamOptions,
-    #[serde(default = "missing_values_are_empty")]
-    tools: Vec<Value>,
-    #[serde(default)]
-    tool_choice: Option<Value>,
-    #[serde(default)]
-    response_format: Option<Value>,
-}
-
-fn missing_content_is_null() -> Value {
-    Value::Null
-}
-
-fn missing_values_are_empty() -> Vec<Value> {
-    Vec::new()
-}
-
-const fn should_not_include_usage() -> bool {
-    false
-}
-
-const fn should_not_stream() -> bool {
-    false
-}
 
 struct OpenAiChatTurn(CompatTurnRequest);
 
@@ -157,178 +44,112 @@ impl TryFrom<ChatCompletionRequest> for OpenAiChatTurn {
         let mut system = Vec::new();
         let mut turns = Vec::new();
         for message in payload.messages {
-            message.lower_into(&mut system, &mut turns)?;
+            lower_message(
+                message.role,
+                message.content,
+                message.tool_calls.unwrap_or_default(),
+                &mut system,
+                &mut turns,
+            )?;
         }
-        let tools = lower_tools(payload.tools)?;
-        let choice = lower_tool_choice(payload.tool_choice)?;
         Ok(Self(CompatTurnRequest::new(
             payload.model,
             system,
             turns,
-            tools,
-            choice,
+            payload.tools.unwrap_or_default().into_domain()?,
+            payload.tool_choice.try_into()?,
         )))
     }
 }
 
-/// Validate and retain Chat Completions function definitions.
-///
-/// # Errors
-///
-/// Returns a rejection for unsupported or unnamed tool definitions.
-fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection> {
-    tools
-        .into_iter()
-        .map(|tool| {
-            if tool.get("type").and_then(Value::as_str) != Some("function") {
+fn lower_message(
+    role: MessageRole,
+    content: Option<ChatContent>,
+    tool_calls: Vec<ChatToolCall>,
+    system: &mut Vec<String>,
+    turns: &mut Vec<CompatTurn>,
+) -> Result<(), ProviderRejection> {
+    match role {
+        MessageRole::System | MessageRole::Developer => {
+            if let Some(content) = content {
+                system.push(text_content(content, "messages.content")?);
+            }
+        }
+        MessageRole::User => {
+            let content = content.ok_or_else(|| {
+                ProviderRejection::invalid("messages", "user message content is required")
+            })?;
+            turns.push(CompatTurn::User(text_content(content, "messages.content")?));
+        }
+        MessageRole::Assistant => {
+            if let Some(content) = content {
+                turns.push(CompatTurn::Assistant(text_content(
+                    content,
+                    "messages.content",
+                )?));
+            }
+            for call in tool_calls {
+                turns.push(CompatTurn::ToolCall(call.lower("messages.tool_calls")?));
+            }
+        }
+        MessageRole::Tool => {
+            let content = content.ok_or_else(|| {
+                ProviderRejection::invalid("messages.content", "tool result content is required")
+            })?;
+            turns.push(CompatTurn::ToolResult(tool_result_text(content)?));
+        }
+        MessageRole::Unsupported => {
+            return Err(ProviderRejection::unsupported(
+                "messages.role",
+                "unsupported message role",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn text_content(content: ChatContent, param: &'static str) -> Result<String, ProviderRejection> {
+    match content {
+        ChatContent::Text(text) => Ok(text),
+        ChatContent::Parts(parts) => join_text_parts(parts, param),
+        ChatContent::Object(_) => Err(ProviderRejection::unsupported(
+            param,
+            "content must be a string or text parts",
+        )),
+    }
+}
+
+fn join_text_parts(
+    parts: Vec<ChatContentPart>,
+    param: &'static str,
+) -> Result<String, ProviderRejection> {
+    let mut text = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            ChatContentPart::Text { text: part } => text.push(part),
+            ChatContentPart::Unsupported => {
                 return Err(ProviderRejection::unsupported(
-                    "tools",
-                    "only client function tools are supported",
+                    param,
+                    "only text content parts are supported",
                 ));
             }
-            let name = tool
-                .pointer("/function/name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| {
-                    ProviderRejection::invalid("tools", "function tool is missing its name")
-                })?;
-            Ok(FunctionTool::new(
-                name.to_owned(),
-                tool.to_string().chars().count(),
-            ))
-        })
-        .collect()
-}
-
-/// Normalize Chat Completions tool-selection policy.
-///
-/// # Errors
-///
-/// Returns a rejection for malformed or unsupported policy values.
-fn lower_tool_choice(choice: Option<Value>) -> Result<ToolChoice, ProviderRejection> {
-    let Some(choice) = choice else {
-        return Ok(ToolChoice::Auto);
-    };
-    if let Some(choice) = choice.as_str() {
-        return match choice {
-            "auto" => Ok(ToolChoice::Auto),
-            "none" => Ok(ToolChoice::None),
-            "required" => Ok(ToolChoice::Required),
-            _ => Err(ProviderRejection::invalid(
-                "tool_choice",
-                format!("unsupported tool_choice `{choice}`"),
-            )),
-        };
-    }
-    if choice.get("type").and_then(Value::as_str) == Some("function") {
-        let name = choice
-            .pointer("/function/name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ProviderRejection::invalid("tool_choice", "named tool_choice is missing its name")
-            })?;
-        return Ok(ToolChoice::Named(name.to_owned()));
-    }
-    Err(ProviderRejection::invalid(
-        "tool_choice",
-        "tool_choice must be auto, none, required, or a named function",
-    ))
-}
-
-/// Decode one OpenAI-compatible function call.
-///
-/// # Errors
-///
-/// Returns a rejection for unsupported call types, missing fields, or invalid arguments.
-fn lower_openai_call(
-    value: &Value,
-    param: &'static str,
-) -> Result<FunctionCall, ProviderRejection> {
-    if value.get("type").and_then(Value::as_str) != Some("function") {
-        return Err(ProviderRejection::unsupported(
-            param,
-            "only function tool calls are supported",
-        ));
-    }
-    let function = value.get("function").ok_or_else(|| {
-        ProviderRejection::invalid(param, "function tool call is missing function")
-    })?;
-    let name = function
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| ProviderRejection::invalid(param, "function tool call is missing name"))?;
-    let arguments = function.get("arguments").ok_or_else(|| {
-        ProviderRejection::invalid(param, "function tool call is missing arguments")
-    })?;
-    let arguments = match arguments {
-        Value::String(arguments) => serde_json::from_str(arguments).map_err(|error| {
-            ProviderRejection::invalid(param, format!("invalid function arguments: {error}"))
-        })?,
-        arguments => arguments.clone(),
-    };
-    let arguments = JsonObject::from_value(arguments).ok_or_else(|| {
-        ProviderRejection::invalid(param, "function arguments must be a JSON object")
-    })?;
-    Ok(FunctionCall {
-        name: name.to_owned(),
-        arguments,
-    })
-}
-
-/// Convert provider tool-result content into replayable text.
-///
-/// # Errors
-///
-/// Returns a rejection when the content is null.
-fn value_text(value: &Value, param: &'static str) -> Result<String, ProviderRejection> {
-    match value {
-        Value::String(text) => Ok(text.clone()),
-        Value::Null => Err(ProviderRejection::invalid(
-            param,
-            "tool result content is required",
-        )),
-        other => Ok(other.to_string()),
-    }
-}
-
-fn usage_json(usage: TokenUsage) -> Value {
-    json!({
-        "prompt_tokens": usage.prompt,
-        "completion_tokens": usage.completion,
-        "total_tokens": usage.total
-    })
-}
-
-fn completion_json(response: CompatTurnResponse) -> Value {
-    let id = format!("chatcmpl-{}", Uuid::now_v7().simple());
-    let (message, finish_reason) = match response.output {
-        CompatOutput::Text(text) => (json!({"role":"assistant","content":text}), "stop"),
-        CompatOutput::ToolCall(call) => {
-            let arguments = call.arguments.serialized();
-            (
-                json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": format!("call_{}", Uuid::now_v7().simple()),
-                        "type": "function",
-                        "function": {"name": call.name, "arguments": arguments}
-                    }]
-                }),
-                "tool_calls",
-            )
         }
-    };
-    json!({
-        "id": id,
-        "object": "chat.completion",
-        "created": unix_timestamp(),
-        "model": response.model,
-        "choices": [{"index":0,"message":message,"finish_reason":finish_reason}],
-        "usage": usage_json(response.usage)
-    })
+    }
+    Ok(text.join("\n"))
+}
+
+fn tool_result_text(content: ChatContent) -> Result<String, ProviderRejection> {
+    match content {
+        ChatContent::Text(text) => Ok(text),
+        ChatContent::Parts(parts) => join_text_parts(parts, "messages.content"),
+        ChatContent::Object(object) => Ok(object.serialized()),
+    }
+}
+
+struct StreamContext<'a> {
+    id: String,
+    created: u64,
+    model: &'a str,
 }
 
 #[derive(Clone, Copy)]
@@ -338,129 +159,151 @@ enum UsageStream {
 }
 
 impl UsageStream {
-    fn for_options(options: StreamOptions) -> Self {
-        if options.should_include_usage {
-            Self::Include
-        } else {
-            Self::Omit
+    fn for_options(options: Option<StreamOptions>) -> Self {
+        match options.and_then(|options| options.should_include_usage) {
+            Some(true) => Self::Include,
+            Some(false) | None => Self::Omit,
         }
     }
-
-    fn should_include(self) -> bool {
-        matches!(self, Self::Include)
-    }
 }
 
-struct ChatStreamContext<'a> {
-    id: String,
-    created: u64,
-    model: &'a str,
-}
-
-fn stream_json(response: &CompatTurnResponse, usage_stream: UsageStream) -> SseEvents {
-    let context = ChatStreamContext {
+fn stream(
+    response: &CompatTurnResponse,
+    usage_stream: UsageStream,
+) -> Result<SseEvents, ProviderRejection> {
+    let context = StreamContext {
         id: format!("chatcmpl-{}", Uuid::now_v7().simple()),
         created: unix_timestamp(),
         model: response.model.as_str(),
     };
-    let mut events = vec![
-        json!({
-            "id": context.id,
-            "object": "chat.completion.chunk",
-            "created": context.created,
-            "model": context.model,
-            "choices": [{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]
-        })
-        .to_sse_event(),
-    ];
-
+    let mut events = Vec::new();
+    push_chunk(
+        &mut events,
+        &context,
+        ChatDelta {
+            role: Some(AssistantRole::Assistant),
+            ..ChatDelta::default()
+        },
+        None,
+        None,
+    )?;
     match &response.output {
-        CompatOutput::Text(text) => push_text_events(&mut events, &context, text),
-        CompatOutput::ToolCall(call) => push_tool_events(&mut events, &context, call),
+        CompatOutput::Text(text) => push_text_events(&mut events, &context, text)?,
+        CompatOutput::ToolCall(call) => push_tool_events(&mut events, &context, call)?,
     }
-    if usage_stream.should_include() {
-        events.push(
-            json!({
-                "id": context.id,
-                "object": "chat.completion.chunk",
-                "created": context.created,
-                "model": context.model,
-                "choices": [],
-                "usage": usage_json(response.usage)
-            })
-            .to_sse_event(),
-        );
+    if matches!(usage_stream, UsageStream::Include) {
+        events.push(json_event(&ChatChunk {
+            id: &context.id,
+            object: "chat.completion.chunk",
+            created: context.created,
+            model: context.model,
+            choices: Vec::new(),
+            usage: Some(response.usage.into()),
+        })?);
     }
     events.push(Event::default().data("[DONE]"));
-    SseEvents::from(events)
+    Ok(SseEvents::from(events))
 }
 
-fn push_text_events(events: &mut Vec<Event>, context: &ChatStreamContext<'_>, text: &str) {
-    events.extend(stream_chunks(text).into_iter().map(|chunk| {
-        json!({
-            "id": context.id,
-            "object": "chat.completion.chunk",
-            "created": context.created,
-            "model": context.model,
-            "choices": [{"index":0,"delta":{"content":chunk},"finish_reason":null}]
-        })
-        .to_sse_event()
-    }));
-    events.push(
-        json!({
-            "id": context.id,
-            "object": "chat.completion.chunk",
-            "created": context.created,
-            "model": context.model,
-            "choices": [{"index":0,"delta":{},"finish_reason":"stop"}]
-        })
-        .to_sse_event(),
-    );
+fn push_text_events(
+    events: &mut Vec<Event>,
+    context: &StreamContext<'_>,
+    text: &str,
+) -> Result<(), ProviderRejection> {
+    for chunk in stream_chunks(text) {
+        push_chunk(
+            events,
+            context,
+            ChatDelta {
+                content: Some(chunk),
+                ..ChatDelta::default()
+            },
+            None,
+            None,
+        )?;
+    }
+    push_chunk(
+        events,
+        context,
+        ChatDelta::default(),
+        Some(FinishReason::Stop),
+        None,
+    )
 }
 
-fn push_tool_events(events: &mut Vec<Event>, context: &ChatStreamContext<'_>, call: &FunctionCall) {
-    let call_id = format!("call_{}", Uuid::now_v7().simple());
-    events.push(
-        json!({
-            "id": context.id,
-            "object": "chat.completion.chunk",
-            "created": context.created,
-            "model": context.model,
-            "choices": [{"index":0,"delta":{"tool_calls":[{
-                "index":0,
-                "id":call_id,
-                "type":"function",
-                "function":{"name":call.name,"arguments":""}
-            }]},"finish_reason":null}]
-        })
-        .to_sse_event(),
-    );
-    events.push(
-        json!({
-            "id": context.id,
-            "object": "chat.completion.chunk",
-            "created": context.created,
-            "model": context.model,
-            "choices": [{"index":0,"delta":{"tool_calls":[{
-                "index":0,
-                "function":{"arguments":call.arguments.serialized()}
-            }]},"finish_reason":null}]
-        })
-        .to_sse_event(),
-    );
-    events.push(
-        json!({
-            "id": context.id,
-            "object": "chat.completion.chunk",
-            "created": context.created,
-            "model": context.model,
-            "choices": [{"index":0,"delta":{},"finish_reason":"tool_calls"}]
-        })
-        .to_sse_event(),
-    );
+fn push_tool_events(
+    events: &mut Vec<Event>,
+    context: &StreamContext<'_>,
+    call: &FunctionCall,
+) -> Result<(), ProviderRejection> {
+    push_chunk(
+        events,
+        context,
+        ChatDelta {
+            tool_calls: vec![ChatToolCallDelta {
+                index: 0,
+                id: Some(format!("call_{}", Uuid::now_v7().simple())),
+                kind: Some(FunctionKind::Function),
+                function: FunctionCallDelta {
+                    name: Some(call.name.clone()),
+                    arguments: Some(String::new()),
+                },
+            }],
+            ..ChatDelta::default()
+        },
+        None,
+        None,
+    )?;
+    push_chunk(
+        events,
+        context,
+        ChatDelta {
+            tool_calls: vec![ChatToolCallDelta {
+                index: 0,
+                id: None,
+                kind: None,
+                function: FunctionCallDelta {
+                    name: None,
+                    arguments: Some(call.arguments.serialized()),
+                },
+            }],
+            ..ChatDelta::default()
+        },
+        None,
+        None,
+    )?;
+    push_chunk(
+        events,
+        context,
+        ChatDelta::default(),
+        Some(FinishReason::ToolCalls),
+        None,
+    )
 }
 
-/// `OpenAI` Chat Completions endpoints.
+fn push_chunk(
+    events: &mut Vec<Event>,
+    context: &StreamContext<'_>,
+    delta: ChatDelta,
+    finish_reason: Option<FinishReason>,
+    usage: Option<super::types::ChatUsage>,
+) -> Result<(), ProviderRejection> {
+    events.push(json_event(&ChatChunk {
+        id: &context.id,
+        object: "chat.completion.chunk",
+        created: context.created,
+        model: context.model,
+        choices: vec![ChatChunkChoice {
+            index: 0,
+            delta,
+            finish_reason,
+        }],
+        usage,
+    })?);
+    Ok(())
+}
+
+/// `OpenAI` Chat Completions endpoint.
 pub(crate) struct OpenAiChatCompletions;
 
 impl OpenAiChatCompletions {
@@ -475,15 +318,17 @@ impl OpenAiChatCompletions {
         Json(payload): Json<ChatCompletionRequest>,
     ) -> Response {
         if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-            return error.openai_response();
+            return OpenAiRejection::from(error).into_response();
         }
 
-        // Retain rendering preferences before lowering consumes the request.
-        let should_stream = payload.should_stream;
+        // Capture transport options before lowering consumes the request body.
+        let should_stream = payload.should_stream.unwrap_or(false);
         let usage_stream = UsageStream::for_options(payload.stream_options);
+
+        // Lower and execute the provider request under shared resource limits.
         let request = match OpenAiChatTurn::try_from(payload) {
             Ok(request) => request.0,
-            Err(error) => return error.openai_response(),
+            Err(error) => return OpenAiRejection::from(error).into_response(),
         };
         let limits = RequestLimits::new(
             state.config.max_input_chars,
@@ -491,15 +336,18 @@ impl OpenAiChatCompletions {
         );
         let response = match request.complete(limits) {
             Ok(response) => response,
-            Err(error) => return error.openai_response(),
+            Err(error) => return OpenAiRejection::from(error).into_response(),
         };
 
         if should_stream {
-            stream_json(&response, usage_stream)
-                .with_delay(state.config.stream_delay_ms)
-                .into_response()
+            match stream(&response, usage_stream) {
+                Ok(events) => events
+                    .with_delay(state.config.stream_delay_ms)
+                    .into_response(),
+                Err(error) => OpenAiRejection::from(error).into_response(),
+            }
         } else {
-            Json(completion_json(response)).into_response()
+            Json(ChatCompletionResponse::from(response)).into_response()
         }
     }
 
@@ -511,8 +359,8 @@ impl OpenAiChatCompletions {
                 operation
                     .summary("OpenAI chat completion")
                     .tag("openai")
-                    .response::<200, Json<Value>>()
-                    .default_response::<Json<Value>>()
+                    .response::<200, Json<ChatCompletionResponse>>()
+                    .default_response::<Json<OpenAiFailureResponse>>()
             }),
         )
     }

@@ -115,7 +115,7 @@ impl TryFrom<OllamaChatRequest> for OllamaTurn {
             system,
             turns,
             lower_tools(payload.tools)?,
-            lower_tool_choice(payload.tool_choice)?,
+            parse_ollama_tool_choice_policy(payload.tool_choice, "tool_choice")?,
         )))
     }
 }
@@ -195,7 +195,10 @@ fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection
 /// # Errors
 ///
 /// Returns a rejection for malformed or unsupported policy values.
-fn lower_tool_choice(choice: Option<Value>) -> Result<ToolChoice, ProviderRejection> {
+fn parse_ollama_tool_choice_policy(
+    choice: Option<Value>,
+    param: &'static str,
+) -> Result<ToolChoice, ProviderRejection> {
     let Some(choice) = choice else {
         return Ok(ToolChoice::Auto);
     };
@@ -205,7 +208,7 @@ fn lower_tool_choice(choice: Option<Value>) -> Result<ToolChoice, ProviderReject
             "none" => Ok(ToolChoice::None),
             "required" => Ok(ToolChoice::Required),
             _ => Err(ProviderRejection::invalid(
-                "tool_choice",
+                param,
                 format!("unsupported tool_choice `{choice}`"),
             )),
         };
@@ -213,9 +216,7 @@ fn lower_tool_choice(choice: Option<Value>) -> Result<ToolChoice, ProviderReject
     let name = choice
         .pointer("/function/name")
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ProviderRejection::invalid("tool_choice", "named tool_choice is missing name")
-        })?;
+        .ok_or_else(|| ProviderRejection::invalid(param, "named tool_choice is missing name"))?;
     Ok(ToolChoice::Named(name.to_owned()))
 }
 
