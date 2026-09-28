@@ -63,8 +63,20 @@ pub(super) struct AppState {
 }
 
 // -----------------------------------------------------------------------------
-// ProviderAuthenticate: Validates shared provider credentials.
+// ProviderAuth: Selects and validates provider-specific credentials.
 // -----------------------------------------------------------------------------
+
+/// Credential header used by one provider surface.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ProviderAuth {
+    /// `Authorization: Bearer <token>`.
+    Bearer,
+    /// Raw API key in the named header.
+    ApiKey(
+        /// Header carrying the raw API key.
+        &'static str,
+    ),
+}
 
 /// Read an optional textual header without hiding malformed values.
 ///
@@ -90,6 +102,7 @@ fn provider_authenticate_header_text(
 pub(super) fn provider_authenticate(
     headers: &HeaderMap,
     config: &RouteConfig,
+    provider: ProviderAuth,
 ) -> Result<(), ProviderRejection> {
     // Endpoints are public when authentication is disabled.
     if config.auth == AuthMode::None {
@@ -100,14 +113,18 @@ pub(super) fn provider_authenticate(
     let Some(expected) = config.bearer_token.as_ref() else {
         return Err(ProviderRejection::unauthorized());
     };
-    let bearer = provider_authenticate_header_text(headers, axum::http::header::AUTHORIZATION)
-        .map_err(|_| ProviderRejection::unauthorized())?;
-    let bearer_matches = bearer
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| token == expected.as_str());
-    let api_key = provider_authenticate_header_text(headers, "x-api-key")
-        .map_err(|_| ProviderRejection::unauthorized())?;
-    if bearer_matches || api_key.is_some_and(|token| token == expected.as_str()) {
+    let matches = match provider {
+        ProviderAuth::Bearer => {
+            provider_authenticate_header_text(headers, axum::http::header::AUTHORIZATION)
+                .map_err(|_| ProviderRejection::unauthorized())?
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .is_some_and(|token| token == expected.as_str())
+        }
+        ProviderAuth::ApiKey(name) => provider_authenticate_header_text(headers, name)
+            .map_err(|_| ProviderRejection::unauthorized())?
+            .is_some_and(|token| token == expected.as_str()),
+    };
+    if matches {
         Ok(())
     } else {
         Err(ProviderRejection::unauthorized())

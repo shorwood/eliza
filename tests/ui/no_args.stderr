@@ -1,4 +1,4 @@
-Serve classic ELIZA through OpenAI, Anthropic, and Gemini-compatible HTTP APIs.
+Serve classic ELIZA through OpenAI, Anthropic, Gemini, and Ollama-compatible HTTP APIs.
 
 Usage: eliza <COMMAND>
 

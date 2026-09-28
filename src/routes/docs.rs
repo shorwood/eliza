@@ -28,7 +28,7 @@ fn document() -> OpenApi {
             title: "ELIZA Compatibility Server".to_owned(),
             summary: Some("Classic ELIZA served through provider-compatible HTTP APIs.".to_owned()),
             description: Some(
-                "A standalone ELIZA server exposing OpenAI, Anthropic, and Gemini-compatible endpoints."
+                "A standalone ELIZA server exposing OpenAI, Anthropic, Gemini, and Ollama-compatible endpoints."
                     .to_owned(),
             ),
             version: env!("CARGO_PKG_VERSION").to_owned(),

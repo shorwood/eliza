@@ -2,11 +2,13 @@
 
 use std::time::Duration;
 
-use axum::http::StatusCode;
+use axum::Json;
+use axum::body::{Body, Bytes};
+use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::{StreamExt, stream};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 // -----------------------------------------------------------------------------
 // ProviderRejection: Stores failures rendered by provider adapters.
@@ -71,6 +73,54 @@ impl ProviderRejection {
             param: None,
         }
     }
+
+    /// Render this rejection using the `OpenAI` error envelope.
+    pub(crate) fn openai_response(self) -> Response {
+        (
+            self.status,
+            Json(json!({
+                "error": {
+                    "message": self.message,
+                    "type": self.openai_type,
+                    "param": self.param,
+                    "code": null
+                }
+            })),
+        )
+            .into_response()
+    }
+
+    /// Render this rejection using the Anthropic error envelope.
+    pub(crate) fn anthropic_response(self) -> Response {
+        (
+            self.status,
+            Json(json!({
+                "type": "error",
+                "error": { "type": self.openai_type, "message": self.message }
+            })),
+        )
+            .into_response()
+    }
+
+    /// Render this rejection using the native Gemini error envelope.
+    pub(crate) fn gemini_response(self) -> Response {
+        (
+            self.status,
+            Json(json!({
+                "error": {
+                    "code": self.status.as_u16(),
+                    "message": self.message,
+                    "status": self.gemini_status
+                }
+            })),
+        )
+            .into_response()
+    }
+
+    /// Render this rejection using the Ollama error envelope.
+    pub(crate) fn ollama_response(self) -> Response {
+        (self.status, Json(json!({ "error": self.message }))).into_response()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -93,7 +143,9 @@ impl TextArrayKind {
     fn is_text_type(self, item_type: Option<&str>) -> bool {
         match self {
             Self::Parts | Self::Blocks => item_type == Some("text"),
-            Self::ResponsesParts => matches!(item_type, Some("input_text" | "text")),
+            Self::ResponsesParts => {
+                matches!(item_type, Some("input_text" | "output_text" | "text"))
+            }
         }
     }
 
@@ -145,40 +197,6 @@ impl JoinedText {
     /// Return the accumulated text.
     fn into_string(self) -> String {
         self.0
-    }
-
-    /// Report whether no text has been accumulated.
-    fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-/// Extract required Gemini text parts from a native parts array.
-///
-/// # Errors
-///
-/// Returns [`ProviderRejection`] when any part is non-textual or the resulting
-/// text is empty.
-pub(crate) fn required_text_parts(
-    parts: &[Value],
-    param: &'static str,
-) -> Result<String, ProviderRejection> {
-    let mut text = JoinedText::default();
-    for part in parts {
-        // Native Gemini parts are accepted only when they are textual.
-        let Some(part_text) = part.get("text").and_then(Value::as_str) else {
-            return Err(ProviderRejection::unsupported(
-                param,
-                "only text parts are supported",
-            ));
-        };
-        text.push(part_text);
-    }
-
-    if text.is_empty() {
-        Err(ProviderRejection::invalid(param, "text parts are required"))
-    } else {
-        Ok(text.into_string())
     }
 }
 
@@ -249,6 +267,22 @@ pub(crate) fn optional_text_content(
 }
 
 // -----------------------------------------------------------------------------
+// JsonEventExt: Encodes materialized JSON as SSE data.
+// -----------------------------------------------------------------------------
+
+/// SSE encoding behavior for already-materialized JSON values.
+pub(crate) trait JsonEventExt {
+    /// Encode this value as one SSE data event without a fallible re-serialization step.
+    fn to_sse_event(&self) -> Event;
+}
+
+impl JsonEventExt for Value {
+    fn to_sse_event(&self) -> Event {
+        Event::default().data(self.to_string())
+    }
+}
+
+// -----------------------------------------------------------------------------
 // SseResponse: Owns an optionally paced server-sent event response.
 // -----------------------------------------------------------------------------
 
@@ -304,6 +338,43 @@ impl SseEvents {
             events: self.0,
             delay_ms,
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// NdjsonResponse: Owns an optionally paced newline-delimited JSON response.
+// -----------------------------------------------------------------------------
+
+/// Newline-delimited JSON records with optional delivery pacing.
+pub(crate) struct NdjsonResponse {
+    /// Records delivered in insertion order.
+    records: Vec<Value>,
+    /// Delay inserted before each record.
+    delay_ms: u64,
+}
+
+impl NdjsonResponse {
+    /// Build a paced NDJSON response from ordered JSON records.
+    pub(crate) fn new(records: Vec<Value>, delay_ms: u64) -> Self {
+        Self { records, delay_ms }
+    }
+}
+
+impl IntoResponse for NdjsonResponse {
+    fn into_response(self) -> Response {
+        let delay_ms = self.delay_ms;
+        let chunks = self.records.into_iter().map(|record| {
+            let mut line = record.to_string();
+            line.push('\n');
+            Bytes::from(line)
+        });
+        let body = Body::from_stream(stream::iter(chunks).then(move |chunk| async move {
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Ok::<_, std::convert::Infallible>(chunk)
+        }));
+        ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response()
     }
 }
 
