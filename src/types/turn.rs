@@ -1,10 +1,4 @@
 //! Provider-neutral conversation execution.
-#![expect(
-    rlib::missing_section_dividers,
-    rlib::undocumented_early_returns,
-    reason = "the compact execution pipeline needs no per-type dividers, and validation errors explain their guards"
-)]
-
 use std::num::NonZeroUsize;
 
 use schemars::JsonSchema;
@@ -15,8 +9,16 @@ use super::json::JsonObject;
 use super::model::ModelId;
 use crate::eliza::engine::{ElizaSession, doctor_script};
 
+// -----------------------------------------------------------------------------
+// ToolCompleteText: Defines the deterministic tool-result acknowledgement.
+// -----------------------------------------------------------------------------
+
 /// Text returned after a client submits a tool result.
 const TOOL_COMPLETE_TEXT: &str = "TOOL CALL COMPLETE";
+
+// -----------------------------------------------------------------------------
+// FunctionTool: Retains one offered function definition.
+// -----------------------------------------------------------------------------
 
 /// One client-defined function offered to ELIZA.
 #[derive(Debug, Clone)]
@@ -42,6 +44,10 @@ impl FunctionTool {
     }
 }
 
+// -----------------------------------------------------------------------------
+// FunctionCall: Normalizes one selected function invocation.
+// -----------------------------------------------------------------------------
+
 /// One normalized function call.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionCall {
@@ -59,15 +65,22 @@ impl FunctionCall {
     /// Returns a rejection when a message begins with `@tool` but does not
     /// contain a function name followed by a JSON object.
     fn parse_directive(text: &str) -> Result<Option<Self>, TurnError> {
+        // Ordinary user text does not opt into the deterministic tool fixture.
         if !text.starts_with("@tool") {
             return Ok(None);
         }
+
+        // The directive marker must be followed by call content.
         let Some(rest) = text.strip_prefix("@tool ") else {
             return Err(TurnError::MalformedToolDirective);
         };
+
+        // A call must separate its function name from JSON arguments.
         let Some((name, arguments)) = rest.split_once(char::is_whitespace) else {
             return Err(TurnError::MissingToolArguments);
         };
+
+        // Empty names cannot identify an offered function.
         if name.is_empty() {
             return Err(TurnError::MissingToolName);
         }
@@ -84,6 +97,10 @@ impl FunctionCall {
         self.name.chars().count() + self.arguments.serialized().chars().count()
     }
 }
+
+// -----------------------------------------------------------------------------
+// ToolChoice: Enforces the provider's function-selection policy.
+// -----------------------------------------------------------------------------
 
 /// Tool selection requested by a provider client.
 #[derive(Debug, Clone, Default)]
@@ -132,6 +149,10 @@ impl ToolChoice {
     }
 }
 
+// -----------------------------------------------------------------------------
+// CompatTurn: Represents normalized conversation history.
+// -----------------------------------------------------------------------------
+
 /// One provider message lowered into conversation history.
 #[derive(Debug, Clone)]
 pub(crate) enum CompatTurn {
@@ -169,6 +190,30 @@ impl CompatTurn {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Positioned: Couples relevant transcript entries with their indexes.
+// -----------------------------------------------------------------------------
+
+/// Tool call paired with its transcript position.
+struct PositionedToolCall<'turn> {
+    /// Index used to inspect the preceding directive.
+    index: usize,
+    /// Normalized call submitted to the provider.
+    call: &'turn FunctionCall,
+}
+
+/// Response-producing turn paired with its transcript position.
+struct PositionedInput<'turn> {
+    /// Index used to validate a tool result.
+    index: usize,
+    /// Latest user input or tool result.
+    turn: &'turn CompatTurn,
+}
+
+// -----------------------------------------------------------------------------
+// CompatOutput: Represents one provider-neutral successful result.
+// -----------------------------------------------------------------------------
+
 /// Provider-neutral successful output.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CompatOutput {
@@ -183,6 +228,10 @@ pub(crate) enum CompatOutput {
         FunctionCall,
     ),
 }
+
+// -----------------------------------------------------------------------------
+// CompatTurnRequest: Validates and executes normalized provider input.
+// -----------------------------------------------------------------------------
 
 /// One provider-neutral request.
 #[derive(Debug)]
@@ -217,6 +266,11 @@ impl CompatTurnRequest {
         }
     }
 
+    /// Approximate token usage by counting whitespace-delimited words.
+    fn approximate_tokens<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
+        texts.flat_map(str::split_whitespace).count()
+    }
+
     /// Approximate tokens across instructions, history, and tool definitions.
     fn prompt_tokens(&self) -> usize {
         let mut texts = self.system_text.clone();
@@ -231,7 +285,7 @@ impl CompatTurnRequest {
             .iter()
             .map(FunctionTool::char_count)
             .sum::<usize>();
-        approximate_tokens(texts.iter().map(String::as_str)) + definition_chars.div_ceil(4)
+        Self::approximate_tokens(texts.iter().map(String::as_str)) + definition_chars.div_ceil(4)
     }
 
     /// Replay ordinary user turns through a fresh deterministic ELIZA session.
@@ -254,12 +308,29 @@ impl CompatTurnRequest {
         output.ok_or(TurnError::MissingOrdinaryUserTurn)
     }
 
+    /// Count all provider-visible request content for size enforcement.
+    fn input_char_count(&self) -> usize {
+        let system = self
+            .system_text
+            .iter()
+            .map(|text| text.chars().count())
+            .sum::<usize>();
+        let turns = self.turns.iter().map(CompatTurn::char_count).sum::<usize>();
+        let tools = self
+            .tools
+            .iter()
+            .map(FunctionTool::char_count)
+            .sum::<usize>();
+        system + turns + tools
+    }
+
     /// Enforce configured history and serialized-input bounds.
     ///
     /// # Errors
     ///
     /// Returns a rejection when either configured bound is exceeded.
     fn validate_limits(&self, limits: RequestLimits) -> Result<(), TurnError> {
+        // Reject histories that exceed the configured replay-work bound.
         if self.turns.len() > limits.max_history_messages.get() {
             return Err(TurnError::TooManyTurns {
                 actual: self.turns.len(),
@@ -267,13 +338,10 @@ impl CompatTurnRequest {
             });
         }
 
-        let input_chars = self
-            .system_text
-            .iter()
-            .map(|text| text.chars().count())
-            .chain(self.turns.iter().map(CompatTurn::char_count))
-            .chain(self.tools.iter().map(FunctionTool::char_count))
-            .sum::<usize>();
+        // Enforce the combined provider-visible request size.
+        let input_chars = self.input_char_count();
+
+        // Reject serialized input beyond the configured character bound.
         if input_chars > limits.max_input_chars.get() {
             return Err(TurnError::InputTooLarge {
                 actual: input_chars,
@@ -289,12 +357,23 @@ impl CompatTurnRequest {
     ///
     /// Returns a rejection for an unknown or disallowed function name.
     fn validate_tool_call(&self, call: &FunctionCall) -> Result<(), TurnError> {
+        // A directive cannot select a function absent from the request.
         if !self.tools.iter().any(|tool| tool.name == call.name) {
             return Err(TurnError::ToolNotOffered {
                 name: call.name.clone(),
             });
         }
         self.tool_choice.validate_call(&call.name)
+    }
+
+    /// Find the nearest tool call preceding one result.
+    fn preceding_tool_call(&self, result_index: usize) -> Option<PositionedToolCall<'_>> {
+        let turns = &self.turns[..result_index];
+        let indexed = turns.iter().enumerate();
+        indexed.rev().find_map(|(index, turn)| match turn {
+            CompatTurn::ToolCall(call) => Some(PositionedToolCall { index, call }),
+            CompatTurn::User(_) | CompatTurn::Assistant(_) | CompatTurn::ToolResult(_) => None,
+        })
     }
 
     /// Match a result to the preceding deterministic directive and function call.
@@ -304,30 +383,58 @@ impl CompatTurnRequest {
     /// Returns a rejection when the history lacks a matching directive and
     /// provider-native call before the result.
     fn validate_tool_result(&self, result_index: usize) -> Result<(), TurnError> {
-        let Some((call_index, CompatTurn::ToolCall(call))) = self.turns[..result_index]
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, turn)| matches!(turn, CompatTurn::ToolCall(_)))
-        else {
+        // Every result must follow a provider-visible function call.
+        let Some(positioned_call) = self.preceding_tool_call(result_index) else {
             return Err(TurnError::OrphanToolResult);
         };
-        let Some(marker) = self.turns[..call_index].iter().rev().find_map(|turn| {
-            if let CompatTurn::User(text) = turn {
-                Some(text)
-            } else {
-                None
-            }
+        let prior_turns = &self.turns[..positioned_call.index];
+
+        // The call must itself follow a user-authored fixture directive.
+        let Some(marker) = prior_turns.iter().rev().find_map(|turn| match turn {
+            CompatTurn::User(text) => Some(text),
+            CompatTurn::Assistant(_) | CompatTurn::ToolCall(_) | CompatTurn::ToolResult(_) => None,
         }) else {
             return Err(TurnError::MissingToolDirective);
         };
+
+        // The marker must parse as a complete function directive.
         let Some(expected) = FunctionCall::parse_directive(marker)? else {
             return Err(TurnError::MissingToolDirective);
         };
-        if expected != *call {
+
+        // Provider history must preserve the exact requested call.
+        if expected != *positioned_call.call {
             return Err(TurnError::MismatchedToolDirective);
         }
         Ok(())
+    }
+
+    /// Find the newest user input or tool result that can produce output.
+    fn latest_input(&self) -> Option<PositionedInput<'_>> {
+        let indexed = self.turns.iter().enumerate();
+        indexed.rev().find_map(|(index, turn)| match turn {
+            CompatTurn::User(_) | CompatTurn::ToolResult(_) => {
+                Some(PositionedInput { index, turn })
+            }
+            CompatTurn::Assistant(_) | CompatTurn::ToolCall(_) => None,
+        })
+    }
+
+    /// Complete one latest user turn under the selected tool policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TurnError`] when a tool directive is malformed or conflicts
+    /// with the available tools or selected tool policy.
+    fn complete_user(&self, text: &str) -> Result<CompatOutput, TurnError> {
+        match FunctionCall::parse_directive(text)? {
+            Some(call) => {
+                self.validate_tool_call(&call)?;
+                Ok(CompatOutput::ToolCall(call))
+            }
+            None if self.tool_choice.should_require_call() => Err(TurnError::RequiredToolDirective),
+            None => Ok(CompatOutput::Text(self.replay_eliza()?)),
+        }
     }
 
     /// Execute ordinary text or the deterministic tool fixture.
@@ -339,54 +446,49 @@ impl CompatTurnRequest {
     pub(crate) fn complete(self, limits: RequestLimits) -> Result<CompatTurnResponse, TurnError> {
         self.validate_limits(limits)?;
 
-        let Some((index, latest)) = self
-            .turns
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, turn)| matches!(turn, CompatTurn::User(_) | CompatTurn::ToolResult(_)))
-        else {
+        // Select the newest turn that can produce a response.
+        let Some(latest) = self.latest_input() else {
             return Err(TurnError::MissingUserText);
         };
 
-        let output = match latest {
+        // Execute either a verified tool result or a new user request.
+        let output = match latest.turn {
             CompatTurn::ToolResult(_) => {
-                self.validate_tool_result(index)?;
+                self.validate_tool_result(latest.index)?;
                 CompatOutput::Text(TOOL_COMPLETE_TEXT.to_owned())
             }
-            CompatTurn::User(text) => match FunctionCall::parse_directive(text)? {
-                Some(call) => {
-                    self.validate_tool_call(&call)?;
-                    CompatOutput::ToolCall(call)
-                }
-                None if self.tool_choice.should_require_call() => {
-                    return Err(TurnError::RequiredToolDirective);
-                }
-                None => CompatOutput::Text(self.replay_eliza()?),
-            },
+            CompatTurn::User(text) => self.complete_user(text)?,
             CompatTurn::Assistant(_) | CompatTurn::ToolCall(_) => unreachable!(),
         };
 
         let prompt = self.prompt_tokens();
         let completion = match &output {
-            CompatOutput::Text(text) => approximate_tokens(std::iter::once(text.as_str())),
+            CompatOutput::Text(text) => Self::approximate_tokens(std::iter::once(text.as_str())),
             CompatOutput::ToolCall(call) => {
                 let arguments = call.arguments.serialized();
-                approximate_tokens([call.name.as_str(), arguments.as_str()].into_iter())
+                Self::approximate_tokens([call.name.as_str(), arguments.as_str()].into_iter())
             }
         };
 
+        // Combine prompt and completion accounting into wire-neutral usage.
+        let usage = TokenUsage {
+            prompt,
+            completion,
+            total: prompt + completion,
+        };
+
+        // Return the completed output with its model identity and accounting.
         Ok(CompatTurnResponse {
             model: self.model,
             output,
-            usage: TokenUsage {
-                prompt,
-                completion,
-                total: prompt + completion,
-            },
+            usage,
         })
     }
 }
+
+// -----------------------------------------------------------------------------
+// TokenUsage: Reports provider-neutral token accounting.
+// -----------------------------------------------------------------------------
 
 /// Approximate provider token counts.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, JsonSchema)]
@@ -402,6 +504,10 @@ pub(crate) struct TokenUsage {
     pub(crate) total: usize,
 }
 
+// -----------------------------------------------------------------------------
+// CompatTurnResponse: Carries one completed neutral turn.
+// -----------------------------------------------------------------------------
+
 /// One completed provider-neutral turn.
 #[derive(Debug)]
 pub(crate) struct CompatTurnResponse {
@@ -412,6 +518,10 @@ pub(crate) struct CompatTurnResponse {
     /// Approximate token usage.
     pub(crate) usage: TokenUsage,
 }
+
+// -----------------------------------------------------------------------------
+// RequestLimits: Bounds normalized request size and replay work.
+// -----------------------------------------------------------------------------
 
 /// Bounds transcript size and replay work.
 #[derive(Debug, Clone, Copy)]
@@ -433,12 +543,21 @@ impl RequestLimits {
             max_history_messages,
         }
     }
+
+    /// Return the maximum serialized input size.
+    pub(crate) const fn max_input_chars(self) -> NonZeroUsize {
+        self.max_input_chars
+    }
+
+    /// Return the maximum normalized history length.
+    pub(crate) const fn max_history_messages(self) -> NonZeroUsize {
+        self.max_history_messages
+    }
 }
 
-/// Approximate token usage by counting whitespace-delimited words.
-fn approximate_tokens<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
-    texts.flat_map(str::split_whitespace).count()
-}
+// -----------------------------------------------------------------------------
+// Tests: Verify neutral execution and deterministic tool fixtures.
+// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 #[expect(
@@ -449,12 +568,12 @@ mod tests {
     use super::*;
 
     /// Return permissive bounds for unit-sized transcripts.
-    fn limits() -> RequestLimits {
+    fn it_should_fixture_limits() -> RequestLimits {
         RequestLimits::new(NonZeroUsize::MAX, NonZeroUsize::MAX)
     }
 
     /// Return the function definition offered by fixture tests.
-    fn tool() -> FunctionTool {
+    fn it_should_fixture_tool() -> FunctionTool {
         FunctionTool::new(
             "echo".to_owned(),
             serde_json::json!({"type":"function","name":"echo"})
@@ -464,18 +583,29 @@ mod tests {
         )
     }
 
-    #[test]
-    fn explicit_directive_calls_an_offered_tool() {
-        let response = CompatTurnRequest::new(
+    /// Build one fixture request with the shared model and tool definition.
+    fn it_should_fixture_request(
+        turns: Vec<CompatTurn>,
+        tool_choice: ToolChoice,
+    ) -> CompatTurnRequest {
+        CompatTurnRequest::new(
             ModelId::default(),
             Vec::new(),
+            turns,
+            vec![it_should_fixture_tool()],
+            tool_choice,
+        )
+    }
+
+    #[test]
+    fn it_should_call_an_offered_tool_for_an_explicit_directive() {
+        let response = it_should_fixture_request(
             vec![CompatTurn::User(
                 "@tool echo {\"value\":\"hello\"}".to_owned(),
             )],
-            vec![tool()],
             ToolChoice::Auto,
         )
-        .complete(limits())
+        .complete(it_should_fixture_limits())
         .unwrap();
 
         assert_eq!(
@@ -488,38 +618,66 @@ mod tests {
     }
 
     #[test]
-    fn tools_do_not_change_an_ordinary_turn() {
-        let response = CompatTurnRequest::new(
-            ModelId::default(),
-            Vec::new(),
-            vec![CompatTurn::User("Hello".to_owned())],
-            vec![tool()],
-            ToolChoice::Auto,
-        )
-        .complete(limits())
-        .unwrap();
+    fn it_should_call_eliza_for_an_ordinary_turn() {
+        let response =
+            it_should_fixture_request(vec![CompatTurn::User("Hello".to_owned())], ToolChoice::Auto)
+                .complete(it_should_fixture_limits())
+                .unwrap();
 
         assert!(matches!(response.output, CompatOutput::Text(_)));
     }
 
     #[test]
-    fn matching_tool_result_finishes_the_fixture() {
+    fn it_should_call_out_a_malformed_directive() {
+        let error = it_should_fixture_request(
+            vec![CompatTurn::User("@tool echo []".to_owned())],
+            ToolChoice::Auto,
+        )
+        .complete(it_should_fixture_limits())
+        .unwrap_err();
+
+        assert!(matches!(error, TurnError::InvalidToolArguments { .. }));
+    }
+
+    #[test]
+    fn it_should_call_for_a_required_choice() {
+        let error = it_should_fixture_request(
+            vec![CompatTurn::User("Hello".to_owned())],
+            ToolChoice::Required,
+        )
+        .complete(it_should_fixture_limits())
+        .unwrap_err();
+
+        assert!(matches!(error, TurnError::RequiredToolDirective));
+    }
+
+    #[test]
+    fn it_should_call_only_the_named_choice() {
+        let error = it_should_fixture_request(
+            vec![CompatTurn::User("@tool echo {}".to_owned())],
+            ToolChoice::Named("other".to_owned()),
+        )
+        .complete(it_should_fixture_limits())
+        .unwrap_err();
+
+        assert!(matches!(error, TurnError::ToolChoiceDisallows { .. }));
+    }
+
+    #[test]
+    fn it_should_result_in_fixture_completion_for_a_matching_call() {
         let call = FunctionCall {
             name: "echo".to_owned(),
             arguments: serde_json::from_value(serde_json::json!({"value":"hello"})).unwrap(),
         };
-        let response = CompatTurnRequest::new(
-            ModelId::default(),
-            Vec::new(),
+        let response = it_should_fixture_request(
             vec![
                 CompatTurn::User("@tool echo {\"value\":\"hello\"}".to_owned()),
                 CompatTurn::ToolCall(call),
                 CompatTurn::ToolResult("hello".to_owned()),
             ],
-            vec![tool()],
             ToolChoice::Auto,
         )
-        .complete(limits())
+        .complete(it_should_fixture_limits())
         .unwrap();
 
         assert_eq!(
@@ -529,69 +687,21 @@ mod tests {
     }
 
     #[test]
-    fn malformed_directive_is_rejected() {
-        let error = CompatTurnRequest::new(
-            ModelId::default(),
-            Vec::new(),
-            vec![CompatTurn::User("@tool echo []".to_owned())],
-            vec![tool()],
-            ToolChoice::Auto,
-        )
-        .complete(limits())
-        .unwrap_err();
-
-        assert!(matches!(error, TurnError::InvalidToolArguments { .. }));
-    }
-
-    #[test]
-    fn required_choice_needs_an_explicit_directive() {
-        let error = CompatTurnRequest::new(
-            ModelId::default(),
-            Vec::new(),
-            vec![CompatTurn::User("Hello".to_owned())],
-            vec![tool()],
-            ToolChoice::Required,
-        )
-        .complete(limits())
-        .unwrap_err();
-
-        assert!(matches!(error, TurnError::RequiredToolDirective));
-    }
-
-    #[test]
-    fn named_choice_must_match_the_directive() {
-        let error = CompatTurnRequest::new(
-            ModelId::default(),
-            Vec::new(),
-            vec![CompatTurn::User("@tool echo {}".to_owned())],
-            vec![tool()],
-            ToolChoice::Named("other".to_owned()),
-        )
-        .complete(limits())
-        .unwrap_err();
-
-        assert!(matches!(error, TurnError::ToolChoiceDisallows { .. }));
-    }
-
-    #[test]
-    fn ordinary_turn_after_tool_history_resumes_eliza() {
+    fn it_should_result_in_eliza_resuming_after_tool_history() {
         let call = FunctionCall {
             name: "echo".to_owned(),
             arguments: serde_json::from_value(serde_json::json!({"value":"hello"})).unwrap(),
         };
-        let response = CompatTurnRequest::new(
-            ModelId::default(),
-            Vec::new(),
+        let response = it_should_fixture_request(
             vec![
                 CompatTurn::User("@tool echo {\"value\":\"hello\"}".to_owned()),
                 CompatTurn::ToolCall(call),
                 CompatTurn::ToolResult("hello".to_owned()),
                 CompatTurn::User("I am sad".to_owned()),
             ],
-            vec![tool()],
             ToolChoice::Auto,
         )
-        .complete(limits())
+        .complete(it_should_fixture_limits())
         .unwrap();
 
         assert_eq!(
