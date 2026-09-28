@@ -23,6 +23,7 @@ use crate::types::http::{
     JsonEventExt, ProviderRejection, SseEvents, TextArrayKind, optional_text_content,
     stream_chunks, unix_timestamp,
 };
+use crate::types::json::JsonObject;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, FunctionTool,
@@ -224,12 +225,12 @@ fn lower_function_call(item: &Value) -> Result<FunctionCall, ProviderRejection> 
         })?,
         value => value.clone(),
     };
-    if !arguments.is_object() {
-        return Err(ProviderRejection::invalid(
+    let arguments = JsonObject::from_value(arguments).ok_or_else(|| {
+        ProviderRejection::invalid(
             "input.arguments",
             "function arguments must be a JSON object",
-        ));
-    }
+        )
+    })?;
     Ok(FunctionCall {
         name: name.to_owned(),
         arguments,
@@ -258,7 +259,10 @@ fn lower_tools(tools: Vec<Value>) -> Result<Vec<FunctionTool>, ProviderRejection
                 .ok_or_else(|| {
                     ProviderRejection::invalid("tools", "function tool is missing its name")
                 })?;
-            Ok(FunctionTool::new(name.to_owned(), tool.clone()))
+            Ok(FunctionTool::new(
+                name.to_owned(),
+                tool.to_string().chars().count(),
+            ))
         })
         .collect()
 }
@@ -347,7 +351,7 @@ impl From<&CompatTurnResponse> for ResponseEnvelope {
                 "id":item_id,
                 "call_id":call_id,
                 "name":call.name,
-                "arguments":call.arguments.to_string(),
+                "arguments":call.arguments.serialized(),
                 "status":"completed"
             })],
         };
@@ -478,7 +482,7 @@ fn push_tool_events(
     envelope: &ResponseEnvelope,
     call: &FunctionCall,
 ) {
-    let arguments = call.arguments.to_string();
+    let arguments = call.arguments.serialized();
     push_event(
         events,
         sequence,
