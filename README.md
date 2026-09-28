@@ -13,7 +13,8 @@ nix develop -c cargo run -- serve --port 8787
 ```
 
 The development shell includes AIChat, an interactive terminal client configured
-for this server. With the server running, start it in another terminal:
+for this server. This command builds and serves ELIZA for the lifetime of the
+chat session:
 
 ```sh
 nix develop -c just chat
