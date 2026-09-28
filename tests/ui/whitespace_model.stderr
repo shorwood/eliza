@@ -1,0 +1,3 @@
+error: invalid value '   ' for '--model <MODEL>': model id must not be empty
+
+For more information, try '--help'.
