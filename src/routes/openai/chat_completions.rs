@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::context::{AppState, ProviderAuth, provider_authenticate};
+use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use crate::types::http::{
     JsonEventExt, ProviderRejection, SseEvents, TextArrayKind, optional_text_content,
     stream_chunks, unix_timestamp,
@@ -459,62 +459,57 @@ fn push_tool_events(events: &mut Vec<Event>, context: &ChatStreamContext<'_>, ca
     );
 }
 
-async fn chat_completions(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(payload): Json<ChatCompletionRequest>,
-) -> Response {
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-        return error.openai_response();
-    }
-
-    // Retain rendering preferences before lowering consumes the request.
-    let should_stream = payload.should_stream;
-    let usage_stream = UsageStream::for_options(payload.stream_options);
-    let request = match OpenAiChatTurn::try_from(payload) {
-        Ok(request) => request.0,
-        Err(error) => return error.openai_response(),
-    };
-    let limits = RequestLimits::new(
-        state.config.max_input_chars,
-        state.config.max_history_messages,
-    );
-    let response = match request.complete(limits) {
-        Ok(response) => response,
-        Err(error) => return error.openai_response(),
-    };
-
-    if should_stream {
-        stream_json(&response, usage_stream)
-            .with_delay(state.config.stream_delay_ms)
-            .into_response()
-    } else {
-        Json(completion_json(response)).into_response()
-    }
-}
-
 /// `OpenAI` Chat Completions endpoints.
-pub(super) struct OpenAiChatCompletions;
+pub(crate) struct OpenAiChatCompletions;
 
 impl OpenAiChatCompletions {
-    /// Mount `OpenAI` Chat and Gemini's OpenAI-compatible alias.
+    /// Handle one OpenAI-compatible Chat Completions request.
+    #[expect(
+        clippy::unused_async,
+        reason = "Axum handlers must return a future even when their work is synchronous"
+    )]
+    pub(crate) async fn handle(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Json(payload): Json<ChatCompletionRequest>,
+    ) -> Response {
+        if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+            return error.openai_response();
+        }
+
+        // Retain rendering preferences before lowering consumes the request.
+        let should_stream = payload.should_stream;
+        let usage_stream = UsageStream::for_options(payload.stream_options);
+        let request = match OpenAiChatTurn::try_from(payload) {
+            Ok(request) => request.0,
+            Err(error) => return error.openai_response(),
+        };
+        let limits = RequestLimits::new(
+            state.config.max_input_chars,
+            state.config.max_history_messages,
+        );
+        let response = match request.complete(limits) {
+            Ok(response) => response,
+            Err(error) => return error.openai_response(),
+        };
+
+        if should_stream {
+            stream_json(&response, usage_stream)
+                .with_delay(state.config.stream_delay_ms)
+                .into_response()
+        } else {
+            Json(completion_json(response)).into_response()
+        }
+    }
+
+    /// Mount the `OpenAI` Chat Completions route.
     pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        let router = router.api_route(
-            "/openai/v1/chat/completions",
-            post_with(chat_completions, |operation| {
+        router.api_route(
+            "/v1/chat/completions",
+            post_with(Self::handle, |operation| {
                 operation
                     .summary("OpenAI chat completion")
                     .tag("openai")
-                    .response::<200, Json<Value>>()
-                    .default_response::<Json<Value>>()
-            }),
-        );
-        router.api_route(
-            "/gemini/v1beta/openai/chat/completions",
-            post_with(chat_completions, |operation| {
-                operation
-                    .summary("Gemini OpenAI chat")
-                    .tag("gemini")
                     .response::<200, Json<Value>>()
                     .default_response::<Json<Value>>()
             }),
