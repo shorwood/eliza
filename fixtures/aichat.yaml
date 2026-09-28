@@ -5,6 +5,6 @@ save: false
 clients:
   - type: openai-compatible
     name: eliza
-    api_base: http://127.0.0.1:8787/v1
+    api_base: http://127.0.0.1:8787/openai/v1
     models:
       - name: eliza-doctor
