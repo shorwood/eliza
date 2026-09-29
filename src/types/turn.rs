@@ -234,7 +234,7 @@ pub(crate) enum CompatOutput {
 // -----------------------------------------------------------------------------
 
 /// One provider-neutral request.
-#[derive(Debug)]
+#[derive(Debug, bon::Builder)]
 pub(crate) struct CompatTurnRequest {
     /// Model identifier echoed in the provider response.
     model: ModelId,
@@ -249,23 +249,6 @@ pub(crate) struct CompatTurnRequest {
 }
 
 impl CompatTurnRequest {
-    /// Build a request from provider-lowered conversation state.
-    pub(crate) fn new(
-        model: ModelId,
-        system_text: Vec<String>,
-        turns: Vec<CompatTurn>,
-        tools: Vec<FunctionTool>,
-        tool_choice: ToolChoice,
-    ) -> Self {
-        Self {
-            model,
-            system_text,
-            turns,
-            tools,
-            tool_choice,
-        }
-    }
-
     /// Approximate token usage by counting whitespace-delimited words.
     fn approximate_tokens<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
         texts.flat_map(str::split_whitespace).count()
@@ -524,7 +507,7 @@ pub(crate) struct CompatTurnResponse {
 // -----------------------------------------------------------------------------
 
 /// Bounds transcript size and replay work.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bon::Builder)]
 pub(crate) struct RequestLimits {
     /// Maximum serialized input size across all request components.
     max_input_chars: NonZeroUsize,
@@ -533,25 +516,9 @@ pub(crate) struct RequestLimits {
 }
 
 impl RequestLimits {
-    /// Build limits from validated positive bounds.
-    pub(crate) const fn new(
-        max_input_chars: NonZeroUsize,
-        max_history_messages: NonZeroUsize,
-    ) -> Self {
-        Self {
-            max_input_chars,
-            max_history_messages,
-        }
-    }
-
     /// Return the maximum serialized input size.
     pub(crate) const fn max_input_chars(self) -> NonZeroUsize {
         self.max_input_chars
-    }
-
-    /// Return the maximum normalized history length.
-    pub(crate) const fn max_history_messages(self) -> NonZeroUsize {
-        self.max_history_messages
     }
 }
 
@@ -569,7 +536,10 @@ mod tests {
 
     /// Return permissive bounds for unit-sized transcripts.
     fn it_should_fixture_limits() -> RequestLimits {
-        RequestLimits::new(NonZeroUsize::MAX, NonZeroUsize::MAX)
+        RequestLimits::builder()
+            .max_input_chars(NonZeroUsize::MAX)
+            .max_history_messages(NonZeroUsize::MAX)
+            .build()
     }
 
     /// Return the function definition offered by fixture tests.
@@ -588,13 +558,13 @@ mod tests {
         turns: Vec<CompatTurn>,
         tool_choice: ToolChoice,
     ) -> CompatTurnRequest {
-        CompatTurnRequest::new(
-            ModelId::default(),
-            Vec::new(),
-            turns,
-            vec![it_should_fixture_tool()],
-            tool_choice,
-        )
+        CompatTurnRequest::builder()
+            .model(ModelId::default())
+            .system_text(Vec::new())
+            .turns(turns)
+            .tools(vec![it_should_fixture_tool()])
+            .tool_choice(tool_choice)
+            .build()
     }
 
     #[test]

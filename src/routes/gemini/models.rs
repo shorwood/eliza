@@ -35,7 +35,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Advertise the generation modes and configured input bound.
     let capabilities = GeminiModelCapabilities {
         supported_generation_methods: vec!["generateContent", "streamGenerateContent"],
-        input_token_limit: state.config.max_input_chars.get(),
+        input_token_limit: state.config.limits.max_input_chars().get(),
         output_token_limit: 512,
     };
 
