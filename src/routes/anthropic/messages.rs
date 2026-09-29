@@ -19,24 +19,28 @@ use super::types::{
 use crate::routes::errors::ExtractionError;
 use crate::types::errors::EncodingError;
 use crate::types::http::{SseEvents, json_event, stream_chunks};
+use crate::types::lower::Lower;
 use crate::types::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
+    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall,
 };
 
 // -----------------------------------------------------------------------------
-// AnthropicTurn: Lowers one Messages request into the neutral contract.
+// MessagesLowering: Lowers one request into the neutral contract.
 // -----------------------------------------------------------------------------
 
-/// Provider-neutral request lowered from Anthropic Messages input.
-struct AnthropicTurn(
-    /// Validated conversation consumed by the shared executor.
-    CompatTurnRequest,
+/// Anthropic Messages input awaiting provider-neutral conversion.
+struct MessagesLowering(
+    /// Typed provider request.
+    MessagesRequest,
 );
 
-impl TryFrom<MessagesRequest> for AnthropicTurn {
+impl Lower for MessagesLowering {
+    type Canonical = CompatTurnRequest;
+
     type Error = AnthropicError;
 
-    fn try_from(payload: MessagesRequest) -> Result<Self, Self::Error> {
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        let payload = self.0;
         let mut system = Vec::new();
         if let Some(content) = payload.system {
             system.push(system_text(content)?);
@@ -51,14 +55,20 @@ impl TryFrom<MessagesRequest> for AnthropicTurn {
                 MessageRole::Unsupported => return Err(AnthropicError::UnsupportedRole),
             }
         }
+        let tools = payload.tools.unwrap_or_default().lower()?;
+        let tool_choice = payload
+            .tool_choice
+            .map(Lower::lower)
+            .transpose()?
+            .unwrap_or_default();
 
-        Ok(Self(CompatTurnRequest::new(
-            payload.model,
-            system,
-            turns,
-            payload.tools.unwrap_or_default().into_domain()?,
-            payload.tool_choice.try_into()?,
-        )))
+        Ok(CompatTurnRequest::builder()
+            .model(payload.model)
+            .system_text(system)
+            .turns(turns)
+            .tools(tools)
+            .tool_choice(tool_choice)
+            .build())
     }
 }
 
@@ -409,8 +419,8 @@ async fn anthropic_messages(
 
     // Capture transport policy before lowering consumes the request body.
     let should_stream = payload.should_stream.unwrap_or(false);
-    let request = match AnthropicTurn::try_from(payload) {
-        Ok(request) => request.0,
+    let request = match MessagesLowering(payload).lower() {
+        Ok(request) => request,
         // Provider validation failures use Anthropic's native envelope.
         Err(error) => {
             return AnthropicRejection::from_error(&error).into_response();
@@ -418,13 +428,8 @@ async fn anthropic_messages(
     };
 
     // Enforce shared request bounds after provider-specific lowering.
-    let limits = RequestLimits::new(
-        state.config.max_input_chars,
-        state.config.max_history_messages,
-    );
-
     // Complete the validated neutral request before choosing a wire response.
-    let response = match request.complete(limits) {
+    let response = match request.complete(state.config.limits) {
         Ok(response) => response,
         // Shared execution failures still render as Anthropic errors.
         Err(error) => {

@@ -20,24 +20,29 @@ use super::types::{
 use crate::routes::errors::ExtractionError;
 use crate::types::errors::EncodingError;
 use crate::types::http::{SseEvents, json_event, stream_chunks, unix_timestamp};
+use crate::types::lower::Lower;
 use crate::types::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
+    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall,
 };
 
 // -----------------------------------------------------------------------------
-// OpenAiChatTurn: Lowers one chat request into the neutral contract.
+// ChatLowering: Lowers one chat request into the neutral contract.
 // -----------------------------------------------------------------------------
 
-/// Provider-neutral request lowered from Chat Completions input.
-struct OpenAiChatTurn(
-    /// Validated conversation consumed by the shared executor.
-    CompatTurnRequest,
+/// Chat Completions input awaiting provider-neutral conversion.
+struct ChatLowering(
+    /// Typed provider request.
+    ChatRequest,
 );
 
-impl TryFrom<ChatRequest> for OpenAiChatTurn {
+impl Lower for ChatLowering {
+    type Canonical = CompatTurnRequest;
+
     type Error = OpenAiError;
 
-    fn try_from(payload: ChatRequest) -> Result<Self, Self::Error> {
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        let payload = self.0;
+
         // ELIZA cannot honor OpenAI's structured-output modes.
         if payload.response_format.is_some() {
             return Err(OpenAiError::StructuredOutputUnsupported {
@@ -46,15 +51,21 @@ impl TryFrom<ChatRequest> for OpenAiChatTurn {
         }
 
         let chat = ChatTranscript(payload.messages).lower()?;
+        let tools = payload.tools.unwrap_or_default().lower()?;
+        let tool_choice = payload
+            .tool_choice
+            .map(Lower::lower)
+            .transpose()?
+            .unwrap_or_default();
 
         // Assemble the neutral request from lowered transcript components.
-        Ok(Self(CompatTurnRequest::new(
-            payload.model,
-            chat.system,
-            chat.turns,
-            payload.tools.unwrap_or_default().into_domain()?,
-            payload.tool_choice.try_into()?,
-        )))
+        Ok(CompatTurnRequest::builder()
+            .model(payload.model)
+            .system_text(chat.system)
+            .turns(chat.turns)
+            .tools(tools)
+            .tool_choice(tool_choice)
+            .build())
     }
 }
 
@@ -444,8 +455,8 @@ impl OpenAiChatCompletions {
         let usage_stream = UsageStream::for_options(payload.stream_options);
 
         // Lower and execute the provider request under shared resource limits.
-        let request = match OpenAiChatTurn::try_from(payload) {
-            Ok(request) => request.0,
+        let request = match ChatLowering(payload).lower() {
+            Ok(request) => request,
             // Provider validation failures use OpenAI's native envelope.
             Err(error) => {
                 return OpenAiRejection::from_error(&error).into_response();
@@ -453,13 +464,8 @@ impl OpenAiChatCompletions {
         };
 
         // Apply shared resource bounds to the lowered request.
-        let limits = RequestLimits::new(
-            state.config.max_input_chars,
-            state.config.max_history_messages,
-        );
-
         // Complete one neutral turn before rendering OpenAI output.
-        let response = match request.complete(limits) {
+        let response = match request.complete(state.config.limits) {
             Ok(response) => response,
             // Shared execution failures still render as OpenAI errors.
             Err(error) => {
