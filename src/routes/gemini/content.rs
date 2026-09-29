@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use super::errors::{GeminiError, GeminiFailureResponse, GeminiRejection};
-use super::speech::{RequestMode, SpeechDelivery};
+use super::speech::{SpeechDelivery, SpeechRequestMode};
 use super::types::{
     Content, ContentFunctionResponseValue, ContentPart, ContentRole, GenerateCandidate,
     GenerateContentRequest, GenerateContentResponse, GenerateFinishReason, GenerateFunctionCall,
@@ -437,12 +437,12 @@ async fn generate(
         SpeechDelivery::JsonStream
     };
 
-    match RequestMode::for_payload(&payload) {
+    match SpeechRequestMode::for_payload(&payload) {
         // Audio generation owns its provider-native response.
-        Ok(RequestMode::Audio) => {
+        Ok(SpeechRequestMode::Audio) => {
             return super::speech::generate(&state, action.model, speech_delivery, payload).await;
         }
-        Ok(RequestMode::Text) => {}
+        Ok(SpeechRequestMode::Text) => {}
         // Invalid modality lists fail before ordinary text lowering.
         Err(error) => {
             return GeminiRejection::from_error(&error).into_response();

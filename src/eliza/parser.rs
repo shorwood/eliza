@@ -1,8 +1,8 @@
 //! Recursive parser from positioned tokens to S-expressions.
 
+use super::errors::ScriptError;
 use super::lexer::{LexedScript, Token, TokenKind};
 use super::syntax::{Sexp, SexpKind, Span};
-use crate::errors::AppError;
 
 // -----------------------------------------------------------------------------
 // Parser: Builds expressions from positioned tokens.
@@ -37,17 +37,17 @@ impl Parser {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] when the cursor is at EOF or an unexpected close
+    /// Returns [`ScriptError`] when the cursor is at EOF or an unexpected close
     /// paren.
-    fn parse_one(&mut self) -> Result<Sexp, AppError> {
+    fn parse_one(&mut self) -> Result<Sexp, ScriptError> {
         // Resolve the current token or report the lexer's final source position.
-        let token = self.peek().ok_or(AppError::ScriptUnexpectedEnd {
+        let token = self.peek().ok_or(ScriptError::UnexpectedEnd {
             line: self.eof.line,
             column: self.eof.column,
         })?;
 
         // Prepare the positioned close-paren failure before mutable dispatch.
-        let unexpected_close = AppError::ScriptUnexpectedClose {
+        let unexpected_close = ScriptError::UnexpectedClose {
             line: token.span.line,
             column: token.span.column,
         };
@@ -64,10 +64,10 @@ impl Parser {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::ScriptUnexpectedEnd`] when EOF appears before the
+    /// Returns [`ScriptError::UnexpectedEnd`] when EOF appears before the
     /// closing paren.
-    fn parse_list(&mut self) -> Result<Sexp, AppError> {
-        let open = self.next().ok_or(AppError::ScriptUnexpectedEnd {
+    fn parse_list(&mut self) -> Result<Sexp, ScriptError> {
+        let open = self.next().ok_or(ScriptError::UnexpectedEnd {
             line: self.eof.line,
             column: self.eof.column,
         })?;
@@ -87,7 +87,7 @@ impl Parser {
                 }
                 Some(_) => items.push(self.parse_one()?),
                 None => {
-                    return Err(AppError::ScriptUnexpectedEnd {
+                    return Err(ScriptError::UnexpectedEnd {
                         line: self.eof.line,
                         column: self.eof.column,
                     });
@@ -105,8 +105,8 @@ impl Parser {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] from the first malformed S-expression.
-    fn parse_all(mut self) -> Result<Vec<Sexp>, AppError> {
+    /// Returns [`ScriptError`] from the first malformed S-expression.
+    fn parse_all(mut self) -> Result<Vec<Sexp>, ScriptError> {
         let mut sexps = Vec::new();
 
         // Lower each independent top-level source form in sequence.
@@ -120,7 +120,7 @@ impl Parser {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] when parentheses are unbalanced or the parser sees
+    /// Returns [`ScriptError`] when parentheses are unbalanced or the parser sees
     /// a close paren without a matching open paren.
     ///
     /// # Examples
@@ -140,7 +140,7 @@ impl Parser {
     /// // EOF diagnostics point just after the final source character.
     /// assert_eq!(error.to_string(), "unexpected end of script at 1:6");
     /// ```
-    pub(super) fn parse(input: &str) -> Result<Vec<Sexp>, AppError> {
+    pub(super) fn parse(input: &str) -> Result<Vec<Sexp>, ScriptError> {
         let lexed = LexedScript::from(input);
         Self {
             tokens: lexed.tokens,

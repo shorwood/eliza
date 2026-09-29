@@ -218,8 +218,9 @@ request failures use provider-native JSON envelopes and include a stable
 - A request replays its user history through a fresh ELIZA session. State is
   not retained between HTTP requests.
 - Usage counts are deterministic approximations, not provider tokenizer output.
-- Streaming splits an already-computed deterministic response into native SSE
-  or NDJSON records. `--stream-delay-ms` changes delivery timing, not execution.
+- Text streaming splits an already-computed deterministic response into native
+  SSE or NDJSON records. Speech streaming synthesizes and encodes incrementally
+  through a bounded two-worker pool; `--stream-delay-ms` paces delivery.
 - Input and history limits apply after provider contracts are lowered into the
   shared conversation contract.
 

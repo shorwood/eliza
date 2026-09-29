@@ -13,48 +13,57 @@ use crate::problem::{Problem, ProblemClass, ProblemDetails};
 // -----------------------------------------------------------------------------
 
 /// Failure detected while lowering an Anthropic request.
-#[expect(
-    rlib::undocumented_items,
-    reason = "thiserror messages and Miette codes are the canonical contracts for private adapter failures"
-)]
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum AnthropicError {
+    /// A tool declaration omitted its name.
     #[error("tool is missing its name")]
     #[diagnostic(code(eliza::anthropic::missing_tool_name))]
     MissingToolName,
+    /// A function tool omitted its input schema.
     #[error("function tool is missing input_schema")]
     #[diagnostic(code(eliza::anthropic::missing_tool_input_schema))]
     MissingToolInputSchema,
+    /// A named tool choice omitted the selected tool name.
     #[error("named tool_choice is missing name")]
     #[diagnostic(code(eliza::anthropic::missing_named_tool_choice))]
     MissingNamedToolChoice,
+    /// The requested tool-choice mode cannot be represented.
     #[error("unsupported tool_choice type")]
     #[diagnostic(code(eliza::anthropic::unsupported_tool_choice))]
     UnsupportedToolChoice,
+    /// A message used a role outside Anthropic's supported subset.
     #[error("unsupported Anthropic role")]
     #[diagnostic(code(eliza::anthropic::unsupported_role))]
     UnsupportedRole,
+    /// A system prompt contained a non-text block.
     #[error("only text system blocks are supported")]
     #[diagnostic(code(eliza::anthropic::unsupported_system_block))]
     UnsupportedSystemBlock,
+    /// A user message omitted its content blocks.
     #[error("user content blocks are required")]
     #[diagnostic(code(eliza::anthropic::missing_user_content))]
     MissingUserContent,
+    /// A user message contained an unsupported block kind.
     #[error("only text and tool_result blocks are supported")]
     #[diagnostic(code(eliza::anthropic::unsupported_user_block))]
     UnsupportedUserBlock,
+    /// A tool-use block omitted its function name.
     #[error("tool_use block is missing name")]
     #[diagnostic(code(eliza::anthropic::missing_tool_use_name))]
     MissingToolUseName,
+    /// A tool-use block omitted its input object.
     #[error("tool_use block is missing input")]
     #[diagnostic(code(eliza::anthropic::missing_tool_use_input))]
     MissingToolUseInput,
+    /// An assistant message contained an unsupported block kind.
     #[error("only text and tool_use blocks are supported")]
     #[diagnostic(code(eliza::anthropic::unsupported_assistant_block))]
     UnsupportedAssistantBlock,
+    /// A tool result contained a non-text block.
     #[error("only text tool-result blocks are supported")]
     #[diagnostic(code(eliza::anthropic::unsupported_tool_result_block))]
     UnsupportedToolResultBlock,
+    /// A tool result omitted its content.
     #[error("tool result content is required")]
     #[diagnostic(code(eliza::anthropic::missing_tool_result_content))]
     MissingToolResultContent,
