@@ -1,72 +1,58 @@
 # ELIZA Compatibility Server
 
-Standalone classic ELIZA/DOCTOR HTTP server for local provider-compatibility
-tests. It does not depend on Nano crates, Nano config, Nano auth, or a database.
+A standalone, deterministic implementation of the classic ELIZA/DOCTOR
+conversation engine, exposed through partial OpenAI, Anthropic, Gemini, and
+Ollama HTTP contracts. It makes no upstream model calls and has no database,
+Nano dependency, configuration file, or persistent session state.
 
-The bundled script follows the 1966 Weizenbaum DOCTOR script lineage from
-ELIZAGEN, not a BASIC-port rewrite.
+The bundled script follows the 1966 Weizenbaum DOCTOR lineage from ELIZAGEN,
+not a BASIC-port rewrite. This is a compatibility fixture and historical
+chatbot, not a medical or therapeutic system.
 
-## Run
+## Quick start
 
-```sh
-nix develop -c cargo run -- serve --port 8787
-```
-
-The development shell includes AIChat, an interactive terminal client configured
-for this server. This command builds and serves ELIZA for the lifetime of the
-chat session:
+Run from the Nix development shell:
 
 ```sh
-nix develop -c just chat
+nix develop --command cargo run --locked -- serve
 ```
 
-Runnable Vercel AI and Rig compatibility examples live in
-[examples](examples/README.md).
-
-The flake also publishes the server as a Nix package. Run it directly from a
-published flake reference with:
+The server listens on `http://127.0.0.1:8787` by default. Verify it with:
 
 ```sh
-nix run <flake-url> -- serve --port 8787
+curl -s http://127.0.0.1:8787/healthz
 ```
 
-To add ELIZA to another flake, declare it as an input and select its package for
-the consuming system:
-
-```nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    eliza = {
-      url = "<flake-url>";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-  };
-
-  outputs = { nixpkgs, eliza, ... }:
-    let
-      system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
-    in {
-      devShells.${system}.default = pkgs.mkShell {
-        packages = [ eliza.packages.${system}.default ];
-      };
-    };
-}
-```
-
-All provider-compatible routes are always available; choose the path that
-matches the client you are testing. Runtime configuration is CLI-only; inspect
-the current contract with:
+The flake also exposes the packaged binary:
 
 ```sh
-nix develop -c cargo run -- serve --help
+nix run . -- serve
 ```
 
-Interactive docs are mounted at `http://127.0.0.1:8787/docs`, with raw OpenAPI
-at `http://127.0.0.1:8787/openapi.json`.
+Interactive Scalar documentation is served at `/docs`; the generated OpenAPI
+3.1 document is served at `/openapi.json`.
 
-## OpenAI Chat Completions
+## HTTP surface
+
+Every provider route is namespaced. Unprefixed routes such as `/v1/models` and
+`/v1/messages` are deliberately not mounted.
+
+| Surface | Routes | Successful response transport |
+| --- | --- | --- |
+| System | `GET /healthz` | JSON |
+| OpenAI | `GET /openai/v1/models`<br>`POST /openai/v1/chat/completions`<br>`POST /openai/v1/responses` | JSON; SSE when `stream: true` |
+| Gemini OpenAI alias | `POST /gemini/v1beta/openai/chat/completions` | OpenAI JSON or SSE |
+| Anthropic | `GET /anthropic/v1/models`<br>`POST /anthropic/v1/messages` | JSON; SSE when `stream: true` |
+| Gemini | `GET /gemini/v1beta/models`<br>`POST /gemini/v1beta/models/{model}:generateContent`<br>`POST /gemini/v1beta/models/{model}:streamGenerateContent` | JSON; the stream action returns a JSON array, or SSE with `?alt=sse` |
+| Ollama | `GET /ollama/api/tags`<br>`POST /ollama/api/chat` | NDJSON by default; JSON when `stream: false` |
+| Documentation | `GET /docs`<br>`GET /openapi.json` | HTML and JSON |
+
+All model-list routes advertise the single model selected by `--model`, which
+defaults to `eliza-doctor`.
+
+## Request examples
+
+### OpenAI Chat Completions
 
 ```sh
 curl -s http://127.0.0.1:8787/openai/v1/chat/completions \
@@ -74,13 +60,18 @@ curl -s http://127.0.0.1:8787/openai/v1/chat/completions \
   -d '{"model":"eliza-doctor","messages":[{"role":"user","content":"I am sad."}]}'
 ```
 
-The Gemini OpenAI-compatible alias is also available:
+Gemini's OpenAI-compatible alias accepts the same request at
+`/gemini/v1beta/openai/chat/completions`.
 
-```text
-http://127.0.0.1:8787/gemini/v1beta/openai/chat/completions
+### OpenAI Responses
+
+```sh
+curl -s http://127.0.0.1:8787/openai/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"eliza-doctor","input":"I need help."}'
 ```
 
-## Anthropic Messages
+### Anthropic Messages
 
 ```sh
 curl -s http://127.0.0.1:8787/anthropic/v1/messages \
@@ -89,7 +80,7 @@ curl -s http://127.0.0.1:8787/anthropic/v1/messages \
   -d '{"model":"eliza-doctor","max_tokens":128,"messages":[{"role":"user","content":"I am sad."}]}'
 ```
 
-## Gemini Generate Content
+### Gemini Generate Content
 
 ```sh
 curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-doctor:generateContent \
@@ -97,9 +88,7 @@ curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-doctor:generateContent 
   -d '{"contents":[{"role":"user","parts":[{"text":"I am sad."}]}]}'
 ```
 
-## Ollama Chat
-
-Ollama streams newline-delimited JSON unless `"stream": false` is supplied:
+### Ollama Chat
 
 ```sh
 curl -s http://127.0.0.1:8787/ollama/api/chat \
@@ -107,29 +96,115 @@ curl -s http://127.0.0.1:8787/ollama/api/chat \
   -d '{"model":"eliza-doctor","stream":false,"messages":[{"role":"user","content":"I am sad."}]}'
 ```
 
-Model catalogs are available at `/openai/v1/models`, `/anthropic/v1/models`,
-`/gemini/v1beta/models`, and `/ollama/api/tags`.
+## Runtime configuration
 
-## Deterministic tool calls
+`eliza serve` is the complete application configuration surface:
 
-Every chat surface accepts client-defined function tools. Tools do not change
-ordinary ELIZA prompts. To request one call, make the complete latest user
-message `@tool <offered-name> <json-object>`, for example:
+| Option | Default | Contract |
+| --- | --- | --- |
+| `--host` | `127.0.0.1` | Listener IP address |
+| `--port` | `8787` | Listener port |
+| `--model` | `eliza-doctor` | Nonblank model advertised by catalog routes |
+| `--auth` | `none` | `none` or `bearer` |
+| `--bearer-token` | unset | Required and nonempty when `--auth bearer` is selected |
+| `--cors` | `none` | `none` or `permissive` |
+| `--stream-delay-ms` | `0` | Delay inserted between emitted stream chunks |
+| `--max-input-chars` | `8000` | Maximum combined characters in instructions, history, and tool definitions |
+| `--max-history-messages` | `200` | Maximum normalized transcript entries accepted in one request |
+| `--log` | `text` | `text` or `json` tracing output |
+
+Both limits must be greater than zero. `RUST_LOG` may be used as the standard
+tracing filter; it defaults to `info` when absent or invalid.
+
+Inspect the authoritative CLI contract with:
+
+```sh
+nix develop --command cargo run --locked -- serve --help
+```
+
+### Authentication
+
+`--auth bearer --bearer-token <token>` protects every provider route with one
+shared secret, rendered through each provider's native authentication scheme:
+
+| Surface | Required header |
+| --- | --- |
+| OpenAI, Gemini OpenAI alias, Ollama | `Authorization: Bearer <token>` |
+| Anthropic | `x-api-key: <token>` |
+| Native Gemini | `x-goog-api-key: <token>` |
+
+Health and documentation routes remain public. Authentication failures and
+request failures use provider-native JSON envelopes and include a stable
+`x-eliza-error-code` response header.
+
+## Compatibility boundaries
+
+- Request and response envelopes are typed per provider; unknown object fields
+  are tolerated, while unsupported known variants are rejected explicitly.
+- Conversation input is text-only. Multimodal content, OpenAI structured
+  output, and Ollama structured or reasoning output are not implemented.
+- A request replays its user history through a fresh ELIZA session. State is
+  not retained between HTTP requests.
+- Usage counts are deterministic approximations, not provider tokenizer output.
+- Streaming splits an already-computed deterministic response into native SSE
+  or NDJSON records. `--stream-delay-ms` changes delivery timing, not execution.
+- Input and history limits apply after provider contracts are lowered into the
+  shared conversation contract.
+
+## Deterministic tool fixture
+
+Every generation surface accepts client-defined function tools. Tool
+definitions do not affect an ordinary ELIZA prompt. To request a call, make the
+complete latest user message:
+
+```text
+@tool <offered-name> <json-object>
+```
+
+For example:
 
 ```text
 @tool echo {"value":"hello"}
 ```
 
-ELIZA returns that call in the selected provider's native shape. Submit the
-provider-native tool result in the next request and ELIZA replies
-`TOOL CALL COMPLETE`. The fixture is stateless, supports one call at a time,
-and does not validate arguments against the supplied JSON Schema.
+The named function must be present in the request and permitted by the
+provider's tool-choice policy. ELIZA returns one call in the provider's native
+shape. A following request that preserves the directive and provider-native
+call, then appends its tool result, receives `TOOL CALL COMPLETE`.
 
-With `--auth bearer`, OpenAI, Gemini's OpenAI alias, and Ollama use
-`Authorization: Bearer`; Anthropic uses `x-api-key`; native Gemini uses
-`x-goog-api-key`.
+The fixture is stateless, supports one call at a time, passes the JSON object
+through unchanged, and does not validate arguments against the supplied JSON
+Schema.
 
-Streaming surfaces return provider-shaped SSE events where provider SDKs expect
-them, while Ollama uses NDJSON. The engine still computes one deterministic
-ELIZA response and splits it into chunks. This is a historical chatbot adapter,
-not a medical or therapeutic system.
+## Client examples
+
+The development shell includes AIChat. This command builds the server, keeps it
+alive for the chat session, and stops it afterward:
+
+```sh
+nix develop --command just chat
+```
+
+Real Vercel AI SDK and Rig examples cover unary, streaming, model-list, and tool
+round-trip compatibility where their provider clients expose those operations:
+
+```sh
+nix develop --command just example-vercel-ai
+nix develop --command just example-rust-rig
+```
+
+See [examples/README.md](examples/README.md) for their exact coverage. Set
+`ELIZA_EXAMPLE_PORT` to use a port other than `8787`.
+
+## Development
+
+Enter the pinned shell and run the complete quality gate:
+
+```sh
+nix develop
+just ok
+```
+
+The gate checks formatting, the one-request-per-Hurl-file contract, compilation,
+unit tests, CLI UI snapshots, HTTP contracts, Clippy, and rlib Dylint rules.
+Use `just test-http` for only the Hurl-backed HTTP suites.
