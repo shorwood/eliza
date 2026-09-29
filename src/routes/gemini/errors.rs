@@ -7,84 +7,117 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::problem::{Problem, ProblemClass, ProblemDetails};
+use crate::speech::errors::SpeechError;
+use crate::types::errors::EncodingError;
 
 // -----------------------------------------------------------------------------
 // GeminiError: Classifies failures found while lowering requests.
 // -----------------------------------------------------------------------------
 
 /// Failure detected while lowering a Gemini request.
-#[expect(
-    rlib::undocumented_items,
-    reason = "thiserror messages and Miette codes are the canonical contracts for private adapter failures"
-)]
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum GeminiError {
+    /// A tool group omitted its function declarations.
     #[error("only client function declarations are supported")]
     #[diagnostic(code(eliza::gemini::missing_function_declarations))]
     MissingFunctionDeclarations,
+    /// A function declaration omitted its name.
     #[error("function declaration is missing name")]
     #[diagnostic(code(eliza::gemini::missing_function_name))]
     MissingFunctionName,
+    /// The requested function-calling mode cannot be represented.
     #[error("unsupported function calling mode")]
     #[diagnostic(code(eliza::gemini::unsupported_calling_mode))]
-    UnsupportedCallingMode { param: &'static str },
+    UnsupportedCallingMode {
+        /// Request field containing the unsupported mode.
+        param: &'static str,
+    },
+    /// The model path names an unsupported generation action.
     #[error("unsupported Gemini model action `{action}`")]
     #[diagnostic(code(eliza::gemini::unsupported_model_action))]
-    UnsupportedModelAction { action: String },
+    UnsupportedModelAction {
+        /// Unsupported action suffix from the model path.
+        action: String,
+    },
+    /// The model path omitted its generation action.
     #[error("Gemini model path must include a generation action")]
     #[diagnostic(code(eliza::gemini::missing_model_action))]
     MissingModelAction,
+    /// The model path contained an empty model identifier.
     #[error("Gemini model id must not be empty")]
     #[diagnostic(code(eliza::gemini::empty_model))]
     EmptyModel,
+    /// A content record used a role outside Gemini's supported subset.
     #[error("unsupported Gemini role")]
     #[diagnostic(code(eliza::gemini::unsupported_role))]
     UnsupportedRole,
+    /// A content record omitted its parts.
     #[error("content parts are required")]
     #[diagnostic(code(eliza::gemini::missing_content_parts))]
     MissingContentParts,
+    /// A function response omitted its response value.
     #[error("functionResponse is missing response")]
     #[diagnostic(code(eliza::gemini::missing_function_response))]
     MissingFunctionResponse,
+    /// A user content record contained an unsupported part kind.
     #[error("only text and functionResponse parts are supported")]
     #[diagnostic(code(eliza::gemini::unsupported_user_part))]
     UnsupportedUserPart,
+    /// A function-call part omitted its function name.
     #[error("functionCall is missing name")]
     #[diagnostic(code(eliza::gemini::missing_function_call_name))]
     MissingFunctionCallName,
+    /// A model content record contained an unsupported part kind.
     #[error("only text and functionCall parts are supported")]
     #[diagnostic(code(eliza::gemini::unsupported_model_part))]
     UnsupportedModelPart,
+    /// A field requiring text did not contain any text parts.
     #[error("text parts are required")]
     #[diagnostic(code(eliza::gemini::missing_text_parts))]
-    MissingTextParts { param: &'static str },
+    MissingTextParts {
+        /// Request field that requires text parts.
+        param: &'static str,
+    },
+    /// A text-only field contained another part kind.
     #[error("only text parts are supported")]
     #[diagnostic(code(eliza::gemini::unsupported_text_part))]
-    UnsupportedTextPart { param: &'static str },
+    UnsupportedTextPart {
+        /// Request field containing the unsupported part.
+        param: &'static str,
+    },
+    /// Audio generation used a model other than the local speech model.
     #[error("audio generation requires model `eliza-retro-tts`")]
     #[diagnostic(code(eliza::gemini::speech_model_required))]
     SpeechModelRequired,
+    /// The local speech model was asked for a non-audio response.
     #[error("model `eliza-retro-tts` only supports AUDIO responses")]
     #[diagnostic(code(eliza::gemini::speech_model_audio_only))]
     SpeechModelAudioOnly,
+    /// Response modalities did not select exactly one supported modality.
     #[error("responseModalities must contain exactly TEXT or AUDIO")]
     #[diagnostic(code(eliza::gemini::invalid_response_modalities))]
     InvalidResponseModalities,
+    /// Audio generation omitted its speech configuration or voice.
     #[error("speechConfig and a nonempty voice are required")]
     #[diagnostic(code(eliza::gemini::missing_speech_config))]
     MissingSpeechConfig,
+    /// The requested speech encoding is not implemented.
     #[error("unsupported speech response format")]
     #[diagnostic(code(eliza::gemini::unsupported_speech_format))]
     UnsupportedSpeechFormat,
+    /// Audio generation received non-text user content.
     #[error("audio generation supports only user text parts")]
     #[diagnostic(code(eliza::gemini::speech_text_only))]
     SpeechTextOnly,
+    /// Audio generation included tools or a system instruction.
     #[error("tools and system instructions are not supported for audio generation")]
     #[diagnostic(code(eliza::gemini::speech_controls_unsupported))]
     SpeechControlsUnsupported,
+    /// A multi-speaker request did not define two distinct speakers.
     #[error("multi-speaker speech requires exactly two distinct speaker mappings")]
     #[diagnostic(code(eliza::gemini::invalid_speaker_config))]
     InvalidSpeakerConfig,
+    /// A speech segment omitted its speaker or named an unknown one.
     #[error("speech part has a missing or unknown speaker")]
     #[diagnostic(code(eliza::gemini::unknown_speaker))]
     UnknownSpeaker,
@@ -133,6 +166,34 @@ impl ProblemDetails for GeminiError {
             Self::SpeechControlsUnsupported => Some("generationConfig"),
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// GeminiSpeechStreamError: Preserves failures after response streaming begins.
+// -----------------------------------------------------------------------------
+
+/// Failure that can terminate a Gemini speech stream after headers are sent.
+#[derive(Debug, Error)]
+pub(super) enum GeminiSpeechStreamError {
+    /// A typed server-sent event could not be encoded.
+    #[error(transparent)]
+    Encoding(
+        /// Provider-neutral response encoding failure.
+        EncodingError,
+    ),
+    /// A Gemini JSON response record could not be encoded.
+    #[error("failed to encode Gemini speech record: {source}")]
+    Json {
+        /// JSON serialization failure.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// Speech synthesis or audio encoding failed.
+    #[error(transparent)]
+    Speech(
+        /// Provider-neutral speech failure.
+        SpeechError,
+    ),
 }
 
 // -----------------------------------------------------------------------------

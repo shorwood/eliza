@@ -1,8 +1,9 @@
 //! Thin adapter around Flite's embedded retro diphone voice.
 
-use flite_rs::Engine;
+use flite_rs::{Engine, Flow};
 
-use super::core::{SpeechError, SpeechRequest, SpeechSegment};
+use super::core::{SpeechRequest, SpeechSegment};
+use super::errors::SpeechError;
 
 // -----------------------------------------------------------------------------
 // VoiceSettings: Maps provider voice controls onto Flite.
@@ -127,107 +128,186 @@ impl TryFrom<u32> for OutputRate {
 }
 
 // -----------------------------------------------------------------------------
-// SampleBuffer: Owns bounded target-rate PCM assembly.
+// SampleStream: Bounds and incrementally emits target-rate PCM.
 // -----------------------------------------------------------------------------
 
-/// PCM output whose every append is checked against the duration bound.
-struct SampleBuffer {
-    /// Assembled target-rate samples.
-    samples: Vec<i16>,
+/// Target-rate samples emitted together to downstream encoders.
+const STREAM_CHUNK_SAMPLES: usize = 2_048;
+
+/// Milliseconds in one second.
+const MILLISECONDS_PER_SECOND: usize = 1_000;
+
+/// Bounded resampler that flushes PCM while Flite is still synthesizing.
+struct SampleStream<F> {
+    /// Samples waiting for the next downstream write.
+    pending: Vec<i16>,
+    /// Number of target-rate samples accepted so far.
+    total: usize,
     /// Maximum permitted target-rate sample count.
     maximum: usize,
+    /// Requested integer-multiple output rate.
+    rate: OutputRate,
+    /// Downstream consumer for complete PCM chunks.
+    sink: F,
+    /// First limit or sink failure, which also stops Flite.
+    failure: Option<SpeechError>,
 }
 
-impl SampleBuffer {
-    /// Start an empty bounded output buffer.
-    const fn new(maximum: usize) -> Self {
+impl<F> SampleStream<F>
+where
+    F: FnMut(&[i16]) -> Result<(), SpeechError>,
+{
+    /// Start an empty bounded output stream.
+    fn new(maximum: usize, rate: OutputRate, sink: F) -> Self {
         Self {
-            samples: Vec::new(),
+            pending: Vec::with_capacity(STREAM_CHUNK_SAMPLES),
+            total: 0,
             maximum,
+            rate,
+            sink,
+            failure: None,
         }
     }
 
     /// Reject an append that would exceed the configured output duration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SpeechError::OutputTooLong`] when the addition crosses the limit.
-    fn ensure_room(&self, additional: usize) -> Result<(), SpeechError> {
-        if self.samples.len().saturating_add(additional) > self.maximum {
-            Err(SpeechError::OutputTooLong)
+    fn ensure_room(&mut self, additional: usize) -> Flow {
+        if self.total.saturating_add(additional) > self.maximum {
+            self.failure = Some(SpeechError::OutputTooLong);
+            Flow::Stop
         } else {
-            Ok(())
+            Flow::Continue
         }
+    }
+
+    /// Flush one transport-sized PCM chunk.
+    fn flush(&mut self) -> Flow {
+        // Empty codec writes add no information and can confuse frame encoders.
+        if self.pending.is_empty() {
+            return Flow::Continue;
+        }
+        match (self.sink)(&self.pending) {
+            Ok(()) => {
+                self.pending.clear();
+                Flow::Continue
+            }
+            Err(error) => {
+                self.failure = Some(error);
+                Flow::Stop
+            }
+        }
+    }
+
+    /// Append one target-rate sample and flush full chunks immediately.
+    fn push(&mut self, sample: i16) -> Flow {
+        self.pending.push(sample);
+        self.total += 1;
+        if self.pending.len() == STREAM_CHUNK_SAMPLES {
+            self.flush()
+        } else {
+            Flow::Continue
+        }
+    }
+
+    /// Append one sample repeatedly for integer-rate conversion or silence.
+    fn push_repeated(&mut self, sample: i16, count: usize) -> Flow {
+        for _ in 0..count {
+            // A disconnected downstream consumer stops synthesis immediately.
+            if self.push(sample) == Flow::Stop {
+                return Flow::Stop;
+            }
+        }
+        Flow::Continue
     }
 
     /// Append Flite samples at the requested integer-multiple sample rate.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SpeechError::OutputTooLong`] when the resampled audio crosses the limit.
-    fn append_audio(
-        &mut self,
-        source: &[i16],
-        rate: OutputRate,
-        amplitude_divisor: i16,
-    ) -> Result<(), SpeechError> {
-        let additional = source.len().saturating_mul(rate.factor);
-        self.ensure_room(additional)?;
-        self.samples.reserve(additional);
+    fn append_audio(&mut self, source: &[i16], amplitude_divisor: i16) -> Flow {
+        let additional = source.len().saturating_mul(self.rate.factor);
+
+        // Stop Flite before accepting audio beyond the response-duration cap.
+        if self.ensure_room(additional) == Flow::Stop {
+            return Flow::Stop;
+        }
         for sample in source {
             let scaled = *sample / amplitude_divisor;
-            self.samples
-                .extend(std::iter::repeat_n(scaled, rate.factor));
+
+            // Propagate a sink failure without synthesizing the remaining periods.
+            if self.push_repeated(scaled, self.rate.factor) == Flow::Stop {
+                return Flow::Stop;
+            }
         }
-        Ok(())
+        Flow::Continue
     }
 
     /// Append silence between independently voiced segments.
+    fn append_pause(&mut self, milliseconds: u16) -> Flow {
+        let count = self
+            .rate
+            .samples_per_second
+            .saturating_mul(usize::from(milliseconds))
+            / MILLISECONDS_PER_SECOND;
+
+        // Segment pauses count toward the same response-duration cap as speech.
+        if self.ensure_room(count) == Flow::Stop {
+            return Flow::Stop;
+        }
+        self.push_repeated(0, count)
+    }
+
+    /// Flush the tail and return the exact emitted sample count.
     ///
     /// # Errors
     ///
-    /// Returns [`SpeechError::OutputTooLong`] when the pause crosses the limit.
-    fn append_pause(&mut self, milliseconds: u16, rate: OutputRate) -> Result<(), SpeechError> {
-        let count = rate
-            .samples_per_second
-            .saturating_mul(usize::from(milliseconds))
-            / 1_000;
-        self.ensure_room(count)?;
-        self.samples.resize(self.samples.len() + count, 0);
-        Ok(())
-    }
-
-    /// Return the completed PCM buffer.
-    fn finish(self) -> Vec<i16> {
-        self.samples
+    /// Returns the first duration-limit or downstream sink failure.
+    fn finish(mut self) -> Result<usize, SpeechError> {
+        if self.failure.is_none() {
+            self.flush();
+        }
+        self.failure.map_or(Ok(self.total), Err)
     }
 }
 
-// -----------------------------------------------------------------------------
-// Synthesize: Renders provider-neutral segments with Flite.
-// -----------------------------------------------------------------------------
-
-/// Render all segments through Flite's bundled diphone voice.
+/// Stream all segments through Flite's bundled diphone voice.
 ///
 /// # Errors
 ///
 /// Returns [`SpeechError::OutputTooLong`] when output exceeds the supplied sample limit, or an
-/// unsupported-rate error when called without provider-neutral validation.
+/// encoder failure when the downstream sink rejects PCM.
+pub(super) fn synthesize_streaming(
+    request: &SpeechRequest,
+    maximum_samples: usize,
+    sink: impl FnMut(&[i16]) -> Result<(), SpeechError>,
+) -> Result<usize, SpeechError> {
+    let rate = request.sample_rate.try_into()?;
+    let mut engine = Engine::new();
+    let mut output = SampleStream::new(maximum_samples, rate, sink);
+    for segment in &request.segments {
+        let settings = VoiceSettings::for_segment(segment);
+        settings.apply_to(&mut engine);
+        engine.synthesize_streaming(&segment.text, |period| {
+            output.append_audio(period, settings.amplitude_divisor)
+        });
+        if output.failure.is_some() || output.append_pause(segment.pause_after_ms) == Flow::Stop {
+            break;
+        }
+    }
+    output.finish()
+}
+
+/// Collect streamed synthesis for complete-response formats.
+///
+/// # Errors
+///
+/// Returns the same bounded synthesis failures as [`synthesize_streaming`].
 pub(super) fn synthesize(
     request: &SpeechRequest,
     maximum_samples: usize,
 ) -> Result<Vec<i16>, SpeechError> {
-    let rate = request.sample_rate.try_into()?;
-    let mut engine = Engine::new();
-    let mut output = SampleBuffer::new(maximum_samples);
-    for segment in &request.segments {
-        let settings = VoiceSettings::for_segment(segment);
-        settings.apply_to(&mut engine);
-        let audio = engine.synthesize(&segment.text);
-        output.append_audio(&audio.samples, rate, settings.amplitude_divisor)?;
-        output.append_pause(segment.pause_after_ms, rate)?;
-    }
-    Ok(output.finish())
+    let mut samples = Vec::new();
+    synthesize_streaming(request, maximum_samples, |chunk| {
+        samples.extend_from_slice(chunk);
+        Ok(())
+    })?;
+    Ok(samples)
 }
 
 // -----------------------------------------------------------------------------

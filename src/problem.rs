@@ -222,38 +222,9 @@ impl OperationOutput for Problem {
 
 #[cfg(test)]
 mod tests {
-    use miette::Diagnostic;
-    use thiserror::Error;
-
     use super::*;
-
-    /// Test diagnostic with a stable public code and parameter.
-    #[derive(Debug, Diagnostic, Error)]
-    #[error("field is invalid")]
-    #[diagnostic(code(eliza::test::invalid_field))]
-    struct InvalidField;
-
-    impl ProblemDetails for InvalidField {
-        fn class(&self) -> ProblemClass {
-            ProblemClass::InvalidRequest
-        }
-
-        fn param(&self) -> Option<&'static str> {
-            Some("field")
-        }
-    }
-
-    /// Test diagnostic whose implementation detail must not cross the boundary.
-    #[derive(Debug, Diagnostic, Error)]
-    #[error("database password leaked")]
-    #[diagnostic(code(eliza::test::internal_failure))]
-    struct InternalFailure;
-
-    impl ProblemDetails for InternalFailure {
-        fn class(&self) -> ProblemClass {
-            ProblemClass::Internal
-        }
-    }
+    use crate::speech::errors::SpeechError;
+    use crate::types::errors::ModelError;
 
     /// Verify the serialized RFC 9457 and diagnostic fields.
     ///
@@ -262,14 +233,14 @@ mod tests {
     /// Panics when serialization fails or a field differs from its contract.
     #[test]
     fn problem_exposes_the_diagnostic_contract() {
-        let problem = Problem::from_error(&InvalidField);
+        let problem = Problem::from_error(&ModelError::Empty);
         let value = serde_json::to_value(&problem).unwrap();
 
-        assert_eq!(value["type"], "urn:eliza:problem:test:invalid_field");
+        assert_eq!(value["type"], "urn:eliza:problem:model:empty");
         assert_eq!(value["status"], 400);
-        assert_eq!(value["detail"], "field is invalid");
-        assert_eq!(value["code"], "eliza::test::invalid_field");
-        assert_eq!(value["param"], "field");
+        assert_eq!(value["detail"], "model id must not be empty");
+        assert_eq!(value["code"], "eliza::model::empty");
+        assert_eq!(value["param"], "model");
     }
 
     /// Verify the response status, content type, and diagnostic header.
@@ -279,7 +250,7 @@ mod tests {
     /// Panics when an expected response header is absent or differs.
     #[test]
     fn problem_response_uses_the_problem_media_type() {
-        let response = Problem::from_error(&InvalidField).into_response();
+        let response = Problem::from_error(&ModelError::Empty).into_response();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
@@ -288,7 +259,7 @@ mod tests {
         );
         assert_eq!(
             response.headers().get(ERROR_CODE_HEADER).unwrap(),
-            "eliza::test::invalid_field"
+            "eliza::model::empty"
         );
     }
 
@@ -299,7 +270,7 @@ mod tests {
     /// Panics when the internal detail is exposed through the public message.
     #[test]
     fn internal_problem_redacts_its_detail() {
-        let problem = Problem::from_error(&InternalFailure);
+        let problem = Problem::from_error(&SpeechError::Unavailable);
 
         assert!(problem.detail.is_none());
         assert_eq!(problem.message(), "Internal server error");

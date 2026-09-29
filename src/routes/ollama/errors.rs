@@ -13,42 +13,61 @@ use crate::problem::{Problem, ProblemClass, ProblemDetails};
 // -----------------------------------------------------------------------------
 
 /// Failure detected while lowering an Ollama request.
-#[expect(
-    rlib::undocumented_items,
-    reason = "thiserror messages and Miette codes are the canonical contracts for private adapter failures"
-)]
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OllamaError {
+    /// The request selected an unsupported structured-output shape.
     #[error("structured {kind} output is not supported")]
     #[diagnostic(code(eliza::ollama::structured_output_unsupported))]
-    StructuredOutputUnsupported { kind: &'static str },
+    StructuredOutputUnsupported {
+        /// Human-readable structured-output kind.
+        kind: &'static str,
+    },
+    /// The request enabled unsupported reasoning output.
     #[error("reasoning output is not supported")]
     #[diagnostic(code(eliza::ollama::reasoning_unsupported))]
     ReasoningUnsupported,
+    /// A message used a role outside Ollama's supported subset.
     #[error("unsupported Ollama role")]
     #[diagnostic(code(eliza::ollama::unsupported_role))]
     UnsupportedRole,
+    /// A tool call selected a non-function kind.
     #[error("only function tool calls are supported")]
     #[diagnostic(code(eliza::ollama::unsupported_tool_call_kind))]
-    UnsupportedToolCallKind { param: &'static str },
+    UnsupportedToolCallKind {
+        /// Request field containing the unsupported kind.
+        param: &'static str,
+    },
+    /// A tool call omitted its function payload.
     #[error("tool call is missing function")]
     #[diagnostic(code(eliza::ollama::missing_tool_call_function))]
-    MissingToolCallFunction { param: &'static str },
+    MissingToolCallFunction {
+        /// Request field containing the incomplete call.
+        param: &'static str,
+    },
+    /// A tool call omitted its function name.
     #[error("tool call is missing name")]
     #[diagnostic(code(eliza::ollama::missing_tool_call_name))]
-    MissingToolCallName { param: &'static str },
+    MissingToolCallName {
+        /// Request field containing the incomplete call.
+        param: &'static str,
+    },
+    /// A tool declaration selected a non-function kind.
     #[error("only client function tools are supported")]
     #[diagnostic(code(eliza::ollama::unsupported_tool_definition))]
     UnsupportedToolDefinition,
+    /// A function tool omitted its definition payload.
     #[error("function tool is missing function")]
     #[diagnostic(code(eliza::ollama::missing_tool_definition))]
     MissingToolDefinition,
+    /// A function tool omitted its name.
     #[error("function tool is missing name")]
     #[diagnostic(code(eliza::ollama::missing_function_name))]
     MissingFunctionName,
+    /// The requested tool-choice mode cannot be represented.
     #[error("unsupported tool_choice mode")]
     #[diagnostic(code(eliza::ollama::unsupported_tool_choice_mode))]
     UnsupportedToolChoiceMode,
+    /// A named tool choice omitted its selected function name.
     #[error("named tool_choice is missing name")]
     #[diagnostic(code(eliza::ollama::missing_named_tool_choice))]
     MissingNamedToolChoice,

@@ -21,7 +21,7 @@ use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::{AuthMode, CorsMode, LogFormat, ServeArgs};
-use crate::errors::AppError;
+use crate::errors::{AppError, RequestLimit};
 use crate::routes;
 use crate::types::model::ModelId;
 use crate::types::turn::RequestLimits;
@@ -35,8 +35,8 @@ use crate::types::turn::RequestLimits;
 /// # Errors
 ///
 /// Returns [`AppError`] when `value` is zero.
-fn positive_limit(value: usize, flag: &'static str) -> Result<NonZeroUsize, AppError> {
-    NonZeroUsize::new(value).ok_or(AppError::ZeroLimit { flag })
+fn positive_limit(value: usize, limit: RequestLimit) -> Result<NonZeroUsize, AppError> {
+    NonZeroUsize::new(value).ok_or(AppError::ZeroLimit { limit })
 }
 
 // -----------------------------------------------------------------------------
@@ -98,12 +98,14 @@ impl TryFrom<ServeArgs> for ServerConfig {
         }
 
         // Convert raw CLI counts into positive request-bound invariants.
+        let max_input_chars = positive_limit(args.max_input_chars, RequestLimit::InputChars)?;
+        let max_history_messages =
+            positive_limit(args.max_history_messages, RequestLimit::HistoryMessages)?;
+
+        // Build the canonical limits only from validated positive values.
         let limits = RequestLimits::builder()
-            .max_input_chars(positive_limit(args.max_input_chars, "max-input-chars")?)
-            .max_history_messages(positive_limit(
-                args.max_history_messages,
-                "max-history-messages",
-            )?)
+            .max_input_chars(max_input_chars)
+            .max_history_messages(max_history_messages)
             .build();
 
         // Move provider behavior into the configuration shared by route state.

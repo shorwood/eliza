@@ -1,11 +1,15 @@
 //! Exercise ELIZA through Rig's provider clients.
 
+mod errors;
+
 use anyhow::Result;
 use futures_util::StreamExt;
 use rig::client::{CompletionClient, ModelListingClient};
 use rig::completion::{AssistantContent, CompletionModel};
 use rig::providers::{anthropic, gemini, ollama, openai};
 use rig::streaming::StreamedAssistantContent;
+
+use crate::errors::RigExampleError;
 
 // -----------------------------------------------------------------------------
 // Example: Holds shared input sent through every provider surface.
@@ -29,6 +33,22 @@ where
     let unary_failed = !is_successful(name, complete(model).await);
     let stream_failed = !is_successful(&format!("{name} stream"), stream(model).await);
     usize::from(unary_failed) + usize::from(stream_failed)
+}
+
+// -----------------------------------------------------------------------------
+// EnsureSuccess: Converts the aggregate outcome into the example's result.
+// -----------------------------------------------------------------------------
+
+/// Accept a completed example run only when every call succeeded.
+///
+/// # Errors
+///
+/// Returns [`RigExampleError::Failures`] with the accumulated failure count.
+fn ensure_success(failures: usize) -> Result<()> {
+    match failures {
+        0 => Ok(()),
+        count => Err(RigExampleError::Failures { count }.into()),
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -123,10 +143,7 @@ async fn main() -> Result<()> {
     ));
     failures += exercise("Ollama chat", &ollama.completion_model(EXAMPLE_MODEL)).await;
 
-    if failures > 0 {
-        anyhow::bail!("{failures} Rig example(s) failed");
-    }
-    Ok(())
+    ensure_success(failures)
 }
 
 // -----------------------------------------------------------------------------

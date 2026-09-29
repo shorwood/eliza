@@ -1,6 +1,6 @@
 //! Positioned S-expression syntax shared by parsing and ELIZA lowering.
 
-use crate::errors::AppError;
+use super::errors::{ScriptError, ScriptExpectation};
 
 // -----------------------------------------------------------------------------
 // Span: Retains source positions for diagnostics.
@@ -21,13 +21,13 @@ impl Span {
     /// # Examples
     ///
     /// ```rust
-    /// let error = Span { line: 4, column: 7 }.expected("pattern atom");
+    /// let error = Span { line: 4, column: 7 }.expected(ScriptExpectation::PatternItem);
     ///
     /// // Later lowering errors still identify the original script location.
-    /// assert_eq!(error.to_string(), "expected pattern atom at 4:7");
+    /// assert_eq!(error.to_string(), "expected pattern item at 4:7");
     /// ```
-    pub(super) const fn expected(self, expected: &'static str) -> AppError {
-        AppError::ScriptExpected {
+    pub(super) const fn expected(self, expected: ScriptExpectation) -> ScriptError {
+        ScriptError::Expected {
             expected,
             line: self.line,
             column: self.column,
@@ -111,8 +111,11 @@ impl<'a> SexpList<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::ScriptExpected`] when the S-expression is an atom.
-    pub(super) fn from_sexp(sexp: &'a Sexp, expected: &'static str) -> Result<Self, AppError> {
+    /// Returns [`ScriptError::Expected`] when the S-expression is an atom.
+    pub(super) fn from_sexp(
+        sexp: &'a Sexp,
+        expected: ScriptExpectation,
+    ) -> Result<Self, ScriptError> {
         sexp.list().ok_or(sexp.span.expected(expected))
     }
 
@@ -135,8 +138,12 @@ impl<'a> SexpList<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::ScriptExpected`] when the requested item is missing.
-    pub(super) fn expect(self, index: usize, expected: &'static str) -> Result<&'a Sexp, AppError> {
+    /// Returns [`ScriptError::Expected`] when the requested item is missing.
+    pub(super) fn expect(
+        self,
+        index: usize,
+        expected: ScriptExpectation,
+    ) -> Result<&'a Sexp, ScriptError> {
         self.items.get(index).ok_or(self.span.expected(expected))
     }
 
@@ -144,13 +151,13 @@ impl<'a> SexpList<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::ScriptExpected`] when the item is missing or is a
+    /// Returns [`ScriptError::Expected`] when the item is missing or is a
     /// nested list.
     pub(super) fn expect_atom(
         self,
         index: usize,
-        expected: &'static str,
-    ) -> Result<&'a str, AppError> {
+        expected: ScriptExpectation,
+    ) -> Result<&'a str, ScriptError> {
         let item = self.expect(index, expected)?;
         item.atom().ok_or(item.span.expected(expected))
     }
