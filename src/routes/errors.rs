@@ -87,11 +87,12 @@ pub(super) enum ExtractionError {
     },
 
     /// Axum returned a query rejection unknown to this adapter version.
-    #[error("unexpected query extraction failure: {message}")]
+    #[error("unexpected query extraction failure: {source}")]
     #[diagnostic(code(eliza::extract::unexpected_query))]
     UnexpectedQuery {
-        /// Axum's description of the unrecognized rejection.
-        message: String,
+        /// Unrecognized Axum query rejection.
+        #[source]
+        source: QueryRejection,
     },
 
     /// Path parameters did not match the route contract.
@@ -134,9 +135,7 @@ impl From<QueryRejection> for ExtractionError {
     fn from(rejection: QueryRejection) -> Self {
         match rejection {
             QueryRejection::FailedToDeserializeQueryString(source) => Self::InvalidQuery { source },
-            source => Self::UnexpectedQuery {
-                message: source.to_string(),
-            },
+            source => Self::UnexpectedQuery { source },
         }
     }
 }

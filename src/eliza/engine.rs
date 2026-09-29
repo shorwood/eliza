@@ -31,9 +31,9 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+use super::errors::{ScriptError, ScriptExpectation};
 use super::parser::Parser;
 use super::syntax::{Sexp, SexpList, SexpListSplit};
-use crate::errors::AppError;
 
 /// Defines the DOCTOR SCRIPT value used by this module.
 const DOCTOR_SCRIPT: &str = include_str!("../../fixtures/eliza/doctor.script");
@@ -137,14 +137,14 @@ impl Keyword {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::ScriptExpected`] when the item is missing or is not
+    /// Returns [`ScriptError::Expected`] when the item is missing or is not
     /// an atom.
     fn from_list_atom(
         list: SexpList<'_>,
         index: usize,
-        expected_name: &'static str,
-    ) -> Result<Self, AppError> {
-        list.expect_atom(index, expected_name).map(Self::from)
+        expected: ScriptExpectation,
+    ) -> Result<Self, ScriptError> {
+        list.expect_atom(index, expected).map(Self::from)
     }
 
     /// Return the canonical keyword spelling.
@@ -372,13 +372,16 @@ struct DecompositionRule {
 }
 
 impl TryFrom<&Sexp> for DecompositionRule {
-    type Error = AppError;
+    type Error = ScriptError;
 
     fn try_from(sexp: &Sexp) -> Result<Self, Self::Error> {
         // Lower the decomposition pattern from its leading list.
-        let items = SexpList::from_sexp(sexp, "decomposition rule")?;
-        let pattern_sexp = items.expect(0, "decomposition pattern")?;
-        let pattern_items = SexpList::from_sexp(pattern_sexp, "decomposition pattern list")?;
+        let items = SexpList::from_sexp(sexp, ScriptExpectation::DecompositionRule)?;
+        let pattern_sexp = items.expect(0, ScriptExpectation::DecompositionPattern)?;
+        let pattern_items =
+            SexpList::from_sexp(pattern_sexp, ScriptExpectation::DecompositionPatternList)?;
+
+        // Lower each pattern atom after validating the enclosing rule shape.
         let pattern = pattern_items
             .iter()
             .map(PatternItem::try_from)
@@ -412,19 +415,20 @@ struct MemoryDecomposition {
 }
 
 impl TryFrom<&Sexp> for MemoryDecomposition {
-    type Error = AppError;
+    type Error = ScriptError;
 
     fn try_from(sexp: &Sexp) -> Result<Self, Self::Error> {
-        let parts = SexpList::from_sexp(sexp, "memory decomposition")?;
+        let parts = SexpList::from_sexp(sexp, ScriptExpectation::MemoryDecomposition)?;
 
         // Memory rules use `pattern = reassembly` instead of nested
         // reassembly lists, so split once on the separator atom.
         let SexpListSplit {
             before: pattern_items,
             after: reassembly_sexps,
-        } = parts
-            .split_once_atom("=")
-            .ok_or(sexp.span.expected("memory reassembly separator"))?;
+        } = parts.split_once_atom("=").ok_or(
+            sexp.span
+                .expected(ScriptExpectation::MemoryReassemblySeparator),
+        )?;
 
         // Lower both sides after validating the memory-rule separator.
         let pattern = pattern_items
@@ -455,10 +459,10 @@ struct MemoryRule {
 }
 
 impl TryFrom<SexpList<'_>> for MemoryRule {
-    type Error = AppError;
+    type Error = ScriptError;
 
     fn try_from(items: SexpList<'_>) -> Result<Self, Self::Error> {
-        let keyword = Keyword::from_list_atom(items, 1, "memory keyword")?;
+        let keyword = Keyword::from_list_atom(items, 1, ScriptExpectation::MemoryKeyword)?;
         let decomposition_items = items.tail(2);
         let decompositions = decomposition_items
             .iter()
@@ -504,16 +508,20 @@ struct KeywordRule {
 }
 
 impl TryFrom<SexpList<'_>> for KeywordRule {
-    type Error = AppError;
+    type Error = ScriptError;
 
     fn try_from(items: SexpList<'_>) -> Result<Self, Self::Error> {
-        let keyword = Keyword::from_list_atom(items, 0, "keyword")?;
+        let keyword = Keyword::from_list_atom(items, 0, ScriptExpectation::Keyword)?;
         let mut cursor = 1;
 
         // Optional `= WORD` substitution aliases one input word to another.
         let substitution = if items.atom_at(cursor) == Some("=") {
             cursor += 1;
-            let substitution = Some(Keyword::from_list_atom(items, cursor, "substitution")?);
+            let substitution = Some(Keyword::from_list_atom(
+                items,
+                cursor,
+                ScriptExpectation::Substitution,
+            )?);
             cursor += 1;
             substitution
         } else {
@@ -534,8 +542,8 @@ impl TryFrom<SexpList<'_>> for KeywordRule {
         // substitution exists, to the replacement keyword as well.
         let tags = if items.atom_at(cursor) == Some("DLIST") {
             cursor += 1;
-            let tag_sexp = items.expect(cursor, "DLIST tag list")?;
-            let tag_items = SexpList::from_sexp(tag_sexp, "DLIST tag list")?;
+            let tag_sexp = items.expect(cursor, ScriptExpectation::DlistTagList)?;
+            let tag_items = SexpList::from_sexp(tag_sexp, ScriptExpectation::DlistTagList)?;
             let tags = TagName::from_list(tag_items);
             cursor += 1;
             tags
@@ -591,10 +599,10 @@ enum RuleForm {
 }
 
 impl TryFrom<SexpList<'_>> for RuleForm {
-    type Error = AppError;
+    type Error = ScriptError;
 
     fn try_from(items: SexpList<'_>) -> Result<Self, Self::Error> {
-        let first = Keyword::from_list_atom(items, 0, "keyword")?;
+        let first = Keyword::from_list_atom(items, 0, ScriptExpectation::Keyword)?;
         if first.as_str() == "MEMORY" {
             MemoryRule::try_from(items).map(Self::Memory)
         } else {
@@ -604,7 +612,7 @@ impl TryFrom<SexpList<'_>> for RuleForm {
 }
 
 impl TryFrom<&Sexp> for PatternItem {
-    type Error = AppError;
+    type Error = ScriptError;
 
     fn try_from(sexp: &Sexp) -> Result<Self, Self::Error> {
         // Interpret the script's zero atom as its wildcard sentinel.
@@ -617,8 +625,8 @@ impl TryFrom<&Sexp> for PatternItem {
             return Ok(Self::Word(Keyword::from(atom)));
         }
 
-        let items = SexpList::from_sexp(sexp, "pattern item")?;
-        let head = items.expect_atom(0, "pattern list head")?;
+        let items = SexpList::from_sexp(sexp, ScriptExpectation::PatternItem)?;
+        let head = items.expect_atom(0, ScriptExpectation::PatternListHead)?;
 
         // Interpret both spaced and joined stars as literal alternatives.
         if head == "*" || head.starts_with('*') {
@@ -634,13 +642,15 @@ impl TryFrom<&Sexp> for PatternItem {
             // Both spaced and joined slash forms denote a tag lookup.
             Ok(Self::Tag(TagName::from_list(items)))
         } else {
-            Err(sexp.span.expected("pattern tag or alternatives list"))
+            Err(sexp
+                .span
+                .expected(ScriptExpectation::PatternTagOrAlternativesList))
         }
     }
 }
 
 impl TryFrom<&Sexp> for Reassembly {
-    type Error = AppError;
+    type Error = ScriptError;
 
     fn try_from(sexp: &Sexp) -> Result<Self, Self::Error> {
         // Resolve standalone link forms before inspecting list commands.
@@ -648,7 +658,7 @@ impl TryFrom<&Sexp> for Reassembly {
             return Ok(Self::Link(link));
         }
 
-        let items = SexpList::from_sexp(sexp, "reassembly list")?;
+        let items = SexpList::from_sexp(sexp, ScriptExpectation::ReassemblyList)?;
 
         // `NEWKEY` abandons this rule without requiring further operands.
         if items.atom_at(0) == Some("NEWKEY") {
@@ -658,13 +668,13 @@ impl TryFrom<&Sexp> for Reassembly {
         // PRE performs a local rewrite before jumping through a link.
         if items.atom_at(0) == Some("PRE") {
             let words = SexpList::from_sexp(
-                items.expect(1, "PRE reassembly words")?,
-                "PRE reassembly words",
+                items.expect(1, ScriptExpectation::PreReassemblyWords)?,
+                ScriptExpectation::PreReassemblyWords,
             )?;
             let link = items
                 .get(2)
                 .and_then(LinkTarget::from_sexp)
-                .ok_or(sexp.span.expected("PRE target link"))?;
+                .ok_or(sexp.span.expected(ScriptExpectation::PreTargetLink))?;
             return Ok(Self::Pre {
                 words: ReassemblyItem::from_list(words)?,
                 link,
@@ -676,16 +686,18 @@ impl TryFrom<&Sexp> for Reassembly {
 }
 
 impl TryFrom<&Sexp> for ReassemblyItem {
-    type Error = AppError;
+    type Error = ScriptError;
 
     fn try_from(item: &Sexp) -> Result<Self, Self::Error> {
-        let atom = item.atom().ok_or(item.span.expected("reassembly atom"))?;
+        let atom = item
+            .atom()
+            .ok_or(item.span.expected(ScriptExpectation::ReassemblyAtom))?;
 
         // Numeric atoms are capture references rather than literal words.
         if let Ok(value) = atom.parse::<usize>() {
             let capture = NonZeroUsize::new(value)
                 .map(CaptureIndex)
-                .ok_or(item.span.expected("non-zero capture index"))?;
+                .ok_or(item.span.expected(ScriptExpectation::NonZeroCaptureIndex))?;
             return Ok(Self::Capture(capture));
         }
 
@@ -698,9 +710,9 @@ impl ReassemblyItem {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] when any item is not an atom or references capture
+    /// Returns [`ScriptError`] when any item is not an atom or references capture
     /// index zero.
-    fn from_list(items: SexpList<'_>) -> Result<Vec<Self>, AppError> {
+    fn from_list(items: SexpList<'_>) -> Result<Vec<Self>, ScriptError> {
         items.iter().map(Self::try_from).collect()
     }
 }
@@ -817,7 +829,7 @@ impl Script {
 }
 
 impl FromStr for Script {
-    type Err = AppError;
+    type Err = ScriptError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         // Initialize an empty lowered script before visiting source forms.
@@ -853,7 +865,7 @@ impl FromStr for Script {
 
         // A script without a greeting cannot initialize a valid session.
         if !saw_greeting {
-            return Err(AppError::ScriptMissingGreeting { line: 1, column: 1 });
+            return Err(ScriptError::MissingGreeting { line: 1, column: 1 });
         }
 
         Ok(script)
