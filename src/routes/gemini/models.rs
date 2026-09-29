@@ -12,6 +12,7 @@ use super::errors::{GeminiFailureResponse, GeminiRejection};
 use super::types::{
     GeminiModel, GeminiModelCapabilities, GeminiModelIdentity, GeminiModelListResponse,
 };
+use crate::speech::core as speech;
 
 /// List the configured model in Gemini's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -45,11 +46,25 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         capabilities,
     };
 
+    let mut models = vec![model];
+    if state.config.model.as_str() != speech::MODEL_ID {
+        models.push(GeminiModel {
+            identity: GeminiModelIdentity {
+                name: format!("models/{}", speech::MODEL_ID),
+                version: "flite-kal-8khz",
+                display_name: "ELIZA Retro TTS",
+                description: "Deterministic retro speech using Flite's bundled diphone voice.",
+            },
+            capabilities: GeminiModelCapabilities {
+                supported_generation_methods: vec!["generateContent", "streamGenerateContent"],
+                input_token_limit: state.config.limits.max_input_chars().get(),
+                output_token_limit: 6_000,
+            },
+        });
+    }
+
     // Return the model through Gemini's catalog envelope.
-    Json(GeminiModelListResponse {
-        models: vec![model],
-    })
-    .into_response()
+    Json(GeminiModelListResponse { models }).into_response()
 }
 
 /// Gemini model catalog endpoint.
