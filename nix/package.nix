@@ -24,6 +24,9 @@ rustPlatform.buildRustPackage {
     fileset = lib.fileset.unions [
       ../Cargo.toml
       ../Cargo.lock
+      ../LICENSES
+      ../NOTICE
+      ../THIRD-PARTY-LICENSES.md
       ../examples/rust-rig
       ../fixtures
       ../src
@@ -45,11 +48,19 @@ rustPlatform.buildRustPackage {
   # this package verbatim, so it receives the same notice automatically.
   postInstall = ''
     install -Dm444 ${../LICENSE} "$out/share/licenses/eliza/LICENSE"
+    install -Dm444 ${../LICENSES/Apache-2.0.txt} \
+      "$out/share/licenses/eliza/Apache-2.0.txt"
+    install -Dm444 ${../NOTICE} "$out/share/licenses/eliza/NOTICE"
+    install -Dm444 ${../THIRD-PARTY-LICENSES.md} \
+      "$out/share/licenses/eliza/THIRD-PARTY-LICENSES.md"
   '';
 
   meta = {
     description = "Standalone classic ELIZA server with provider-compatible HTTP APIs";
-    license = lib.licenses.mit;
+    license = [
+      lib.licenses.asl20
+      lib.licenses.mit
+    ];
     mainProgram = "eliza";
     platforms = supportedSystems;
   };

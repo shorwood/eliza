@@ -80,6 +80,18 @@ pub(super) enum OpenAiError {
     #[error("unsupported Responses input item")]
     #[diagnostic(code(eliza::openai::unsupported_input_item))]
     UnsupportedInputItem,
+    #[error("speech requires model `eliza-retro-tts`")]
+    #[diagnostic(code(eliza::openai::speech_model_required))]
+    SpeechModelRequired,
+    #[error("speech voice must not be empty")]
+    #[diagnostic(code(eliza::openai::empty_voice))]
+    EmptyVoice,
+    #[error("unsupported speech response format")]
+    #[diagnostic(code(eliza::openai::unsupported_speech_format))]
+    UnsupportedSpeechFormat,
+    #[error("unsupported speech stream format")]
+    #[diagnostic(code(eliza::openai::unsupported_speech_stream_format))]
+    UnsupportedSpeechStreamFormat,
 }
 
 impl ProblemDetails for OpenAiError {
@@ -93,7 +105,9 @@ impl ProblemDetails for OpenAiError {
             | Self::UnsupportedContentShape { .. }
             | Self::UnsupportedContentPart { .. }
             | Self::UnsupportedResponsesRole
-            | Self::UnsupportedInputItem => ProblemClass::UnsupportedRequest,
+            | Self::UnsupportedInputItem
+            | Self::UnsupportedSpeechFormat
+            | Self::UnsupportedSpeechStreamFormat => ProblemClass::UnsupportedRequest,
             _ => ProblemClass::InvalidRequest,
         }
     }
@@ -119,6 +133,10 @@ impl ProblemDetails for OpenAiError {
             Self::MissingFunctionCallArguments => Some("input.arguments"),
             Self::MissingFunctionOutput => Some("input.output"),
             Self::UnsupportedInputItem => Some("input.type"),
+            Self::SpeechModelRequired => Some("model"),
+            Self::EmptyVoice => Some("voice"),
+            Self::UnsupportedSpeechFormat => Some("response_format"),
+            Self::UnsupportedSpeechStreamFormat => Some("stream_format"),
         }
     }
 }

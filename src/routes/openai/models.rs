@@ -10,6 +10,7 @@ use axum::response::{IntoResponse, Response};
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use super::errors::{OpenAiFailureResponse, OpenAiRejection};
 use super::types::{ModelDescriptor, ModelListResponse};
+use crate::speech::core as speech;
 
 /// List the configured model in `OpenAI`'s native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -27,9 +28,18 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     };
 
     // Wrap the descriptor with OpenAI's list contract.
+    let mut data = vec![descriptor];
+    if state.config.model.as_str() != speech::MODEL_ID {
+        data.push(ModelDescriptor {
+            id: speech::model_id(),
+            object: "model",
+            created: 0,
+            owned_by: "eliza",
+        });
+    }
     let response = ModelListResponse {
         object: "list",
-        data: vec![descriptor],
+        data,
     };
     Json(response).into_response()
 }

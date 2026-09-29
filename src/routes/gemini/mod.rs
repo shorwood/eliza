@@ -5,4 +5,5 @@ mod errors;
 mod models;
 mod openai;
 pub(super) mod router;
+mod speech;
 mod types;

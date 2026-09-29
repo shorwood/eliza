@@ -125,7 +125,7 @@ impl std::fmt::Debug for BearerToken {
 #[derive(Debug, Clone, Parser)]
 #[command(after_long_help = "\
 Provider paths:
-  OpenAI:    GET /openai/v1/models, POST /openai/v1/chat/completions, POST /openai/v1/responses
+  OpenAI:    GET /openai/v1/models, POST /openai/v1/chat/completions, POST /openai/v1/responses, POST /openai/v1/audio/speech
   Gemini OA: POST /gemini/v1beta/openai/chat/completions
   Anthropic: GET /anthropic/v1/models, POST /anthropic/v1/messages
   Gemini:    GET /gemini/v1beta/models, POST /gemini/v1beta/models/{model}:generateContent, POST /gemini/v1beta/models/{model}:streamGenerateContent
