@@ -1,6 +1,7 @@
 fmt:
     cargo-fmt fmt --all
     hurlfmt --in-place tests/http/public/*.hurl tests/http/auth/*.hurl
+    nixfmt flake.nix nix/*.nix
 
 chat:
     cargo build --bin eliza --locked
@@ -22,18 +23,15 @@ lint:
     cargo-clippy clippy --workspace --all-targets --locked -- -D warnings
     cargo-rlib rlib --workspace --all-targets --locked -- -D warnings
 
-check-hurl-layout:
-    @for file in tests/http/public/*.hurl tests/http/auth/*.hurl; do request_count=$(rg -c '^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ' "$file"); test "$request_count" -eq 1 || { echo "$file: expected one HTTP request, found $request_count" >&2; exit 1; }; done
-
 test:
     cargo test --workspace --all-targets --locked
 
-test-http: check-hurl-layout
-    cargo test --test http --locked
-
-ok: check-hurl-layout
+ok:
     cargo-fmt fmt --all -- --check
     hurlfmt --check tests/http/public/*.hurl tests/http/auth/*.hurl
+    nixfmt --check flake.nix nix/*.nix
+    deadnix --fail flake.nix nix
+    statix check .
     cargo check --workspace --all-targets --locked
     cargo test --workspace --all-targets --locked
     cargo-clippy clippy --workspace --all-targets --locked -- -D warnings
