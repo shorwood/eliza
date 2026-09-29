@@ -5,6 +5,10 @@ header "Content-Type" startsWith "application/json"
 jsonpath "$.openapi" == "3.1.0"
 jsonpath "$.info.title" == "ELIZA Compatibility Server"
 jsonpath "$.info.version" == "0.1.0"
+jsonpath "$.info.license.*" count == 2
+jsonpath "$.info.license.name" == "MIT License"
+jsonpath "$.info.license.identifier" == "MIT"
+jsonpath "$.info.license.url" not exists
 jsonpath "$.paths.*" count == 11
 jsonpath "$.paths['/openai/v1/chat/completions']" exists
 jsonpath "$.paths['/openai/v1/responses']" exists
