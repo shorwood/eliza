@@ -1,7 +1,7 @@
 POST {{base_url}}/ollama/api/chat
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "stream": false,
   "tools": [{
     "type": "function",
@@ -13,7 +13,7 @@ HTTP 200
 [Asserts]
 header "Content-Type" startsWith "application/json"
 jsonpath "$.*" count == 11
-jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.model" == "eliza-1966"
 jsonpath "$.created_at" == "1966-01-01T00:00:00Z"
 jsonpath "$.message.role" == "assistant"
 jsonpath "$.message.content" == ""

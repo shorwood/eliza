@@ -1,7 +1,7 @@
 POST {{base_url}}/ollama/api/chat
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "stream": false,
   "messages": [{"role": "future-role", "content": "Hello"}]
 }

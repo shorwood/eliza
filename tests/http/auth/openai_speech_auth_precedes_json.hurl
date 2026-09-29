@@ -12,7 +12,7 @@ POST {{base_url}}/openai/v1/audio/speech
 Authorization: Bearer {{token}}
 Content-Type: application/json
 {
-  "model": "eliza-retro-tts",
+  "model": "flite",
   "input": "Authorized robot",
   "voice": "Kore",
   "response_format": "pcm"

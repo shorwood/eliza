@@ -1,4 +1,4 @@
-POST {{base_url}}/gemini/v1beta/models/eliza-doctor:generateContent
+POST {{base_url}}/gemini/v1beta/models/eliza-1966:generateContent
 Content-Type: application/json
 ```raw
 {

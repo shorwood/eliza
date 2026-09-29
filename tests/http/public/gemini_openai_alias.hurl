@@ -1,7 +1,7 @@
 POST {{base_url}}/gemini/v1beta/openai/chat/completions
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "messages": [{"role": "user", "content": "Hello"}]
 }
 HTTP 200
@@ -11,7 +11,7 @@ jsonpath "$.*" count == 6
 jsonpath "$.id" startsWith "chatcmpl-"
 jsonpath "$.object" == "chat.completion"
 jsonpath "$.created" isInteger
-jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.model" == "eliza-1966"
 jsonpath "$.choices" count == 1
 jsonpath "$.choices[0].index" == 0
 jsonpath "$.choices[0].message.role" == "assistant"

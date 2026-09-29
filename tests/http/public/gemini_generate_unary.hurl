@@ -1,4 +1,4 @@
-POST {{base_url}}/gemini/v1beta/models/eliza-doctor:generateContent
+POST {{base_url}}/gemini/v1beta/models/eliza-1966:generateContent
 Content-Type: application/json
 {
   "contents": [{"role": "user", "parts": [{"text": "I am sad"}]}],
@@ -15,7 +15,7 @@ jsonpath "$.candidates[0].content.parts" count == 1
 jsonpath "$.candidates[0].content.parts[0].text" == "I AM SORRY TO HEAR YOU ARE SAD"
 jsonpath "$.candidates[0].finishReason" == "STOP"
 jsonpath "$.candidates[0].index" == 0
-jsonpath "$.modelVersion" == "eliza-doctor"
+jsonpath "$.modelVersion" == "eliza-1966"
 jsonpath "$.usageMetadata.promptTokenCount" == 3
 jsonpath "$.usageMetadata.candidatesTokenCount" == 8
 jsonpath "$.usageMetadata.totalTokenCount" == 11

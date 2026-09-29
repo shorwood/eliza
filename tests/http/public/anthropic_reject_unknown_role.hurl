@@ -1,7 +1,7 @@
 POST {{base_url}}/anthropic/v1/messages
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "max_tokens": 128,
   "messages": [{"role": "future-role", "content": "Hello"}]
 }
