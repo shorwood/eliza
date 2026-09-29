@@ -4,10 +4,7 @@ fmt:
     nixfmt flake.nix nix/*.nix
 
 chat:
-    cargo build --bin eliza --locked
-    ELIZA_EXAMPLE_PORT=8787 \
-    AICHAT_CONFIG_FILE="$PWD/fixtures/aichat.yaml" \
-    sh examples/with-eliza.sh aichat
+    sh examples/open-webui/run.sh
 
 example-vercel-ai:
     pnpm --dir examples/vercel-ai install --frozen-lockfile
