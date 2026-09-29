@@ -1,10 +1,7 @@
-//! Provider-neutral speech requests, responses, and errors.
+//! Provider-neutral speech requests and responses.
 use std::num::NonZeroUsize;
 
-use miette::Diagnostic;
-use thiserror::Error;
-
-use crate::problem::{ProblemClass, ProblemDetails};
+use super::errors::SpeechError;
 use crate::types::model::ModelId;
 
 // -----------------------------------------------------------------------------
@@ -146,6 +143,16 @@ impl SpeechRequest {
 }
 
 // -----------------------------------------------------------------------------
+// OutputTokens: Estimates generated audio usage.
+// -----------------------------------------------------------------------------
+
+/// Approximate audio tokens as 20 ms frames.
+#[must_use]
+pub(crate) fn output_tokens(sample_count: usize, sample_rate: u32) -> usize {
+    sample_count.div_ceil((sample_rate as usize).div_ceil(50))
+}
+
+// -----------------------------------------------------------------------------
 // RenderedAudio: Carries encoded engine output to provider adapters.
 // -----------------------------------------------------------------------------
 
@@ -166,107 +173,6 @@ impl RenderedAudio {
     /// Approximate audio tokens as 20 ms frames.
     #[must_use]
     pub(crate) fn output_tokens(&self) -> usize {
-        self.sample_count
-            .div_ceil((self.sample_rate as usize).div_ceil(50))
-    }
-}
-
-// -----------------------------------------------------------------------------
-// SpeechError: Classifies provider-neutral speech failures.
-// -----------------------------------------------------------------------------
-
-/// Typed failures raised by provider-neutral speech handling.
-#[derive(Debug, Diagnostic, Error)]
-pub(crate) enum SpeechError {
-    /// No pronounceable input was provided.
-    #[error("speech input must not be empty")]
-    #[diagnostic(code(eliza::speech::empty_input))]
-    EmptyInput,
-
-    /// The bundled English voice intentionally accepts ASCII input only.
-    #[error("speech input contains unsupported character `{character}`")]
-    #[diagnostic(code(eliza::speech::unsupported_character))]
-    UnsupportedCharacter {
-        /// First unsupported character.
-        character: char,
-    },
-
-    /// Input exceeds the configured request bound.
-    #[error("speech input is too large: {actual} > {limit}")]
-    #[diagnostic(code(eliza::speech::input_too_large))]
-    InputTooLarge {
-        /// Submitted character count.
-        actual: usize,
-        /// Configured maximum character count.
-        limit: usize,
-    },
-
-    /// The provider requested a rate outside the deliberately small set.
-    #[error("unsupported speech sample rate `{sample_rate}`")]
-    #[diagnostic(code(eliza::speech::unsupported_sample_rate))]
-    UnsupportedSampleRate {
-        /// Requested samples per second.
-        sample_rate: u32,
-    },
-
-    /// Speaking rate is outside the OpenAI-compatible range.
-    #[error("speech speed must be between 0.25 and 4.0")]
-    #[diagnostic(code(eliza::speech::invalid_speed))]
-    InvalidSpeed,
-
-    /// Generated PCM would exceed the bounded fixture duration.
-    #[error("rendered speech exceeds 120 seconds")]
-    #[diagnostic(code(eliza::speech::output_too_long))]
-    OutputTooLong,
-
-    /// Pure-Rust audio encoding failed.
-    #[error("failed to encode speech audio: {message}")]
-    #[diagnostic(code(eliza::speech::encoding))]
-    Encoding {
-        /// Codec error rendered without implementation details in responses.
-        message: String,
-    },
-
-    /// Tokio could not run the blocking synthesis task.
-    #[error("speech worker failed: {source}")]
-    #[diagnostic(code(eliza::speech::worker))]
-    Worker {
-        /// Blocking task failure.
-        #[source]
-        source: tokio::task::JoinError,
-    },
-
-    /// The worker semaphore was unexpectedly closed.
-    #[error("speech worker pool is unavailable")]
-    #[diagnostic(code(eliza::speech::unavailable))]
-    Unavailable,
-}
-
-impl ProblemDetails for SpeechError {
-    fn class(&self) -> ProblemClass {
-        match self {
-            Self::InputTooLarge { .. } | Self::OutputTooLong => ProblemClass::RequestTooLarge,
-            Self::EmptyInput
-            | Self::UnsupportedCharacter { .. }
-            | Self::UnsupportedSampleRate { .. }
-            | Self::InvalidSpeed => ProblemClass::InvalidRequest,
-            Self::Encoding { .. } | Self::Worker { .. } | Self::Unavailable => {
-                ProblemClass::Internal
-            }
-        }
-    }
-
-    fn param(&self) -> Option<&'static str> {
-        match self {
-            Self::EmptyInput | Self::UnsupportedCharacter { .. } | Self::InputTooLarge { .. } => {
-                Some("input")
-            }
-            Self::UnsupportedSampleRate { .. } => Some("sample_rate"),
-            Self::InvalidSpeed => Some("speed"),
-            Self::OutputTooLong
-            | Self::Encoding { .. }
-            | Self::Worker { .. }
-            | Self::Unavailable => None,
-        }
+        output_tokens(self.sample_count, self.sample_rate)
     }
 }

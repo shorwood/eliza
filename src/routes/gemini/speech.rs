@@ -1,10 +1,15 @@
 //! Gemini speech-generation lowering and rendering.
+use std::time::Duration;
+
 use axum::Json;
-use axum::response::sse::Event;
+use axum::body::{Body, Bytes};
+use axum::http::{HeaderValue, header};
+use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+use futures_util::{Stream, StreamExt, stream};
 
-use super::errors::{GeminiError, GeminiRejection};
+use super::errors::{GeminiError, GeminiRejection, GeminiSpeechStreamError};
 use super::types::{
     Content, ContentPart, ContentRole, GenerateCandidate, GenerateContentRequest,
     GenerateContentResponse, GenerateFinishReason, GenerateInlineData, GenerateOutputContent,
@@ -13,40 +18,28 @@ use super::types::{
 };
 use crate::routes::context::AppState;
 use crate::speech::core::{
-    self as speech, AudioFormat, RenderedAudio, SpeechError, SpeechRequest, SpeechSegment,
+    self as speech, AudioFormat, RenderedAudio, SpeechRequest, SpeechSegment,
 };
-use crate::types::http::{SseEvents, SseResponse, json_event};
+use crate::speech::errors::SpeechError;
+use crate::speech::service::{SpeechStream, SpeechStreamItem};
+use crate::types::http::json_event;
 use crate::types::model::ModelId;
 use crate::types::turn::TokenUsage;
 
 // -----------------------------------------------------------------------------
-// AudioChunkSize: Bounds each Gemini streaming record.
-// -----------------------------------------------------------------------------
-
-/// Maximum raw audio bytes carried by one streaming record.
-const AUDIO_CHUNK_SIZE: usize = 12 * 1024;
-
-// -----------------------------------------------------------------------------
-// MultiSpeakerCount: Fixes the supported dialogue arity.
-// -----------------------------------------------------------------------------
-
-/// Number of speakers accepted by Gemini's multi-speaker contract.
-const MULTI_SPEAKER_COUNT: usize = 2;
-
-// -----------------------------------------------------------------------------
-// RequestMode: Selects text or speech generation from the wire request.
+// Speech: Selects and validates Gemini speech generation.
 // -----------------------------------------------------------------------------
 
 /// Generation mode selected by `responseModalities`.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(super) enum RequestMode {
+pub(super) enum SpeechRequestMode {
     /// Existing ELIZA text generation.
     Text,
     /// Retro diphone audio generation.
     Audio,
 }
 
-impl RequestMode {
+impl SpeechRequestMode {
     /// Interpret the modality selector without consuming the request.
     ///
     /// # Errors
@@ -64,10 +57,6 @@ impl RequestMode {
         }
     }
 }
-
-// -----------------------------------------------------------------------------
-// SpeechDelivery: Names the three Gemini response transports.
-// -----------------------------------------------------------------------------
 
 /// Delivery contract selected by the route path and `alt` query.
 #[derive(Debug, Clone, Copy)]
@@ -87,9 +76,22 @@ impl SpeechDelivery {
     }
 }
 
-// -----------------------------------------------------------------------------
-// ConfiguredVoice: Extracts one nonempty provider voice name.
-// -----------------------------------------------------------------------------
+impl TryFrom<SpeechAudioFormat> for AudioFormat {
+    type Error = GeminiError;
+
+    fn try_from(format: SpeechAudioFormat) -> Result<Self, Self::Error> {
+        match format {
+            SpeechAudioFormat::AudioWav => Ok(Self::Wav),
+            SpeechAudioFormat::AudioL16 => Ok(Self::L16),
+            SpeechAudioFormat::AudioMulaw => Ok(Self::MuLaw),
+            SpeechAudioFormat::AudioAlaw => Ok(Self::ALaw),
+            SpeechAudioFormat::Unsupported => Err(GeminiError::UnsupportedSpeechFormat),
+        }
+    }
+}
+
+/// Number of speakers accepted by Gemini's multi-speaker contract.
+const MULTI_SPEAKER_COUNT: usize = 2;
 
 /// Prefer the direct voice spelling while accepting Gemini's nested spelling.
 fn configured_voice(config: SpeechVoiceConfig) -> Option<String> {
@@ -103,19 +105,15 @@ fn configured_voice(config: SpeechVoiceConfig) -> Option<String> {
         .filter(|voice| !voice.trim().is_empty())
 }
 
-// -----------------------------------------------------------------------------
-// SpeakerMapping: Associates a declared speaker with a voice.
-// -----------------------------------------------------------------------------
-
 /// Validated Gemini speaker-to-voice association.
-struct SpeakerMapping {
+struct SpeechSpeaker {
     /// Speaker label referenced by content metadata.
     name: String,
     /// Provider voice used for that speaker.
     voice: String,
 }
 
-impl TryFrom<SpeechSpeakerVoiceConfig> for SpeakerMapping {
+impl TryFrom<SpeechSpeakerVoiceConfig> for SpeechSpeaker {
     type Error = GeminiError;
 
     fn try_from(config: SpeechSpeakerVoiceConfig) -> Result<Self, Self::Error> {
@@ -131,23 +129,19 @@ impl TryFrom<SpeechSpeakerVoiceConfig> for SpeakerMapping {
     }
 }
 
-// -----------------------------------------------------------------------------
-// SpeakerMappings: Enforces the two-speaker Gemini contract.
-// -----------------------------------------------------------------------------
-
 /// Exactly two distinct speaker mappings.
-struct SpeakerMappings(
+struct SpeechSpeakers(
     /// Mappings ordered exactly as supplied by the provider request.
-    [SpeakerMapping; MULTI_SPEAKER_COUNT],
+    [SpeechSpeaker; MULTI_SPEAKER_COUNT],
 );
 
-impl TryFrom<Vec<SpeechSpeakerVoiceConfig>> for SpeakerMappings {
+impl TryFrom<Vec<SpeechSpeakerVoiceConfig>> for SpeechSpeakers {
     type Error = GeminiError;
 
     fn try_from(configs: Vec<SpeechSpeakerVoiceConfig>) -> Result<Self, Self::Error> {
         let mappings = configs
             .into_iter()
-            .map(SpeakerMapping::try_from)
+            .map(SpeechSpeaker::try_from)
             .collect::<Result<Vec<_>, _>>()?
             .try_into()
             .map_err(|_| GeminiError::InvalidSpeakerConfig)?;
@@ -160,7 +154,7 @@ impl TryFrom<Vec<SpeechSpeakerVoiceConfig>> for SpeakerMappings {
     }
 }
 
-impl SpeakerMappings {
+impl SpeechSpeakers {
     /// Resolve a voice for one content speaker label.
     ///
     /// # Errors
@@ -175,12 +169,8 @@ impl SpeakerMappings {
     }
 }
 
-// -----------------------------------------------------------------------------
-// VoiceMode: Resolves content metadata into provider-neutral segments.
-// -----------------------------------------------------------------------------
-
 /// Validated single- or multi-speaker configuration.
-enum VoiceMode {
+enum SpeechVoice {
     /// Every content part uses one voice and must omit a speaker label.
     Single(
         /// Voice shared by every content part.
@@ -189,11 +179,11 @@ enum VoiceMode {
     /// Every content part selects one of two declared speaker labels.
     Multi(
         /// Validated mappings used to resolve each speaker label.
-        SpeakerMappings,
+        SpeechSpeakers,
     ),
 }
 
-impl VoiceMode {
+impl SpeechVoice {
     /// Consume and validate Gemini's nested voice configuration.
     ///
     /// # Errors
@@ -245,10 +235,6 @@ impl VoiceMode {
     }
 }
 
-// -----------------------------------------------------------------------------
-// SpeechContents: Lowers Gemini content into ordered speech segments.
-// -----------------------------------------------------------------------------
-
 /// Gemini content consumed specifically by speech generation.
 struct SpeechContents(
     /// Ordered provider content blocks.
@@ -261,7 +247,7 @@ impl SpeechContents {
     /// # Errors
     ///
     /// Returns an error when content is empty, non-user, or non-text.
-    fn lower(self, voices: &VoiceMode) -> Result<Vec<SpeechSegment>, GeminiError> {
+    fn lower(self, voices: &SpeechVoice) -> Result<Vec<SpeechSegment>, GeminiError> {
         let mut segments = Vec::new();
         for content in self.0 {
             matches!(content.role, None | Some(ContentRole::User))
@@ -283,25 +269,251 @@ impl SpeechContents {
 }
 
 // -----------------------------------------------------------------------------
-// AudioFormat: Maps Gemini media choices to engine encodings.
+// SpeechResponse: Owns incremental Gemini response rendering.
 // -----------------------------------------------------------------------------
 
-impl TryFrom<SpeechAudioFormat> for AudioFormat {
-    type Error = GeminiError;
+/// Token and sample-rate context needed by the terminal stream record.
+#[derive(Clone, Copy)]
+struct SpeechResponseUsage {
+    /// Approximate input text tokens.
+    prompt_tokens: usize,
+    /// Samples per second in the uncompressed signal.
+    sample_rate: u32,
+}
 
-    fn try_from(format: SpeechAudioFormat) -> Result<Self, Self::Error> {
-        match format {
-            SpeechAudioFormat::AudioWav => Ok(Self::Wav),
-            SpeechAudioFormat::AudioL16 => Ok(Self::L16),
-            SpeechAudioFormat::AudioMulaw => Ok(Self::MuLaw),
-            SpeechAudioFormat::AudioAlaw => Ok(Self::ALaw),
-            SpeechAudioFormat::Unsupported => Err(GeminiError::UnsupportedSpeechFormat),
+/// Build one Gemini response around inline audio.
+fn speech_response_content(
+    model: ModelId,
+    inline_data: GenerateInlineData,
+    finish_reason: Option<GenerateFinishReason>,
+    usage_metadata: Option<GenerateUsage>,
+) -> GenerateContentResponse {
+    GenerateContentResponse {
+        candidates: vec![GenerateCandidate {
+            content: GenerateOutputContent {
+                role: "model",
+                parts: vec![GenerateOutputPart::InlineData { inline_data }],
+            },
+            finish_reason,
+            index: 0,
+        }],
+        model_version: model,
+        usage_metadata,
+    }
+}
+
+/// Render one complete Gemini JSON response.
+fn speech_response_unary(
+    model: ModelId,
+    audio: RenderedAudio,
+    prompt_tokens: usize,
+) -> Json<GenerateContentResponse> {
+    let completion = audio.output_tokens();
+    let usage = TokenUsage {
+        prompt: prompt_tokens,
+        completion,
+        total: prompt_tokens + completion,
+    }
+    .into();
+    let data = base64::engine::general_purpose::STANDARD.encode(audio.bytes);
+    Json(speech_response_content(
+        model,
+        GenerateInlineData {
+            mime_type: audio.media_type,
+            data,
+        },
+        Some(GenerateFinishReason::Stop),
+        Some(usage),
+    ))
+}
+
+/// Turn one engine stream item into a Gemini response record.
+///
+/// # Errors
+///
+/// Returns a typed stream failure when synthesis or encoding fails mid-stream.
+fn speech_response_record(
+    item: SpeechStreamItem,
+    model: ModelId,
+    media_type: String,
+    usage: SpeechResponseUsage,
+) -> Result<GenerateContentResponse, GeminiSpeechStreamError> {
+    let (bytes, sample_count) = match item {
+        SpeechStreamItem::Chunk(bytes) => (bytes, None),
+        SpeechStreamItem::Done { sample_count } => (Vec::new(), Some(sample_count)),
+        // A failed worker cannot produce a valid provider record.
+        SpeechStreamItem::Failed(error) => {
+            return Err(GeminiSpeechStreamError::Speech(error));
+        }
+    };
+    let completion = sample_count.map(|count| speech::output_tokens(count, usage.sample_rate));
+    let finish_reason = completion.map(|_| GenerateFinishReason::Stop);
+    let usage_metadata = completion.map(|completion| {
+        TokenUsage {
+            prompt: usage.prompt_tokens,
+            completion,
+            total: usage.prompt_tokens + completion,
+        }
+        .into()
+    });
+    Ok(speech_response_content(
+        model,
+        GenerateInlineData {
+            mime_type: media_type,
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        },
+        finish_reason,
+        usage_metadata,
+    ))
+}
+
+/// Stream a valid JSON array without retaining its audio records.
+fn speech_response_json_body(
+    model: ModelId,
+    audio: SpeechStream,
+    prompt_tokens: usize,
+    delay_ms: u64,
+) -> Body {
+    let records = stream::unfold(Some((audio, true)), move |state| {
+        let model = model.clone();
+        async move {
+            let (mut audio, first) = state?;
+            let item = audio.items.recv().await?;
+            let terminal = matches!(item, SpeechStreamItem::Done { .. });
+            let media_type = audio.media_type.clone();
+            let usage = SpeechResponseUsage {
+                prompt_tokens,
+                sample_rate: audio.sample_rate,
+            };
+            let encoded =
+                speech_response_record(item, model, media_type, usage).and_then(|record| {
+                    let mut bytes = serde_json::to_vec(&record)
+                        .map_err(|source| GeminiSpeechStreamError::Json { source })?;
+                    bytes.insert(0, if first { b'[' } else { b',' });
+                    if terminal {
+                        bytes.push(b']');
+                    }
+                    Ok(Bytes::from(bytes))
+                });
+            let next = (!terminal && encoded.is_ok()).then_some((audio, false));
+            Some((encoded, next))
+        }
+    })
+    .then(move |record| async move {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        record
+    });
+    Body::from_stream(records)
+}
+
+/// Stream Gemini records as server-sent events.
+fn speech_response_sse_events(
+    model: ModelId,
+    audio: SpeechStream,
+    prompt_tokens: usize,
+    delay_ms: u64,
+) -> impl Stream<Item = Result<axum::response::sse::Event, GeminiSpeechStreamError>> {
+    stream::unfold(Some(audio), move |state| {
+        let model = model.clone();
+        async move {
+            let mut audio = state?;
+            let item = audio.items.recv().await?;
+            let terminal = matches!(item, SpeechStreamItem::Done { .. });
+            let media_type = audio.media_type.clone();
+            let usage = SpeechResponseUsage {
+                prompt_tokens,
+                sample_rate: audio.sample_rate,
+            };
+            let event = speech_response_record(item, model, media_type, usage)
+                .and_then(|record| json_event(&record).map_err(GeminiSpeechStreamError::Encoding));
+            let next = (!terminal && event.is_ok()).then_some(audio);
+            Some((event, next))
+        }
+    })
+    .then(move |event| async move {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        event
+    })
+}
+
+/// Gemini speech body selected after request lowering.
+enum SpeechResponse {
+    /// One complete inline-audio response.
+    Unary {
+        /// Model identifier echoed to the client.
+        model: ModelId,
+        /// Complete encoded audio.
+        audio: RenderedAudio,
+        /// Approximate input text tokens.
+        prompt_tokens: usize,
+    },
+    /// Incremental responses serialized as a JSON array.
+    JsonStream {
+        /// Model identifier echoed in every record.
+        model: ModelId,
+        /// Incremental encoded audio.
+        audio: SpeechStream,
+        /// Approximate input text tokens.
+        prompt_tokens: usize,
+        /// Optional transport pacing.
+        delay_ms: u64,
+    },
+    /// Incremental responses serialized as SSE.
+    Sse {
+        /// Model identifier echoed in every record.
+        model: ModelId,
+        /// Incremental encoded audio.
+        audio: SpeechStream,
+        /// Approximate input text tokens.
+        prompt_tokens: usize,
+        /// Optional transport pacing.
+        delay_ms: u64,
+    },
+}
+
+impl IntoResponse for SpeechResponse {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Unary {
+                model,
+                audio,
+                prompt_tokens,
+            } => speech_response_unary(model, audio, prompt_tokens).into_response(),
+            Self::JsonStream {
+                model,
+                audio,
+                prompt_tokens,
+                delay_ms,
+            } => {
+                let mut response = speech_response_json_body(model, audio, prompt_tokens, delay_ms)
+                    .into_response();
+                response.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+                response
+            }
+            Self::Sse {
+                model,
+                audio,
+                prompt_tokens,
+                delay_ms,
+            } => {
+                let events = speech_response_sse_events(model, audio, prompt_tokens, delay_ms);
+                Sse::new(events)
+                    .keep_alive(KeepAlive::default())
+                    .into_response()
+            }
         }
     }
 }
 
 // -----------------------------------------------------------------------------
-// LoweredSpeech: Carries one validated engine request and encoding.
+// LoweredSpeech: Carries one validated Gemini request into the engine.
 // -----------------------------------------------------------------------------
 
 /// Fully lowered Gemini speech operation.
@@ -350,7 +562,7 @@ impl LoweredSpeech {
             .speech_config
             .take()
             .ok_or(GeminiError::MissingSpeechConfig)?;
-        let voices = VoiceMode::from_config(&mut config)?;
+        let voices = SpeechVoice::from_config(&mut config)?;
         let contents = payload.contents.ok_or(GeminiError::SpeechTextOnly)?;
         Ok(Self {
             request: SpeechRequest {
@@ -361,13 +573,17 @@ impl LoweredSpeech {
         })
     }
 
-    /// Execute the provider-neutral request and retain response metadata.
+    /// Render one complete response before returning it.
     ///
     /// # Errors
     ///
-    /// Returns request validation, synthesis, worker, or encoding failures.
-    async fn render(self, state: &AppState) -> Result<RenderedSpeech, SpeechError> {
-        let prompt_tokens = self.request.input_tokens();
+    /// Returns a worker, synthesis, or encoding failure.
+    async fn respond_unary(
+        self,
+        state: &AppState,
+        model: ModelId,
+        prompt_tokens: usize,
+    ) -> Result<SpeechResponse, SpeechError> {
         let audio = state
             .speech
             .render(
@@ -376,177 +592,69 @@ impl LoweredSpeech {
                 state.config.limits.max_input_chars(),
             )
             .await?;
-        Ok(RenderedSpeech {
+        Ok(SpeechResponse::Unary {
+            model,
             audio,
             prompt_tokens,
         })
     }
-}
 
-// -----------------------------------------------------------------------------
-// RenderedSpeech: Retains engine output with Gemini response metadata.
-// -----------------------------------------------------------------------------
-
-/// Completed engine result ready for provider rendering.
-struct RenderedSpeech {
-    /// Encoded engine output.
-    audio: RenderedAudio,
-    /// Estimated input token count captured before rendering.
-    prompt_tokens: usize,
-}
-
-// -----------------------------------------------------------------------------
-// InlineAudio: Keeps MIME data paired while building Gemini responses.
-// -----------------------------------------------------------------------------
-
-/// Base64 audio payload carried by one Gemini part.
-struct InlineAudio {
-    /// MIME type advertised for the data.
-    media_type: String,
-    /// Base64-encoded audio bytes.
-    data: String,
-}
-
-// -----------------------------------------------------------------------------
-// SpeechResponse: Renders completed audio through a Gemini transport.
-// -----------------------------------------------------------------------------
-
-/// Completed audio plus the provider response metadata needed to deliver it.
-struct SpeechResponse {
-    /// Unary, JSON-stream, or SSE delivery contract.
-    delivery: SpeechDelivery,
-    /// Model identifier echoed by Gemini responses.
-    model: ModelId,
-    /// Encoded speech payload.
-    audio: RenderedAudio,
-    /// Gemini-specific MIME spelling for the payload.
-    media_type: String,
-    /// Input and generated-audio token estimates.
-    usage: GenerateUsage,
-    /// Optional delay between emitted SSE records.
-    delay_ms: u64,
-}
-
-impl SpeechResponse {
-    /// Assemble a completed provider response and derive its wire metadata.
-    fn new(
-        delivery: SpeechDelivery,
-        model: ModelId,
-        rendered: RenderedSpeech,
-        delay_ms: u64,
-    ) -> Self {
-        let media_type = rendered.audio.media_type.clone();
-        let output_tokens = rendered.audio.output_tokens();
-        let usage = TokenUsage {
-            prompt: rendered.prompt_tokens,
-            completion: output_tokens,
-            total: rendered.prompt_tokens + output_tokens,
-        }
-        .into();
-        Self {
-            delivery,
-            model,
-            audio: rendered.audio,
-            media_type,
-            usage,
-            delay_ms,
-        }
-    }
-
-    /// Build one Gemini response around inline audio.
-    fn content(
-        model: ModelId,
-        audio: InlineAudio,
-        finish_reason: Option<GenerateFinishReason>,
-        usage_metadata: Option<GenerateUsage>,
-    ) -> GenerateContentResponse {
-        GenerateContentResponse {
-            candidates: vec![GenerateCandidate {
-                content: GenerateOutputContent {
-                    role: "model",
-                    parts: vec![GenerateOutputPart::InlineData {
-                        inline_data: GenerateInlineData {
-                            mime_type: audio.media_type,
-                            data: audio.data,
-                        },
-                    }],
-                },
-                finish_reason,
-                index: 0,
-            }],
-            model_version: model,
-            usage_metadata,
-        }
-    }
-
-    /// Render one complete JSON response.
-    fn into_unary(self) -> Json<GenerateContentResponse> {
-        let data = base64::engine::general_purpose::STANDARD.encode(self.audio.bytes);
-        Json(Self::content(
-            self.model,
-            InlineAudio {
-                media_type: self.media_type,
-                data,
-            },
-            Some(GenerateFinishReason::Stop),
-            Some(self.usage),
-        ))
-    }
-
-    /// Split encoded audio into Gemini streaming records and a terminal record.
-    fn into_records(self) -> Vec<GenerateContentResponse> {
-        let mut records = self
-            .audio
-            .bytes
-            .chunks(AUDIO_CHUNK_SIZE)
-            .map(|chunk| {
-                Self::content(
-                    self.model.clone(),
-                    InlineAudio {
-                        media_type: self.media_type.clone(),
-                        data: base64::engine::general_purpose::STANDARD.encode(chunk),
-                    },
-                    None,
-                    None,
-                )
-            })
-            .collect::<Vec<_>>();
-        records.push(Self::content(
-            self.model,
-            InlineAudio {
-                media_type: self.media_type,
-                data: String::new(),
-            },
-            Some(GenerateFinishReason::Stop),
-            Some(self.usage),
-        ));
-        records
-    }
-
-    /// Render streaming records as server-sent events.
+    /// Start an incremental response in the selected streaming transport.
     ///
     /// # Errors
     ///
-    /// Returns a Gemini rejection when an event cannot be serialized.
-    fn into_sse(self) -> Result<SseResponse, GeminiRejection> {
-        let delay_ms = self.delay_ms;
-        let events = self
-            .into_records()
-            .iter()
-            .map(json_event)
-            .collect::<Result<Vec<Event>, _>>();
-        events
-            .map(|events| SseEvents::from(events).with_delay(delay_ms))
-            .map_err(|error| GeminiRejection::from_error(&error))
+    /// Returns a validation or worker-pool failure before delivery begins.
+    async fn respond_streaming(
+        self,
+        state: &AppState,
+        model: ModelId,
+        delivery: SpeechDelivery,
+        prompt_tokens: usize,
+    ) -> Result<SpeechResponse, SpeechError> {
+        let audio = state
+            .speech
+            .stream(
+                self.request,
+                self.format,
+                state.config.limits.max_input_chars(),
+            )
+            .await?;
+        let delay_ms = state.config.stream_delay_ms;
+        Ok(match delivery {
+            SpeechDelivery::JsonStream => SpeechResponse::JsonStream {
+                model,
+                audio,
+                prompt_tokens,
+                delay_ms,
+            },
+            SpeechDelivery::Sse => SpeechResponse::Sse {
+                model,
+                audio,
+                prompt_tokens,
+                delay_ms,
+            },
+            SpeechDelivery::Unary => unreachable!("unary handled before streaming"),
+        })
     }
-}
 
-impl IntoResponse for SpeechResponse {
-    fn into_response(self) -> Response {
-        match self.delivery {
-            SpeechDelivery::Unary => self.into_unary().into_response(),
-            SpeechDelivery::JsonStream => Json(self.into_records()).into_response(),
-            SpeechDelivery::Sse => self.into_sse().into_response(),
+    /// Execute the request through its unary or incremental transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns failures detected before HTTP response delivery begins.
+    async fn respond(
+        self,
+        state: &AppState,
+        model: ModelId,
+        delivery: SpeechDelivery,
+    ) -> Result<SpeechResponse, SpeechError> {
+        let prompt_tokens = self.request.input_tokens();
+        match delivery {
+            SpeechDelivery::Unary => self.respond_unary(state, model, prompt_tokens).await,
+            SpeechDelivery::JsonStream | SpeechDelivery::Sse => {
+                self.respond_streaming(state, model, delivery, prompt_tokens)
+                    .await
+            }
         }
     }
 }
@@ -571,11 +679,9 @@ pub(super) async fn generate(
     };
 
     // Render validated input through the bounded speech service.
-    let rendered = match lowered.render(state).await {
-        Ok(rendered) => rendered,
+    match lowered.respond(state, model, delivery).await {
+        Ok(response) => response.into_response(),
         // Engine failures map directly through the Gemini rejection contract.
-        Err(error) => return GeminiRejection::from_error(&error).into_response(),
-    };
-
-    SpeechResponse::new(delivery, model, rendered, state.config.stream_delay_ms).into_response()
+        Err(error) => GeminiRejection::from_error(&error).into_response(),
+    }
 }

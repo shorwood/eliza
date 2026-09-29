@@ -642,6 +642,7 @@ dependencies = [
  "anyhow",
  "futures-util",
  "rig-core",
+ "thiserror",
  "tokio",
 ]
 

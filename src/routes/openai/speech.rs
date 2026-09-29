@@ -2,46 +2,33 @@
 
 use std::borrow::Cow;
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::http::HeaderMap;
-use axum::response::sse::Event;
+use axum::http::{HeaderMap, HeaderValue, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+use futures_util::{Stream, StreamExt, stream};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
-use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
+use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection, OpenAiSpeechStreamError};
 use crate::routes::errors::ExtractionError;
-use crate::speech::core::{
-    self as speech, AudioFormat, RenderedAudio, SpeechError, SpeechRequest, SpeechSegment,
-};
+use crate::speech::core::{self as speech, AudioFormat, SpeechRequest, SpeechSegment};
+use crate::speech::errors::SpeechError;
+use crate::speech::service::{SpeechStream, SpeechStreamItem};
 use crate::types::errors::EncodingError;
-use crate::types::http::{ByteStreamResponse, SseEvents, SseResponse};
 use crate::types::model::ModelId;
 
 // -----------------------------------------------------------------------------
-// OpenaiInputLimit: Caps work to the provider's documented request size.
-// -----------------------------------------------------------------------------
-
-/// Maximum input characters accepted by the `OpenAI` compatibility route.
-const OPENAI_INPUT_LIMIT: usize = 4_096;
-
-// -----------------------------------------------------------------------------
-// AudioChunkSize: Bounds each streamed OpenAI audio event.
-// -----------------------------------------------------------------------------
-
-/// Maximum raw audio bytes carried by one streaming delta.
-const AUDIO_CHUNK_SIZE: usize = 12 * 1024;
-
-// -----------------------------------------------------------------------------
-// SpeechVoice: Accepts both OpenAI voice wire spellings.
+// Speech: Parses requests and streams encoded responses.
 // -----------------------------------------------------------------------------
 
 /// Named or object-wrapped voice supplied by an `OpenAI` client.
@@ -96,10 +83,6 @@ impl SpeechVoice {
     }
 }
 
-// -----------------------------------------------------------------------------
-// SpeechResponseFormat: Maps OpenAI codec names into engine encodings.
-// -----------------------------------------------------------------------------
-
 /// `OpenAI` speech response format accepted on the wire.
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -138,10 +121,6 @@ impl TryFrom<SpeechResponseFormat> for AudioFormat {
     }
 }
 
-// -----------------------------------------------------------------------------
-// SpeechStreamFormat: Describes the OpenAI delivery selector.
-// -----------------------------------------------------------------------------
-
 /// `OpenAI` speech delivery format accepted on the wire.
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -155,10 +134,6 @@ enum SpeechStreamFormat {
     #[serde(other)]
     Unsupported,
 }
-
-// -----------------------------------------------------------------------------
-// SpeechDelivery: Represents a validated OpenAI response transport.
-// -----------------------------------------------------------------------------
 
 /// Delivery mode supported by the compatibility route.
 #[derive(Debug, Clone, Copy)]
@@ -181,10 +156,6 @@ impl TryFrom<SpeechStreamFormat> for SpeechDelivery {
     }
 }
 
-// -----------------------------------------------------------------------------
-// SpeechPayload: Defines the OpenAI speech request body.
-// -----------------------------------------------------------------------------
-
 /// OpenAI-compatible speech request payload.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SpeechPayload {
@@ -204,9 +175,19 @@ struct SpeechPayload {
     stream_format: Option<SpeechStreamFormat>,
 }
 
-// -----------------------------------------------------------------------------
-// SpeechStreamEvent: Defines OpenAI's typed SSE records.
-// -----------------------------------------------------------------------------
+/// Usage object returned in the terminal `OpenAI` speech event.
+#[derive(Serialize)]
+struct SpeechUsage {
+    /// Approximate input text tokens.
+    #[serde(rename = "input_tokens")]
+    input: usize,
+    /// Approximate generated audio tokens.
+    #[serde(rename = "output_tokens")]
+    output: usize,
+    /// Sum of input and output token estimates.
+    #[serde(rename = "total_tokens")]
+    total: usize,
+}
 
 /// One event in an `OpenAI` speech SSE response.
 #[derive(Serialize)]
@@ -222,7 +203,7 @@ enum SpeechStreamEvent {
     #[serde(rename = "speech.audio.done")]
     Done {
         /// Token estimates for the completed request.
-        usage: Usage,
+        usage: SpeechUsage,
     },
 }
 
@@ -244,22 +225,113 @@ impl SpeechStreamEvent {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Usage: Reports estimated text and audio token counts.
-// -----------------------------------------------------------------------------
+/// Maximum input characters accepted by the `OpenAI` compatibility route.
+const OPENAI_INPUT_LIMIT: usize = 4_096;
 
-/// Usage object returned in the terminal `OpenAI` speech event.
-#[derive(Serialize)]
-struct Usage {
-    /// Approximate input text tokens.
-    #[serde(rename = "input_tokens")]
-    input: usize,
-    /// Approximate generated audio tokens.
-    #[serde(rename = "output_tokens")]
-    output: usize,
-    /// Sum of input and output token estimates.
-    #[serde(rename = "total_tokens")]
-    total: usize,
+/// Deliver encoded bytes as they arrive from the speech worker.
+fn speech_response_audio_chunks(
+    audio: SpeechStream,
+    delay_ms: u64,
+) -> impl Stream<Item = Result<Bytes, OpenAiSpeechStreamError>> {
+    stream::unfold(audio, |mut audio| async move {
+        match audio.items.recv().await? {
+            SpeechStreamItem::Chunk(bytes) => {
+                Some((Ok::<_, OpenAiSpeechStreamError>(Bytes::from(bytes)), audio))
+            }
+            SpeechStreamItem::Done { .. } => None,
+            SpeechStreamItem::Failed(error) => {
+                Some((Err(OpenAiSpeechStreamError::Speech(error)), audio))
+            }
+        }
+    })
+    .then(move |item| async move {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        item
+    })
+}
+
+/// Deliver base64 audio deltas followed by exact usage metadata.
+fn speech_response_sse_events(
+    audio: SpeechStream,
+    input_tokens: usize,
+    delay_ms: u64,
+) -> impl Stream<Item = Result<Event, OpenAiSpeechStreamError>> {
+    let sample_rate = audio.sample_rate;
+    stream::unfold(audio, move |mut audio| async move {
+        let item = audio.items.recv().await?;
+        let event = match item {
+            SpeechStreamItem::Chunk(bytes) => SpeechStreamEvent::Delta {
+                audio: base64::engine::general_purpose::STANDARD.encode(bytes),
+            }
+            .into_event()
+            .map_err(OpenAiSpeechStreamError::Encoding),
+            SpeechStreamItem::Done { sample_count } => {
+                let output = speech::output_tokens(sample_count, sample_rate);
+                SpeechStreamEvent::Done {
+                    usage: SpeechUsage {
+                        input: input_tokens,
+                        output,
+                        total: input_tokens + output,
+                    },
+                }
+                .into_event()
+                .map_err(OpenAiSpeechStreamError::Encoding)
+            }
+            SpeechStreamItem::Failed(error) => Err(OpenAiSpeechStreamError::Speech(error)),
+        };
+        Some((event, audio))
+    })
+    .then(move |event| async move {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        event
+    })
+}
+
+/// `OpenAI` speech body selected after request lowering.
+enum SpeechResponse {
+    /// Raw encoded audio chunks.
+    Audio {
+        /// Incremental engine output.
+        audio: SpeechStream,
+        /// Optional transport pacing.
+        delay_ms: u64,
+    },
+    /// Base64 audio events and a terminal usage event.
+    Sse {
+        /// Incremental engine output.
+        audio: SpeechStream,
+        /// Approximate input text tokens.
+        input_tokens: usize,
+        /// Optional transport pacing.
+        delay_ms: u64,
+    },
+}
+
+impl IntoResponse for SpeechResponse {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Audio { audio, delay_ms } => {
+                let media_type = audio.media_type.clone();
+                let mut response = Body::from_stream(speech_response_audio_chunks(audio, delay_ms))
+                    .into_response();
+                if let Ok(value) = HeaderValue::from_str(&media_type) {
+                    response.headers_mut().insert(header::CONTENT_TYPE, value);
+                }
+                response
+            }
+            Self::Sse {
+                audio,
+                input_tokens,
+                delay_ms,
+            } => Sse::new(speech_response_sse_events(audio, input_tokens, delay_ms))
+                .keep_alive(KeepAlive::default())
+                .into_response(),
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -304,117 +376,29 @@ impl TryFrom<SpeechPayload> for LoweredSpeech {
 }
 
 impl LoweredSpeech {
-    /// Render the lowered request through the bounded speech service.
+    /// Start synthesis and select the requested transport.
     ///
     /// # Errors
     ///
-    /// Returns request validation, synthesis, worker, or encoding failures.
-    async fn render(self, state: &AppState) -> Result<RenderedSpeech, SpeechError> {
+    /// Returns failures detected before HTTP response delivery begins.
+    async fn respond(self, state: &AppState) -> Result<SpeechResponse, SpeechError> {
         let input_tokens = self.request.input_tokens();
         let configured_limit = state.config.limits.max_input_chars();
         let input_limit = configured_limit.get().min(OPENAI_INPUT_LIMIT);
         let input_limit = NonZeroUsize::new(input_limit).unwrap_or(configured_limit);
         let audio = state
             .speech
-            .render(self.request, self.format, input_limit)
+            .stream(self.request, self.format, input_limit)
             .await?;
-        let output_tokens = audio.output_tokens();
-        Ok(RenderedSpeech {
-            audio,
-            usage: Usage {
-                input: input_tokens,
-                output: output_tokens,
-                total: input_tokens + output_tokens,
+        let delay_ms = state.config.stream_delay_ms;
+        Ok(match self.delivery {
+            SpeechDelivery::Audio => SpeechResponse::Audio { audio, delay_ms },
+            SpeechDelivery::Sse => SpeechResponse::Sse {
+                audio,
+                input_tokens,
+                delay_ms,
             },
-            delivery: self.delivery,
-            delay_ms: state.config.stream_delay_ms,
         })
-    }
-}
-
-// -----------------------------------------------------------------------------
-// RenderedSpeech: Owns OpenAI audio response rendering.
-// -----------------------------------------------------------------------------
-
-/// Completed speech audio with usage and delivery metadata.
-struct RenderedSpeech {
-    /// Encoded speech payload.
-    audio: RenderedAudio,
-    /// Estimated input and output usage.
-    usage: Usage,
-    /// Raw-audio or SSE response contract.
-    delivery: SpeechDelivery,
-    /// Optional delay between streamed chunks.
-    delay_ms: u64,
-}
-
-impl IntoResponse for RenderedSpeech {
-    fn into_response(self) -> Response {
-        match self.delivery {
-            SpeechDelivery::Audio => AudioSpeechResponse(self).into_response(),
-            SpeechDelivery::Sse => SseSpeechResponse(self).into_response(),
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// AudioSpeechResponse: Delivers raw encoded audio bytes.
-// -----------------------------------------------------------------------------
-
-/// `OpenAI` raw-audio response with optional chunk pacing.
-struct AudioSpeechResponse(
-    /// Completed speech output to deliver.
-    RenderedSpeech,
-);
-
-impl IntoResponse for AudioSpeechResponse {
-    fn into_response(self) -> Response {
-        ByteStreamResponse::new(self.0.audio.bytes, self.0.audio.media_type, self.0.delay_ms)
-            .into_response()
-    }
-}
-
-// -----------------------------------------------------------------------------
-// SseSpeechResponse: Delivers typed base64 audio events.
-// -----------------------------------------------------------------------------
-
-/// `OpenAI` server-sent event speech response.
-struct SseSpeechResponse(
-    /// Completed speech output to encode as events.
-    RenderedSpeech,
-);
-
-impl IntoResponse for SseSpeechResponse {
-    fn into_response(self) -> Response {
-        let response = (|| {
-            let rendered = self.0;
-            let mut events = rendered
-                .audio
-                .bytes
-                .chunks(AUDIO_CHUNK_SIZE)
-                .map(|chunk| {
-                    SpeechStreamEvent::Delta {
-                        audio: base64::engine::general_purpose::STANDARD.encode(chunk),
-                    }
-                    .into_event()
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| OpenAiRejection::from_error(&error))?;
-            events.push(
-                SpeechStreamEvent::Done {
-                    usage: rendered.usage,
-                }
-                .into_event()
-                .map_err(|error| OpenAiRejection::from_error(&error))?,
-            );
-            Ok::<SseResponse, OpenAiRejection>(
-                SseEvents::from(events).with_delay(rendered.delay_ms),
-            )
-        })();
-        match response {
-            Ok(response) => response.into_response(),
-            Err(rejection) => rejection.into_response(),
-        }
     }
 }
 
@@ -465,11 +449,10 @@ impl OpenAiSpeech {
             Err(error) => return OpenAiRejection::from_error(&error).into_response(),
         };
 
-        let rendered = match lowered.render(&state).await {
-            Ok(rendered) => rendered,
+        match lowered.respond(&state).await {
+            Ok(response) => response.into_response(),
             // Engine failures map through the OpenAI rejection contract.
-            Err(error) => return OpenAiRejection::from_error(&error).into_response(),
-        };
-        rendered.into_response()
+            Err(error) => OpenAiRejection::from_error(&error).into_response(),
+        }
     }
 }
