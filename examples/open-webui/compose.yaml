@@ -1,0 +1,65 @@
+name: eliza-open-webui
+
+services:
+  eliza:
+    image: eliza:0.1.0
+    command: ["serve", "--host", "0.0.0.0", "--max-input-chars", "65536"]
+    init: true
+    pull_policy: never
+
+  mcp:
+    image: ghcr.io/mitchallen/mcp-hello-server:0.4.8
+
+  webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.4-slim
+    depends_on:
+      - eliza
+      - mcp
+    ports:
+      - "127.0.0.1:${ELIZA_OPEN_WEBUI_PORT:-3000}:8080"
+    environment:
+      WEBUI_AUTH: "False"
+      WEBUI_SECRET_KEY: eliza-open-webui-example-secret-key
+      CORS_ALLOW_ORIGIN: "http://127.0.0.1:${ELIZA_OPEN_WEBUI_PORT:-3000}"
+      ENABLE_PERSISTENT_CONFIG: "False"
+      ENABLE_OLLAMA_API: "False"
+      OFFLINE_MODE: "True"
+      RAG_EMBEDDING_MODEL: ""
+      OPENAI_API_BASE_URL: "http://eliza:8787/openai/v1"
+      OPENAI_API_KEY: eliza
+      OPENAI_API_CONFIGS: '{"0":{"model_ids":["eliza-doctor"]}}'
+      DEFAULT_MODELS: eliza-doctor
+      AUDIO_TTS_ENGINE: openai
+      AUDIO_TTS_OPENAI_API_BASE_URL: "http://eliza:8787/openai/v1"
+      AUDIO_TTS_OPENAI_API_KEY: eliza
+      AUDIO_TTS_MODEL: eliza-retro-tts
+      AUDIO_TTS_VOICE: retro
+      ENABLE_TITLE_GENERATION: "False"
+      ENABLE_TAGS_GENERATION: "False"
+      ENABLE_FOLLOW_UP_GENERATION: "False"
+      TOOL_SERVER_CONNECTIONS: >-
+        [
+          {
+            "type": "mcp",
+            "url": "http://mcp:8000/mcp",
+            "path": "",
+            "auth_type": "none",
+            "key": "",
+            "config": {
+              "enable": true,
+              "function_name_filter_list": "",
+              "access_grants": []
+            },
+            "info": {
+              "id": "hello",
+              "name": "Hello MCP",
+              "description": "Small read-only tools for exercising ELIZA function calls."
+            }
+          }
+        ]
+    volumes:
+      - data:/app/backend/data
+
+volumes:
+  data:
+    name: eliza-open-webui-data

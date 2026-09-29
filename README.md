@@ -251,12 +251,31 @@ Schema.
 
 ## Client examples
 
-The development shell includes AIChat. This command builds the server, keeps it
-alive for the chat session, and stops it afterward:
+The Docker Compose example runs Open WebUI preconfigured for ELIZA chat and
+speech. With a Docker daemon running, this command builds the server and starts
+the interface at `http://127.0.0.1:3000`:
 
 ```sh
 nix develop --command just chat
 ```
+
+Choose `eliza-doctor`, send a message, then use the speaker button beneath its
+reply to exercise `eliza-retro-tts`. To test a tool round trip, enable
+`Hello MCP` under **+ > Integrations > Tools**, then send:
+
+```text
+@tool hello_greet {"language":"french","name":"Alice"}
+```
+
+Open WebUI namespaces the MCP server's `greet` tool as `hello_greet`, calls it,
+and ELIZA answers `TOOL CALL COMPLETE` after receiving its result. Stop the
+stack with Ctrl-C. Open WebUI stores its state in the
+`eliza-open-webui-data` Docker volume; set `ELIZA_OPEN_WEBUI_PORT` to change
+the host port. All three services share a private Compose network; only the
+WebUI is exposed to the host. This example raises ELIZA's input limit to
+65,536 characters to accommodate Open WebUI's request metadata. Non-Linux
+hosts need the Linux Nix builder described under Docker image installation
+above.
 
 Real Vercel AI SDK and Rig examples cover unary, streaming, model-list, and tool
 round-trip compatibility where their provider clients expose those operations:
