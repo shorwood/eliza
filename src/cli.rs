@@ -142,7 +142,7 @@ pub(super) struct ServeArgs {
     pub(super) port: u16,
 
     /// Provider-visible model id.
-    #[arg(long, default_value = "eliza-doctor")]
+    #[arg(long, default_value = "eliza-1966")]
     pub(super) model: ModelId,
 
     /// Authentication mode for provider endpoints.

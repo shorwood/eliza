@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/responses
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "tools": [{
     "type": "function",
     "name": "echo",
@@ -19,7 +19,7 @@ jsonpath "$.object" == "response"
 jsonpath "$.status" == "completed"
 jsonpath "$.error" == null
 jsonpath "$.incomplete_details" == null
-jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.model" == "eliza-1966"
 jsonpath "$.output" count == 1
 jsonpath "$.output[0].type" == "function_call"
 jsonpath "$.output[0].id" startsWith "fc_"

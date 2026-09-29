@@ -1,4 +1,4 @@
-POST {{base_url}}/gemini/v1beta/models/eliza-doctor:streamGenerateContent?alt=sse&alt=json
+POST {{base_url}}/gemini/v1beta/models/eliza-1966:streamGenerateContent?alt=sse&alt=json
 Content-Type: application/json
 {"contents": [{"role": "user", "parts": [{"text": "Hello"}]}]}
 HTTP 400

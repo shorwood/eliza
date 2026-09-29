@@ -6,7 +6,7 @@ import { generateText, jsonSchema, stepCountIs, streamText, tool } from 'ai';
 import type { LanguageModel } from 'ai';
 
 const BASE_URL = process.env.ELIZA_BASE_URL ?? 'http://127.0.0.1:8787';
-const MODEL_ID = 'eliza-doctor';
+const MODEL_ID = 'eliza-1966';
 const MAX_OUTPUT_TOKEN = 128;
 const PROMPT = 'I am sad.';
 

@@ -27,12 +27,12 @@ services:
       RAG_EMBEDDING_MODEL: ""
       OPENAI_API_BASE_URL: "http://eliza:8787/openai/v1"
       OPENAI_API_KEY: eliza
-      OPENAI_API_CONFIGS: '{"0":{"model_ids":["eliza-doctor"]}}'
-      DEFAULT_MODELS: eliza-doctor
+      OPENAI_API_CONFIGS: '{"0":{"model_ids":["eliza-1966"]}}'
+      DEFAULT_MODELS: eliza-1966
       AUDIO_TTS_ENGINE: openai
       AUDIO_TTS_OPENAI_API_BASE_URL: "http://eliza:8787/openai/v1"
       AUDIO_TTS_OPENAI_API_KEY: eliza
-      AUDIO_TTS_MODEL: eliza-retro-tts
+      AUDIO_TTS_MODEL: flite
       AUDIO_TTS_VOICE: retro
       ENABLE_TITLE_GENERATION: "False"
       ENABLE_TAGS_GENERATION: "False"

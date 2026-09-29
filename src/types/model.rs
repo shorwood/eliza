@@ -16,9 +16,9 @@ use super::errors::ModelError;
 /// ```
 /// use eliza::types::ModelId;
 ///
-/// let model: ModelId = "eliza-doctor".parse().unwrap();
-/// assert_eq!(model.as_str(), "eliza-doctor");
-/// assert_eq!(ModelId::default().as_str(), "eliza-doctor");
+/// let model: ModelId = "eliza-1966".parse().unwrap();
+/// assert_eq!(model.as_str(), "eliza-1966");
+/// assert_eq!(ModelId::default().as_str(), "eliza-1966");
 /// assert!("   ".parse::<ModelId>().is_err());
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, JsonSchema)]
@@ -38,7 +38,7 @@ impl ModelId {
 
 impl Default for ModelId {
     fn default() -> Self {
-        Self("eliza-doctor".to_owned())
+        Self("eliza-1966".to_owned())
     }
 }
 

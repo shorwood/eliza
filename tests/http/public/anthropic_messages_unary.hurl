@@ -2,7 +2,7 @@ POST {{base_url}}/anthropic/v1/messages
 anthropic-version: 2023-06-01
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "max_tokens": 128,
   "messages": [{"role": "user", "content": "I am sad"}],
   "future_field": true
@@ -14,7 +14,7 @@ jsonpath "$.*" count == 8
 jsonpath "$.id" startsWith "msg_"
 jsonpath "$.type" == "message"
 jsonpath "$.role" == "assistant"
-jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.model" == "eliza-1966"
 jsonpath "$.content" count == 1
 jsonpath "$.content[0].type" == "text"
 jsonpath "$.content[0].text" == "I AM SORRY TO HEAR YOU ARE SAD"

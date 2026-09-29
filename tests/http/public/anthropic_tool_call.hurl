@@ -1,7 +1,7 @@
 POST {{base_url}}/anthropic/v1/messages
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "max_tokens": 128,
   "tools": [{
     "name": "echo",
@@ -17,7 +17,7 @@ jsonpath "$.*" count == 8
 jsonpath "$.id" startsWith "msg_"
 jsonpath "$.type" == "message"
 jsonpath "$.role" == "assistant"
-jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.model" == "eliza-1966"
 jsonpath "$.content" count == 1
 jsonpath "$.content[0].type" == "tool_use"
 jsonpath "$.content[0].id" startsWith "toolu_"
