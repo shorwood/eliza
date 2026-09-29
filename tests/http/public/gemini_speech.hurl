@@ -1,4 +1,4 @@
-POST {{base_url}}/gemini/v1beta/models/eliza-retro-tts:generateContent
+POST {{base_url}}/gemini/v1beta/models/flite:generateContent
 Content-Type: application/json
 {
   "contents": [{"role": "user", "parts": [{"text": "Hello world"}]}],
@@ -16,11 +16,11 @@ header "Content-Type" startsWith "application/json"
 jsonpath "$.candidates[0].content.parts[0].inlineData.mimeType" == "audio/wav"
 jsonpath "$.candidates[0].content.parts[0].inlineData.data" startsWith "UklGR"
 jsonpath "$.candidates[0].finishReason" == "STOP"
-jsonpath "$.modelVersion" == "eliza-retro-tts"
+jsonpath "$.modelVersion" == "flite"
 jsonpath "$.usageMetadata.promptTokenCount" == 2
 jsonpath "$.usageMetadata.candidatesTokenCount" > 0
 
-POST {{base_url}}/gemini/v1beta/models/eliza-retro-tts:generateContent
+POST {{base_url}}/gemini/v1beta/models/flite:generateContent
 Content-Type: application/json
 {
   "contents": [{
@@ -48,7 +48,7 @@ HTTP 200
 jsonpath "$.candidates[0].content.parts[0].inlineData.mimeType" == "audio/mulaw;rate=8000"
 jsonpath "$.candidates[0].content.parts[0].inlineData.data" isString
 
-POST {{base_url}}/gemini/v1beta/models/eliza-retro-tts:streamGenerateContent?alt=sse
+POST {{base_url}}/gemini/v1beta/models/flite:streamGenerateContent?alt=sse
 Content-Type: application/json
 {
   "contents": [{"role": "user", "parts": [{"text": "Streaming robot"}]}],
@@ -64,7 +64,7 @@ body contains "\"mimeType\":\"audio/L16;rate=24000\""
 body contains "\"finishReason\":\"STOP\""
 body contains "\"usageMetadata\""
 
-POST {{base_url}}/gemini/v1beta/models/eliza-retro-tts:streamGenerateContent
+POST {{base_url}}/gemini/v1beta/models/flite:streamGenerateContent
 Content-Type: application/json
 {
   "contents": [{"role": "user", "parts": [{"text": "Streaming JSON robot"}]}],
@@ -80,7 +80,7 @@ jsonpath "$[0].candidates[0].content.parts[0].inlineData.mimeType" == "audio/L16
 body contains "\"finishReason\":\"STOP\""
 body contains "\"usageMetadata\""
 
-POST {{base_url}}/gemini/v1beta/models/eliza-doctor:generateContent
+POST {{base_url}}/gemini/v1beta/models/eliza-1966:generateContent
 Content-Type: application/json
 {
   "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
@@ -93,7 +93,7 @@ HTTP 400
 [Asserts]
 header "x-eliza-error-code" == "eliza::gemini::speech_model_required"
 
-POST {{base_url}}/gemini/v1beta/models/eliza-retro-tts:generateContent
+POST {{base_url}}/gemini/v1beta/models/flite:generateContent
 Content-Type: application/json
 {"contents": [{"role": "user", "parts": [{"text": "Hello"}]}]}
 HTTP 400

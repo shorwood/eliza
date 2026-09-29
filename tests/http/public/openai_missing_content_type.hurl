@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/chat/completions
 ```raw
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "messages": [{"role": "user", "content": "Hello"}]
 }
 ```

@@ -16,7 +16,7 @@ Options:
       --model <MODEL>
           Provider-visible model id
           
-          [default: eliza-doctor]
+          [default: eliza-1966]
 
       --auth <AUTH>
           Authentication mode for provider endpoints

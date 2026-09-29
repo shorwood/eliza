@@ -1,4 +1,4 @@
-POST {{base_url}}/gemini/v1beta/models/eliza-doctor:generateContent
+POST {{base_url}}/gemini/v1beta/models/eliza-1966:generateContent
 Content-Type: application/json
 {
   "tools": [{"functionDeclarations": [{
@@ -25,7 +25,7 @@ jsonpath "$.candidates[0].content.parts" count == 1
 jsonpath "$.candidates[0].content.parts[0].text" == "TOOL CALL COMPLETE"
 jsonpath "$.candidates[0].finishReason" == "STOP"
 jsonpath "$.candidates[0].index" == 0
-jsonpath "$.modelVersion" == "eliza-doctor"
+jsonpath "$.modelVersion" == "eliza-1966"
 jsonpath "$.usageMetadata.promptTokenCount" isInteger
 jsonpath "$.usageMetadata.candidatesTokenCount" isInteger
 jsonpath "$.usageMetadata.totalTokenCount" isInteger

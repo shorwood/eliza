@@ -1,14 +1,14 @@
 POST {{base_url}}/ollama/api/chat
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "messages": [{"role": "user", "content": "Hello"}],
   "future_field": true
 }
 HTTP 200
 [Asserts]
 header "Content-Type" startsWith "application/x-ndjson"
-body contains "\"model\":\"eliza-doctor\""
+body contains "\"model\":\"eliza-1966\""
 body contains "\"created_at\":\"1966-01-01T00:00:00Z\""
 body contains "\"role\":\"assistant\""
 body contains "\"done\":false"

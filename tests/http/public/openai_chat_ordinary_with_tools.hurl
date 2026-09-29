@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/chat/completions
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "tools": [{
     "type": "function",
     "function": {"name": "echo", "parameters": {"type": "object"}}
@@ -15,7 +15,7 @@ jsonpath "$.*" count == 6
 jsonpath "$.id" startsWith "chatcmpl-"
 jsonpath "$.object" == "chat.completion"
 jsonpath "$.created" isInteger
-jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.model" == "eliza-1966"
 jsonpath "$.choices" count == 1
 jsonpath "$.choices[0].index" == 0
 jsonpath "$.choices[0].message.role" == "assistant"

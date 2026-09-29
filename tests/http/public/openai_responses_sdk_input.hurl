@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/responses
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "input": [{
     "type": "message",
     "role": "user",
@@ -18,7 +18,7 @@ jsonpath "$.created_at" isInteger
 jsonpath "$.status" == "completed"
 jsonpath "$.error" == null
 jsonpath "$.incomplete_details" == null
-jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.model" == "eliza-1966"
 jsonpath "$.output" count == 1
 jsonpath "$.output[0].type" == "message"
 jsonpath "$.output[0].id" startsWith "msg_"

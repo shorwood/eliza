@@ -16,7 +16,7 @@ use crate::errors::RigExampleError;
 // -----------------------------------------------------------------------------
 
 /// Provider-visible ELIZA model identifier.
-const EXAMPLE_MODEL: &str = "eliza-doctor";
+const EXAMPLE_MODEL: &str = "eliza-1966";
 
 /// Deterministic prompt used to make provider results easy to compare.
 const EXAMPLE_PROMPT: &str = "I am sad.";

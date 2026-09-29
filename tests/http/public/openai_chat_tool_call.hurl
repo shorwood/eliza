@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/chat/completions
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "tools": [{
     "type": "function",
     "function": {
@@ -22,7 +22,7 @@ header "Content-Type" startsWith "application/json"
 jsonpath "$.*" count == 6
 jsonpath "$.id" startsWith "chatcmpl-"
 jsonpath "$.object" == "chat.completion"
-jsonpath "$.model" == "eliza-doctor"
+jsonpath "$.model" == "eliza-1966"
 jsonpath "$.choices" count == 1
 jsonpath "$.choices[0].index" == 0
 jsonpath "$.choices[0].finish_reason" == "tool_calls"

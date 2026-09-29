@@ -9,7 +9,7 @@ use crate::types::model::ModelId;
 // -----------------------------------------------------------------------------
 
 /// Provider-visible identifier for the bundled retro voice.
-pub(crate) const MODEL_ID: &str = "eliza-retro-tts";
+pub(crate) const MODEL_ID: &str = "flite";
 
 /// Construct the fixed speech model ID without exposing unchecked strings.
 ///

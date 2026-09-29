@@ -5,6 +5,6 @@ HTTP 200
 header "Content-Type" startsWith "application/json"
 jsonpath "$" isObject
 jsonpath "$.models" count == 1
-jsonpath "$.models[0].name" == "eliza-doctor"
-jsonpath "$.models[0].model" == "eliza-doctor"
+jsonpath "$.models[0].name" == "eliza-1966"
+jsonpath "$.models[0].model" == "eliza-1966"
 jsonpath "$.models[0].details.family" == "eliza"

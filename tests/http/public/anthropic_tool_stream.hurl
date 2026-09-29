@@ -1,7 +1,7 @@
 POST {{base_url}}/anthropic/v1/messages
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "max_tokens": 128,
   "stream": true,
   "tools": [{"name": "echo", "input_schema": {"type": "object"}}],
@@ -11,7 +11,7 @@ HTTP 200
 [Asserts]
 header "Content-Type" startsWith "text/event-stream"
 body contains "event: message_start"
-body contains "\"model\":\"eliza-doctor\""
+body contains "\"model\":\"eliza-1966\""
 body contains "event: content_block_start"
 body contains "\"type\":\"tool_use\""
 body contains "\"name\":\"echo\""
