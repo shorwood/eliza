@@ -21,37 +21,52 @@ use super::types::{
 use crate::routes::errors::ExtractionError;
 use crate::types::errors::EncodingError;
 use crate::types::http::{SseEvents, json_event, stream_chunks, unix_timestamp};
+use crate::types::lower::Lower;
 use crate::types::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall, RequestLimits,
+    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall,
 };
 
 // -----------------------------------------------------------------------------
-// OpenAiResponsesTurn: Lowers one Responses request into the neutral contract.
+// ResponsesLowering: Lowers one request into the neutral contract.
 // -----------------------------------------------------------------------------
 
-/// Provider-neutral request lowered from Responses API input.
-struct OpenAiResponsesTurn(
-    /// Validated conversation consumed by the shared executor.
-    CompatTurnRequest,
+/// Responses input awaiting provider-neutral conversion.
+struct ResponsesLowering(
+    /// Typed provider request.
+    ResponsesRequest,
 );
 
-impl TryFrom<ResponsesRequest> for OpenAiResponsesTurn {
+impl Lower for ResponsesLowering {
+    type Canonical = CompatTurnRequest;
+
     type Error = OpenAiError;
 
-    fn try_from(payload: ResponsesRequest) -> Result<Self, Self::Error> {
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        let payload = self.0;
         validate_text_config(payload.text)?;
+
+        // Separate request-level instructions from replayable input turns.
         let mut system = Vec::new();
         if let Some(instructions) = payload.instructions {
             system.push(text_content(instructions, "instructions")?);
         }
         let turns = lower_input(payload.input, &mut system)?;
-        Ok(Self(CompatTurnRequest::new(
-            payload.model,
-            system,
-            turns,
-            payload.tools.unwrap_or_default().into_domain()?,
-            payload.tool_choice.try_into()?,
-        )))
+
+        // Lower tool declarations and selection policy independently.
+        let tools = payload.tools.unwrap_or_default().lower()?;
+        let tool_choice = payload
+            .tool_choice
+            .map(Lower::lower)
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(CompatTurnRequest::builder()
+            .model(payload.model)
+            .system_text(system)
+            .turns(turns)
+            .tools(tools)
+            .tool_choice(tool_choice)
+            .build())
     }
 }
 
@@ -497,8 +512,8 @@ async fn open_ai_responses(
 
     // Capture transport policy before lowering consumes the request body.
     let should_stream = payload.should_stream.unwrap_or(false);
-    let request = match OpenAiResponsesTurn::try_from(payload) {
-        Ok(request) => request.0,
+    let request = match ResponsesLowering(payload).lower() {
+        Ok(request) => request,
         // Provider validation failures use OpenAI's native envelope.
         Err(error) => {
             return OpenAiRejection::from_error(&error).into_response();
@@ -506,13 +521,8 @@ async fn open_ai_responses(
     };
 
     // Apply shared resource bounds to the lowered request.
-    let limits = RequestLimits::new(
-        state.config.max_input_chars,
-        state.config.max_history_messages,
-    );
-
     // Complete one neutral turn before rendering Responses output.
-    let response = match request.complete(limits) {
+    let response = match request.complete(state.config.limits) {
         Ok(response) => response,
         // Shared execution failures still render as OpenAI errors.
         Err(error) => {

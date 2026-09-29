@@ -15,32 +15,35 @@ use super::types::{
 };
 use crate::routes::errors::ExtractionError;
 use crate::types::http::{NdjsonResponse, stream_chunks};
+use crate::types::lower::Lower;
 use crate::types::model::ModelId;
-use crate::types::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, RequestLimits,
-};
+use crate::types::turn::{CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse};
 
 // -----------------------------------------------------------------------------
 // CreatedAt: Defines deterministic model and response timestamps.
 // -----------------------------------------------------------------------------
 
-/// Stable timestamp used by the timeless ELIZA model.
+/// Stable timestamp used by the timeless ELIZA algorithm.
 const CREATED_AT: &str = "1966-01-01T00:00:00Z";
 
 // -----------------------------------------------------------------------------
-// OllamaTurn: Lowers one chat request into the neutral contract.
+// ChatLowering: Lowers one chat request into the neutral contract.
 // -----------------------------------------------------------------------------
 
-/// Provider-neutral request lowered from Ollama chat input.
-struct OllamaTurn(
-    /// Validated conversation consumed by the shared executor.
-    CompatTurnRequest,
+/// Ollama chat input awaiting provider-neutral conversion.
+struct ChatLowering(
+    /// Typed provider request.
+    ChatRequest,
 );
 
-impl TryFrom<ChatRequest> for OllamaTurn {
+impl Lower for ChatLowering {
+    type Canonical = CompatTurnRequest;
+
     type Error = OllamaError;
 
-    fn try_from(payload: ChatRequest) -> Result<Self, Self::Error> {
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        let payload = self.0;
+
         // Reject unsupported structured-output requests.
         if let Some(format) = &payload.format {
             return Err(OllamaError::StructuredOutputUnsupported {
@@ -53,6 +56,7 @@ impl TryFrom<ChatRequest> for OllamaTurn {
             return Err(OllamaError::ReasoningUnsupported);
         }
 
+        // Separate instructions from replayable conversation turns.
         let mut system = Vec::new();
         let mut turns = Vec::new();
         for message in payload.messages {
@@ -69,13 +73,21 @@ impl TryFrom<ChatRequest> for OllamaTurn {
             }
         }
 
-        Ok(Self(CompatTurnRequest::new(
-            payload.model,
-            system,
-            turns,
-            payload.tools.unwrap_or_default().into_domain()?,
-            payload.tool_choice.try_into()?,
-        )))
+        // Lower tool declarations and selection policy independently.
+        let tools = payload.tools.unwrap_or_default().lower()?;
+        let tool_choice = payload
+            .tool_choice
+            .map(Lower::lower)
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(CompatTurnRequest::builder()
+            .model(payload.model)
+            .system_text(system)
+            .turns(turns)
+            .tools(tools)
+            .tool_choice(tool_choice)
+            .build())
     }
 }
 
@@ -192,8 +204,8 @@ async fn chat(
 
     // Capture transport policy before lowering consumes the request body.
     let should_stream = payload.should_stream.unwrap_or(true);
-    let request = match OllamaTurn::try_from(payload) {
-        Ok(request) => request.0,
+    let request = match ChatLowering(payload).lower() {
+        Ok(request) => request,
         // Provider validation failures use Ollama's native envelope.
         Err(error) => {
             return OllamaRejection::from_error(&error).into_response();
@@ -201,13 +213,8 @@ async fn chat(
     };
 
     // Enforce shared request bounds after provider-specific lowering.
-    let limits = RequestLimits::new(
-        state.config.max_input_chars,
-        state.config.max_history_messages,
-    );
-
     // Complete one neutral turn before rendering Ollama output.
-    let response = match request.complete(limits) {
+    let response = match request.complete(state.config.limits) {
         Ok(response) => response,
         // Shared execution failures still render as Ollama errors.
         Err(error) => {

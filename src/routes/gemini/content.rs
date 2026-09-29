@@ -16,14 +16,13 @@ use super::errors::{GeminiError, GeminiFailureResponse, GeminiRejection};
 use super::types::{
     Content, ContentFunctionResponseValue, ContentPart, ContentRole, GenerateCandidate,
     GenerateContentRequest, GenerateContentResponse, GenerateFinishReason, GenerateFunctionCall,
-    GenerateOutputContent, GenerateOutputPart, GenerateQuery, GenerateStreamFormat, ToolConfig,
+    GenerateOutputContent, GenerateOutputPart, GenerateQuery, GenerateStreamFormat,
 };
 use crate::routes::errors::ExtractionError;
 use crate::types::http::{SseEvents, json_event, stream_chunks};
+use crate::types::lower::Lower;
 use crate::types::model::ModelId;
-use crate::types::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, RequestLimits,
-};
+use crate::types::turn::{CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse};
 
 // -----------------------------------------------------------------------------
 // GeminiAction: Parses the model and operation encoded in Gemini's path.
@@ -84,40 +83,55 @@ impl FromStr for GeminiAction {
 }
 
 // -----------------------------------------------------------------------------
-// RequestLower: Lowers the complete Gemini request envelope.
+// GeminiRequest: Joins path and body contracts for lowering.
 // -----------------------------------------------------------------------------
 
-/// Lower one Gemini request into the provider-neutral execution contract.
-///
-/// # Errors
-///
-/// Returns [`GeminiError`] when instructions, content, tools, or tool policy
-/// cannot be represented by the neutral contract.
-fn request_lower(
+/// Complete Gemini input assembled from its path and request body.
+struct GeminiRequest {
+    /// Provider-visible model parsed from the action path.
     model: ModelId,
+    /// Typed Gemini request body.
     payload: GenerateContentRequest,
-) -> Result<CompatTurnRequest, GeminiError> {
-    let mut system = Vec::new();
-    if let Some(instruction) = payload.system_instruction {
-        system.push(text_parts(
-            instruction.parts.unwrap_or_default(),
-            "systemInstruction.parts",
-        )?);
-    }
+}
 
-    let mut turns = Vec::new();
-    for content in payload.contents.unwrap_or_default() {
-        content_lower(content, &mut turns)?;
-    }
+impl Lower for GeminiRequest {
+    type Canonical = CompatTurnRequest;
 
-    // Assemble the neutral request after all provider content is lowered.
-    Ok(CompatTurnRequest::new(
-        model,
-        system,
-        turns,
-        payload.tools.unwrap_or_default().into_domain()?,
-        ToolConfig::into_domain(payload.tool_config, "toolConfig")?,
-    ))
+    type Error = GeminiError;
+
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        let mut system = Vec::new();
+        if let Some(instruction) = self.payload.system_instruction {
+            system.push(text_parts(
+                instruction.parts.unwrap_or_default(),
+                "systemInstruction.parts",
+            )?);
+        }
+
+        // Lower conversation content in provider order.
+        let mut turns = Vec::new();
+        for content in self.payload.contents.unwrap_or_default() {
+            content_lower(content, &mut turns)?;
+        }
+
+        // Lower tool declarations and selection policy independently.
+        let tools = self.payload.tools.unwrap_or_default().lower()?;
+        let tool_choice = self
+            .payload
+            .tool_config
+            .map(Lower::lower)
+            .transpose()?
+            .unwrap_or_default();
+
+        // Assemble the neutral request after all provider content is lowered.
+        Ok(CompatTurnRequest::builder()
+            .model(self.model)
+            .system_text(system)
+            .turns(turns)
+            .tools(tools)
+            .tool_choice(tool_choice)
+            .build())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -216,7 +230,7 @@ fn model_parts_lower(
         match part {
             ContentPart::Text { text } => turns.push(CompatTurn::Assistant(text)),
             ContentPart::FunctionCall { function_call } => {
-                turns.push(function_call.try_into()?);
+                turns.push(function_call.lower()?);
             }
             // Model content cannot contain client function responses.
             ContentPart::FunctionResponse { .. } | ContentPart::Unsupported { .. } => {
@@ -374,22 +388,23 @@ async fn generate(
     };
 
     // Lower and execute the provider request under shared resource limits.
-    let request = match request_lower(action.model.clone(), payload) {
+    let lowering = GeminiRequest {
+        model: action.model.clone(),
+        payload,
+    };
+
+    // Render provider validation failures with Gemini's native envelope.
+    let request = match lowering.lower() {
         Ok(request) => request,
-        // Provider validation failures use Gemini's native envelope.
+        // Invalid provider input cannot proceed to neutral execution.
         Err(error) => {
             return GeminiRejection::from_error(&error).into_response();
         }
     };
 
     // Apply shared resource bounds to the lowered request.
-    let limits = RequestLimits::new(
-        state.config.max_input_chars,
-        state.config.max_history_messages,
-    );
-
     // Complete one neutral turn before rendering Gemini output.
-    let response = match request.complete(limits) {
+    let response = match request.complete(state.config.limits) {
         Ok(response) => response,
         // Shared execution failures still render as Gemini errors.
         Err(error) => {

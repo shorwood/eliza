@@ -64,12 +64,21 @@ pub(super) struct ServerConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        let limits = RequestLimits::new(
-            NonZeroUsize::new(8000).expect("default max input chars should be nonzero"),
-            NonZeroUsize::new(200).expect("default max history messages should be nonzero"),
-        );
-        let routes =
-            routes::context::RouteConfig::new(ModelId::default(), AuthMode::None, None, 0, limits);
+        let limits = RequestLimits::builder()
+            .max_input_chars(
+                NonZeroUsize::new(8000).expect("default max input chars should be nonzero"),
+            )
+            .max_history_messages(
+                NonZeroUsize::new(200).expect("default max history messages should be nonzero"),
+            )
+            .build();
+        let routes = routes::context::RouteConfig::builder()
+            .model(ModelId::default())
+            .auth(AuthMode::None)
+            .bearer_token(None)
+            .stream_delay_ms(0)
+            .limits(limits)
+            .build();
         Self {
             address: SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 8787),
             routes,
@@ -89,19 +98,22 @@ impl TryFrom<ServeArgs> for ServerConfig {
         }
 
         // Convert raw CLI counts into positive request-bound invariants.
-        let limits = RequestLimits::new(
-            positive_limit(args.max_input_chars, "max-input-chars")?,
-            positive_limit(args.max_history_messages, "max-history-messages")?,
-        );
+        let limits = RequestLimits::builder()
+            .max_input_chars(positive_limit(args.max_input_chars, "max-input-chars")?)
+            .max_history_messages(positive_limit(
+                args.max_history_messages,
+                "max-history-messages",
+            )?)
+            .build();
 
         // Move provider behavior into the configuration shared by route state.
-        let routes = routes::context::RouteConfig::new(
-            args.model,
-            args.auth,
-            args.bearer_token,
-            args.stream_delay_ms,
-            limits,
-        );
+        let routes = routes::context::RouteConfig::builder()
+            .model(args.model)
+            .auth(args.auth)
+            .bearer_token(args.bearer_token)
+            .stream_delay_ms(args.stream_delay_ms)
+            .limits(limits)
+            .build();
 
         // Retain only process-level behavior at the serving boundary.
         Ok(Self {

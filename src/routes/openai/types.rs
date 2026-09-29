@@ -11,6 +11,7 @@ use uuid::Uuid;
 use super::errors::{OpenAiError, OpenAiFailureBody};
 use crate::types::http::unix_timestamp;
 use crate::types::json::JsonObject;
+use crate::types::lower::Lower;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurnResponse, FunctionCall, FunctionTool, TokenUsage,
@@ -186,14 +187,12 @@ impl ChatTool {
 #[serde(transparent)]
 pub(super) struct ChatToolList(Vec<ChatTool>);
 
-impl ChatToolList {
-    /// Lower Chat Completions tools into neutral function declarations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OpenAiError`] when a tool is not a function or omits required
-    /// function data.
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, OpenAiError> {
+impl Lower for ChatToolList {
+    type Canonical = Vec<FunctionTool>;
+
+    type Error = OpenAiError;
+
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
         self.0
             .into_iter()
             .map(|tool| {
@@ -232,23 +231,21 @@ pub(super) enum ChatToolChoice {
     Named(ChatToolNamedChoice),
 }
 
-impl TryFrom<Option<ChatToolChoice>> for CompatToolChoice {
+impl Lower for ChatToolChoice {
+    type Canonical = CompatToolChoice;
+
     type Error = OpenAiError;
 
-    fn try_from(choice: Option<ChatToolChoice>) -> Result<Self, Self::Error> {
-        match choice {
-            None | Some(ChatToolChoice::Mode(ToolChoiceMode::Auto)) => Ok(Self::Auto),
-            Some(ChatToolChoice::Mode(ToolChoiceMode::None)) => Ok(Self::None),
-            Some(ChatToolChoice::Mode(ToolChoiceMode::Required)) => Ok(Self::Required),
-            Some(ChatToolChoice::Mode(ToolChoiceMode::Unsupported)) => {
-                Err(OpenAiError::UnsupportedToolChoiceMode)
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        match self {
+            Self::Mode(ToolChoiceMode::Auto) => Ok(CompatToolChoice::Auto),
+            Self::Mode(ToolChoiceMode::None) => Ok(CompatToolChoice::None),
+            Self::Mode(ToolChoiceMode::Required) => Ok(CompatToolChoice::Required),
+            Self::Mode(ToolChoiceMode::Unsupported) => Err(OpenAiError::UnsupportedToolChoiceMode),
+            Self::Named(choice) if matches!(choice.kind, ToolFunctionKind::Function) => {
+                Ok(CompatToolChoice::Named(choice.function.name))
             }
-            Some(ChatToolChoice::Named(choice))
-                if matches!(choice.kind, ToolFunctionKind::Function) =>
-            {
-                Ok(Self::Named(choice.function.name))
-            }
-            Some(ChatToolChoice::Named(_)) => Err(OpenAiError::UnsupportedNamedToolChoice),
+            Self::Named(_) => Err(OpenAiError::UnsupportedNamedToolChoice),
         }
     }
 }
@@ -393,13 +390,12 @@ impl ResponsesRequestTool {
 #[serde(transparent)]
 pub(super) struct ResponsesRequestToolList(Vec<ResponsesRequestTool>);
 
-impl ResponsesRequestToolList {
-    /// Lower Responses tools into neutral function declarations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OpenAiError`] when a tool is not a function or omits its name.
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, OpenAiError> {
+impl Lower for ResponsesRequestToolList {
+    type Canonical = Vec<FunctionTool>;
+
+    type Error = OpenAiError;
+
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
         self.0
             .into_iter()
             .map(|tool| {
@@ -432,30 +428,26 @@ pub(super) enum ResponsesRequestToolChoice {
     Named(ResponsesRequestNamedToolChoice),
 }
 
-impl TryFrom<Option<ResponsesRequestToolChoice>> for CompatToolChoice {
+impl Lower for ResponsesRequestToolChoice {
+    type Canonical = CompatToolChoice;
+
     type Error = OpenAiError;
 
-    fn try_from(choice: Option<ResponsesRequestToolChoice>) -> Result<Self, Self::Error> {
-        match choice {
-            None | Some(ResponsesRequestToolChoice::Mode(ToolChoiceMode::Auto)) => Ok(Self::Auto),
-            Some(ResponsesRequestToolChoice::Mode(ToolChoiceMode::None)) => Ok(Self::None),
-            Some(ResponsesRequestToolChoice::Mode(ToolChoiceMode::Required)) => Ok(Self::Required),
-            Some(ResponsesRequestToolChoice::Mode(ToolChoiceMode::Unsupported)) => {
-                Err(OpenAiError::UnsupportedToolChoiceMode)
-            }
-            Some(ResponsesRequestToolChoice::Named(choice))
-                if matches!(choice.kind, ToolFunctionKind::Function) =>
-            {
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        match self {
+            Self::Mode(ToolChoiceMode::Auto) => Ok(CompatToolChoice::Auto),
+            Self::Mode(ToolChoiceMode::None) => Ok(CompatToolChoice::None),
+            Self::Mode(ToolChoiceMode::Required) => Ok(CompatToolChoice::Required),
+            Self::Mode(ToolChoiceMode::Unsupported) => Err(OpenAiError::UnsupportedToolChoiceMode),
+            Self::Named(choice) if matches!(choice.kind, ToolFunctionKind::Function) => {
                 let name = choice.name.filter(|name| !name.is_empty()).ok_or(
                     OpenAiError::MissingFunctionName {
                         param: "tool_choice",
                     },
                 )?;
-                Ok(Self::Named(name))
+                Ok(CompatToolChoice::Named(name))
             }
-            Some(ResponsesRequestToolChoice::Named(_)) => {
-                Err(OpenAiError::UnsupportedNamedToolChoice)
-            }
+            Self::Named(_) => Err(OpenAiError::UnsupportedNamedToolChoice),
         }
     }
 }
@@ -474,7 +466,7 @@ pub(super) struct ResponsesRequestTextConfig {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct ResponsesRequest {
+pub(super) struct ResponsesRequest {
     pub(super) model: ModelId,
     pub(super) input: ResponsesRequestInput,
     pub(super) instructions: Option<ResponsesRequestContent>,
