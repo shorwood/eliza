@@ -1,3 +1,4 @@
 /.direnv/
+/docs/
 /target/
 node_modules/
