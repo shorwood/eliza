@@ -1,9 +1,10 @@
 # rlib supplies the pinned Rust compiler and lint tooling. This shell adds only
 # the tools and native libraries used directly by ELIZA's development workflow.
 {
-  aichat,
   curl,
   deadnix,
+  docker-client,
+  docker-compose,
   hurl,
   just,
   lib,
@@ -20,9 +21,10 @@
 mkShell {
   inputsFrom = [ rlibShell ];
   packages = [
-    aichat
     curl
     deadnix
+    docker-client
+    docker-compose
     hurl
     just
     nodejs_22
