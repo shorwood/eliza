@@ -2,5 +2,6 @@
 
 mod audio;
 pub(crate) mod core;
+pub(crate) mod errors;
 pub(crate) mod service;
 mod synth;
