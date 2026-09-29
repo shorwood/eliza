@@ -1,6 +1,5 @@
 //! Shared route configuration and provider authentication.
 
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
@@ -15,40 +14,19 @@ use crate::types::turn::RequestLimits;
 // -----------------------------------------------------------------------------
 
 /// Route-visible server behavior without listener or tracing concerns.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bon::Builder)]
 pub(crate) struct RouteConfig {
     /// Provider-visible model identifier.
     pub(super) model: ModelId,
     /// Authentication policy for provider endpoints.
     auth: AuthMode,
     /// Expected credential when bearer authentication is enabled.
+    #[builder(required)]
     bearer_token: Option<BearerToken>,
     /// Optional delay between streamed chunks.
     pub(super) stream_delay_ms: u64,
-    /// Maximum accepted request text size.
-    pub(super) max_input_chars: NonZeroUsize,
-    /// Maximum accepted replay history length.
-    pub(super) max_history_messages: NonZeroUsize,
-}
-
-impl RouteConfig {
-    /// Collect the configuration consumed by HTTP routes.
-    pub(crate) fn new(
-        model: ModelId,
-        auth: AuthMode,
-        bearer_token: Option<BearerToken>,
-        stream_delay_ms: u64,
-        limits: RequestLimits,
-    ) -> Self {
-        Self {
-            model,
-            auth,
-            bearer_token,
-            stream_delay_ms,
-            max_input_chars: limits.max_input_chars(),
-            max_history_messages: limits.max_history_messages(),
-        }
-    }
+    /// Shared request-size and replay bounds.
+    pub(super) limits: RequestLimits,
 }
 
 // -----------------------------------------------------------------------------

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::errors::OllamaError;
 use crate::types::json::JsonObject;
+use crate::types::lower::Lower;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurnResponse, FunctionTool, ToolChoice as CompatToolChoice,
@@ -141,14 +142,12 @@ pub(super) struct Tool {
 #[serde(transparent)]
 pub(super) struct ToolList(Vec<Tool>);
 
-impl ToolList {
-    /// Lower provider tool declarations into the neutral function contract.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OllamaError`] when a tool is not a function or omits its
-    /// function definition or name.
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, OllamaError> {
+impl Lower for ToolList {
+    type Canonical = Vec<FunctionTool>;
+
+    type Error = OllamaError;
+
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
         self.0
             .into_iter()
             .map(|tool| {
@@ -195,22 +194,22 @@ pub(super) enum ToolChoice {
     Named(ToolNamedChoice),
 }
 
-impl TryFrom<Option<ToolChoice>> for CompatToolChoice {
+impl Lower for ToolChoice {
+    type Canonical = CompatToolChoice;
+
     type Error = OllamaError;
 
-    fn try_from(choice: Option<ToolChoice>) -> Result<Self, Self::Error> {
-        match choice {
-            None | Some(ToolChoice::Mode(ToolChoiceMode::Auto)) => Ok(Self::Auto),
-            Some(ToolChoice::Mode(ToolChoiceMode::None)) => Ok(Self::None),
-            Some(ToolChoice::Mode(ToolChoiceMode::Required)) => Ok(Self::Required),
-            Some(ToolChoice::Mode(ToolChoiceMode::Unsupported)) => {
-                Err(OllamaError::UnsupportedToolChoiceMode)
-            }
-            Some(ToolChoice::Named(choice)) => choice
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        match self {
+            Self::Mode(ToolChoiceMode::Auto) => Ok(CompatToolChoice::Auto),
+            Self::Mode(ToolChoiceMode::None) => Ok(CompatToolChoice::None),
+            Self::Mode(ToolChoiceMode::Required) => Ok(CompatToolChoice::Required),
+            Self::Mode(ToolChoiceMode::Unsupported) => Err(OllamaError::UnsupportedToolChoiceMode),
+            Self::Named(choice) => choice
                 .function
                 .name
                 .filter(|name| !name.is_empty())
-                .map(Self::Named)
+                .map(CompatToolChoice::Named)
                 .ok_or(OllamaError::MissingNamedToolChoice),
         }
     }
