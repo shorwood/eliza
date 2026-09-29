@@ -1,7 +1,7 @@
 //! Generated `OpenAPI` and Scalar documentation routes.
 
 use aide::axum::ApiRouter;
-use aide::openapi::{Info, OpenApi};
+use aide::openapi::{Info, License, OpenApi};
 use aide::scalar::Scalar;
 use axum::routing::get;
 use axum::{Extension, Json, Router};
@@ -31,6 +31,11 @@ fn document() -> OpenApi {
                 "A standalone ELIZA server exposing OpenAI, Anthropic, Gemini, and Ollama-compatible endpoints."
                     .to_owned(),
             ),
+            license: Some(License {
+                name: "MIT License".to_owned(),
+                identifier: Some("MIT".to_owned()),
+                ..License::default()
+            }),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             ..Info::default()
         },

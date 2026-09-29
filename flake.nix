@@ -3,94 +3,85 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    fenix.url = "github:nix-community/fenix";
-    fenix.inputs.nixpkgs.follows = "nixpkgs";
-    rlib.url = "git+file:../rlib";
-    rlib.inputs.nixpkgs.follows = "nixpkgs";
-    rlib.inputs.fenix.follows = "fenix";
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    rlib = {
+      url = "git+file:../rlib";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        fenix.follows = "fenix";
+      };
+    };
   };
 
-  outputs = { self, nixpkgs, rlib, ... }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rlib,
+      ...
+    }:
     let
+      # Keep supported hosts in one place so every output exposes the same set.
       systems = [
         "x86_64-linux"
         "aarch64-linux"
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
-      packageFor = system:
-        let
-          pkgs = import nixpkgs {
-            inherit system;
-            config.allowUnfreePredicate = package: (package.pname or "") == "eliza";
-          };
-          rustToolchain = rlib.packages.${system}.rust-toolchain;
-          rustPlatform = pkgs.makeRustPlatform {
-            cargo = rustToolchain;
-            rustc = rustToolchain;
-          };
-        in rustPlatform.buildRustPackage {
-          pname = "eliza";
-          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
-          src = pkgs.lib.fileset.toSource {
-            root = ./.;
-            fileset = pkgs.lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./examples/rust-rig
-              ./fixtures
-              ./src
-              ./tests
-            ];
-          };
-          cargoLock.lockFile = ./Cargo.lock;
-          nativeCheckInputs = [ pkgs.hurl ];
-          meta = {
-            description = "Standalone classic ELIZA server with provider-compatible HTTP APIs";
-            license = {
-              fullName = "Functional Source License, Version 1.1, ALv2 Future License";
-              shortName = "fsl11Alv2";
-              spdxId = "FSL-1.1-ALv2";
-              url = "https://spdx.org/licenses/FSL-1.1-ALv2.html";
-              free = false;
-              redistributable = true;
-            };
-            mainProgram = "eliza";
-            platforms = systems;
-          };
-        };
-      devEnvironmentFor = system:
+
+      # Component files are ordinary Nix functions. `callPackage` supplies
+      # dependencies from nixpkgs; only project-specific values are passed here.
+      componentsFor =
+        system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-        in pkgs.mkShell {
-          inputsFrom = [ rlib.devShells.${system}.consumer ];
-          packages = [
-            pkgs.aichat
-            pkgs.curl
-            pkgs.hurl
-            pkgs.just
-            pkgs.nodejs_22
-            pkgs.openssl
-            pkgs.pnpm
-            pkgs.pkg-config
-            pkgs.stdenv.cc
-          ];
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl pkgs.stdenv.cc.cc.lib ];
+          package = pkgs.callPackage ./nix/package.nix {
+            rustToolchain = rlib.packages.${system}.rust-toolchain;
+            supportedSystems = systems;
+          };
+        in
+        {
+          inherit package;
+          dockerImage = pkgs.callPackage ./nix/docker-image.nix { inherit package; };
+          devShell = pkgs.callPackage ./nix/dev-shell.nix {
+            rlibShell = rlib.devShells.${system}.consumer;
+          };
         };
-    in {
-      packages = forAllSystems (system:
-        let package = packageFor system;
-        in {
-          eliza = package;
-          default = package;
-        });
+    in
+    {
+      packages = forAllSystems (
+        system:
+        let
+          components = componentsFor system;
+        in
+        {
+          eliza = components.package;
+          default = components.package;
+        }
+        # Containers always run Linux binaries. A non-Linux host can still
+        # request one of these outputs when it has a Linux Nix builder.
+        // nixpkgs.lib.optionalAttrs (nixpkgs.lib.hasSuffix "-linux" system) {
+          inherit (components) dockerImage;
+        }
+      );
 
-      checks = forAllSystems (system: {
-        package = self.packages.${system}.eliza;
-      });
+      # Flake checks build the artifacts themselves; Cargo's checks run as part
+      # of the Rust package derivation.
+      checks = forAllSystems (
+        system:
+        {
+          package = self.packages.${system}.eliza;
+        }
+        // nixpkgs.lib.optionalAttrs (nixpkgs.lib.hasSuffix "-linux" system) {
+          dockerImage = self.packages.${system}.dockerImage;
+        }
+      );
 
       devShells = forAllSystems (system: {
-        default = devEnvironmentFor system;
+        default = (componentsFor system).devShell;
       });
     };
 }

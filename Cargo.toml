@@ -3,11 +3,14 @@ resolver = "2"
 members = ["examples/rust-rig"]
 default-members = ["."]
 
+[workspace.package]
+license = "MIT"
+
 [package]
 name = "eliza"
 version = "0.1.0"
 edition = "2024"
-license = "FSL-1.1-ALv2"
+license.workspace = true
 publish = false
 
 [dependencies]
