@@ -11,6 +11,7 @@ mod eliza;
 mod problem;
 mod routes;
 mod serve;
+mod speech;
 mod cli;
 mod types;
 

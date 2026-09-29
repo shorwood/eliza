@@ -76,15 +76,16 @@ Every provider route is namespaced. Unprefixed routes such as `/v1/models` and
 | Surface | Routes | Successful response transport |
 | --- | --- | --- |
 | System | `GET /healthz` | JSON |
-| OpenAI | `GET /openai/v1/models`<br>`POST /openai/v1/chat/completions`<br>`POST /openai/v1/responses` | JSON; SSE when `stream: true` |
+| OpenAI | `GET /openai/v1/models`<br>`POST /openai/v1/chat/completions`<br>`POST /openai/v1/responses`<br>`POST /openai/v1/audio/speech` | JSON, binary audio, or SSE |
 | Gemini OpenAI alias | `POST /gemini/v1beta/openai/chat/completions` | OpenAI JSON or SSE |
 | Anthropic | `GET /anthropic/v1/models`<br>`POST /anthropic/v1/messages` | JSON; SSE when `stream: true` |
 | Gemini | `GET /gemini/v1beta/models`<br>`POST /gemini/v1beta/models/{model}:generateContent`<br>`POST /gemini/v1beta/models/{model}:streamGenerateContent` | JSON; the stream action returns a JSON array, or SSE with `?alt=sse` |
 | Ollama | `GET /ollama/api/tags`<br>`POST /ollama/api/chat` | NDJSON by default; JSON when `stream: false` |
 | Documentation | `GET /docs`<br>`GET /openapi.json` | HTML and JSON |
 
-All model-list routes advertise the single model selected by `--model`, which
-defaults to `eliza-doctor`.
+OpenAI and Gemini model lists advertise the model selected by `--model`, which
+defaults to `eliza-doctor`, plus the fixed `eliza-retro-tts` speech model. The
+other provider catalogs continue to advertise only the configured chat model.
 
 ## Request examples
 
@@ -107,6 +108,19 @@ curl -s http://127.0.0.1:8787/openai/v1/responses \
   -d '{"model":"eliza-doctor","input":"I need help."}'
 ```
 
+### OpenAI Speech
+
+```sh
+curl -s http://127.0.0.1:8787/openai/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"eliza-retro-tts","input":"Hello from the nineties.","voice":"Kore","response_format":"wav"}' \
+  --output speech.wav
+```
+
+The endpoint supports MP3, WAV, and signed 16-bit little-endian PCM. Set
+`"stream_format":"sse"` for base64 `speech.audio.delta` events followed by a
+`speech.audio.done` event.
+
 ### Anthropic Messages
 
 ```sh
@@ -123,6 +137,19 @@ curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-doctor:generateContent 
   -H 'Content-Type: application/json' \
   -d '{"contents":[{"role":"user","parts":[{"text":"I am sad."}]}]}'
 ```
+
+Gemini speech uses the same route with the dedicated model and audio modality:
+
+```sh
+curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-retro-tts:generateContent \
+  -H 'Content-Type: application/json' \
+  -d '{"contents":[{"role":"user","parts":[{"text":"Hello from the nineties."}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"voice":"retro"}},"responseFormat":{"audio":{"mimeType":"AUDIO_WAV"}}}}'
+```
+
+Gemini speech supports `AUDIO_WAV`, `AUDIO_L16`, `AUDIO_MULAW`, and
+`AUDIO_ALAW` at 8, 16, or 24 kHz. Its streaming action defaults to L16 and
+retains the existing JSON-array or `?alt=sse` transports. Select both under
+`generationConfig.responseFormat.audio` using `mimeType` and `sampleRate`.
 
 ### Ollama Chat
 
@@ -182,6 +209,12 @@ request failures use provider-native JSON envelopes and include a stable
   are tolerated, while unsupported known variants are rejected explicitly.
 - Conversation input is text-only. Multimodal content, OpenAI structured
   output, and Ollama structured or reasoning output are not implemented.
+- Speech is intentionally retro, deterministic, and English/ASCII-oriented.
+  It uses Flite's bundled 8 kHz diphone voice; unsupported Unicode is rejected
+  and output is capped at 120 seconds.
+- Arbitrary voice names select stable pitch profiles. Style prose only
+  recognizes `whisper`, `calm`/`soft`, `excited`/`cheerful`, `high`,
+  `low`/`deep`, `fast`/`quick`, and `slow`; other words are ignored.
 - A request replays its user history through a fresh ELIZA session. State is
   not retained between HTTP requests.
 - Usage counts are deterministic approximations, not provider tokenizer output.
@@ -251,3 +284,8 @@ Use `just test-http` for only the Hurl-backed HTTP suites.
 ## License
 
 ELIZA is available under the [MIT License](LICENSE).
+
+Speech synthesis uses the Apache-2.0-licensed pure-Rust `flite-rs` crate and its
+permissively licensed CMU/Edinburgh speech data. MP3 encoding uses the
+Apache-2.0-licensed pure-Rust `rusty_mp3` crate. See
+[`THIRD-PARTY-LICENSES.md`](THIRD-PARTY-LICENSES.md) for required notices.

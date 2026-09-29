@@ -6,6 +6,7 @@ use axum::http::HeaderMap;
 
 use super::errors::AuthenticationError;
 use crate::cli::{AuthMode, BearerToken};
+use crate::speech::service::SpeechService;
 use crate::types::model::ModelId;
 use crate::types::turn::RequestLimits;
 
@@ -38,6 +39,8 @@ pub(crate) struct RouteConfig {
 pub(super) struct AppState {
     /// Validated behavior shared by handlers.
     pub(super) config: Arc<RouteConfig>,
+    /// Bounded executor for CPU-heavy speech synthesis and encoding.
+    pub(super) speech: SpeechService,
 }
 
 // -----------------------------------------------------------------------------

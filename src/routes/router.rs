@@ -22,6 +22,7 @@ impl Routes {
         let router = router.nest("/ollama", super::ollama::router::mount());
         Docs::finish(router).with_state(AppState {
             config: Arc::new(config),
+            speech: crate::speech::service::SpeechService::default(),
         })
     }
 }
