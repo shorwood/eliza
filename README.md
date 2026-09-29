@@ -284,8 +284,3 @@ Use `just test-http` for only the Hurl-backed HTTP suites.
 ## License
 
 ELIZA is available under the [MIT License](LICENSE).
-
-Speech synthesis uses the Apache-2.0-licensed pure-Rust `flite-rs` crate and its
-permissively licensed CMU/Edinburgh speech data. MP3 encoding uses the
-Apache-2.0-licensed pure-Rust `rusty_mp3` crate. See
-[`THIRD-PARTY-LICENSES.md`](THIRD-PARTY-LICENSES.md) for required notices.
