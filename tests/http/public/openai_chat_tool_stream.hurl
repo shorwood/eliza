@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/chat/completions
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "stream": true,
   "stream_options": {"include_usage": true},
   "tools": [{
@@ -14,7 +14,7 @@ HTTP 200
 [Asserts]
 header "Content-Type" startsWith "text/event-stream"
 body contains "\"object\":\"chat.completion.chunk\""
-body contains "\"model\":\"eliza-doctor\""
+body contains "\"model\":\"eliza-1966\""
 body contains "\"tool_calls\""
 body contains "\"name\":\"echo\""
 body contains "\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\""

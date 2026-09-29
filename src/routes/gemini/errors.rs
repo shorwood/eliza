@@ -86,11 +86,11 @@ pub(super) enum GeminiError {
         param: &'static str,
     },
     /// Audio generation used a model other than the local speech model.
-    #[error("audio generation requires model `eliza-retro-tts`")]
+    #[error("audio generation requires model `flite`")]
     #[diagnostic(code(eliza::gemini::speech_model_required))]
     SpeechModelRequired,
     /// The local speech model was asked for a non-audio response.
-    #[error("model `eliza-retro-tts` only supports AUDIO responses")]
+    #[error("model `flite` only supports AUDIO responses")]
     #[diagnostic(code(eliza::gemini::speech_model_audio_only))]
     SpeechModelAudioOnly,
     /// Response modalities did not select exactly one supported modality.
