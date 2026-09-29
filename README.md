@@ -253,7 +253,7 @@ Schema.
 
 The Docker Compose example runs Open WebUI preconfigured for ELIZA chat and
 speech. With a Docker daemon running, this command builds the server and starts
-the interface at `http://127.0.0.1:3000`:
+the interface at `http://127.0.0.1:3000` or `http://localhost:3000`:
 
 ```sh
 nix develop --command just chat
