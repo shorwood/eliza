@@ -9,24 +9,60 @@ The bundled script follows the 1966 Weizenbaum DOCTOR lineage from ELIZAGEN,
 not a BASIC-port rewrite. This is a compatibility fixture and historical
 chatbot, not a medical or therapeutic system.
 
-## Quick start
+## Install and run
 
-Run from the Nix development shell:
+### Nix flake
+
+Install the executable from a checkout:
 
 ```sh
-nix develop --command cargo run --locked -- serve
+nix profile install .#eliza
+eliza serve
 ```
 
-The server listens on `http://127.0.0.1:8787` by default. Verify it with:
+Replace `.` with the published flake reference when installing remotely. The
+same package can be run without adding it to a profile:
+
+```sh
+nix run .#eliza -- serve
+```
+
+### Docker image
+
+The flake exposes `eliza:0.1.0` Linux image archives for x86-64 and ARM64.
+On a matching Linux host, build and load the native image with:
+
+```sh
+nix build .#dockerImage
+docker load --input result
+docker run --rm -p 127.0.0.1:8787:8787 eliza:0.1.0
+```
+
+From a non-Linux host, select the Linux target explicitly and configure a
+Linux Nix builder. Docker or Podman can load and run the result, but its Linux
+VM does not automatically act as a Nix builder:
+
+```sh
+nix build .#packages.aarch64-linux.dockerImage
+docker load --input result
+```
+
+The image runs as an unprivileged user and defaults to
+`eliza serve --host 0.0.0.0`. Arguments after the image name replace that
+default command, so include `serve` when supplying options:
+
+```sh
+docker run --rm -p 127.0.0.1:8787:8787 eliza:0.1.0 \
+  serve --host 0.0.0.0 --log json
+```
+
+For a registry-published image, replace `eliza:0.1.0` with its full image
+reference; the runtime arguments are unchanged.
+
+The server listens on `http://127.0.0.1:8787` in both examples. Verify it with:
 
 ```sh
 curl -s http://127.0.0.1:8787/healthz
-```
-
-The flake also exposes the packaged binary:
-
-```sh
-nix run . -- serve
 ```
 
 Interactive Scalar documentation is served at `/docs`; the generated OpenAPI
@@ -119,8 +155,11 @@ tracing filter; it defaults to `info` when absent or invalid.
 Inspect the authoritative CLI contract with:
 
 ```sh
-nix develop --command cargo run --locked -- serve --help
+eliza serve --help
 ```
+
+For the container image, use
+`docker run --rm eliza:0.1.0 serve --help`.
 
 ### Authentication
 
@@ -208,3 +247,7 @@ just ok
 The gate checks formatting, the one-request-per-Hurl-file contract, compilation,
 unit tests, CLI UI snapshots, HTTP contracts, Clippy, and rlib Dylint rules.
 Use `just test-http` for only the Hurl-backed HTTP suites.
+
+## License
+
+ELIZA is available under the [MIT License](LICENSE).
