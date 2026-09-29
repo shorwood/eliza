@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/chat/completions
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "messages": [{"role": "future-role", "content": "Hello"}]
 }
 HTTP 400

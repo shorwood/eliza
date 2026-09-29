@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/audio/speech
 Content-Type: application/json
 {
-  "model": "eliza-retro-tts",
+  "model": "flite",
   "input": "Hello from the nineties.",
   "voice": "Kore",
   "instructions": "calm and low",
@@ -15,7 +15,7 @@ header "Transfer-Encoding" == "chunked"
 POST {{base_url}}/openai/v1/audio/speech
 Content-Type: application/json
 {
-  "model": "eliza-retro-tts",
+  "model": "flite",
   "input": "Hello",
   "voice": {"id": "custom-robot"},
   "response_format": "pcm",
@@ -33,7 +33,7 @@ body contains "\"total_tokens\""
 
 POST {{base_url}}/openai/v1/audio/speech
 Content-Type: application/json
-{"model": "eliza-doctor", "input": "Hello", "voice": "Kore"}
+{"model": "eliza-1966", "input": "Hello", "voice": "Kore"}
 HTTP 400
 [Asserts]
 header "x-eliza-error-code" == "eliza::openai::speech_model_required"
@@ -42,7 +42,7 @@ jsonpath "$.error.param" == "model"
 POST {{base_url}}/openai/v1/audio/speech
 Content-Type: application/json
 {
-  "model": "eliza-retro-tts",
+  "model": "flite",
   "input": "Hello",
   "voice": "Kore",
   "response_format": "flac"

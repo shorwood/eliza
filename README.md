@@ -84,7 +84,7 @@ Every provider route is namespaced. Unprefixed routes such as `/v1/models` and
 | Documentation | `GET /docs`<br>`GET /openapi.json` | HTML and JSON |
 
 OpenAI and Gemini model lists advertise the model selected by `--model`, which
-defaults to `eliza-doctor`, plus the fixed `eliza-retro-tts` speech model. The
+defaults to `eliza-1966`, plus the fixed `flite` speech model. The
 other provider catalogs continue to advertise only the configured chat model.
 
 ## Request examples
@@ -94,7 +94,7 @@ other provider catalogs continue to advertise only the configured chat model.
 ```sh
 curl -s http://127.0.0.1:8787/openai/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"eliza-doctor","messages":[{"role":"user","content":"I am sad."}]}'
+  -d '{"model":"eliza-1966","messages":[{"role":"user","content":"I am sad."}]}'
 ```
 
 Gemini's OpenAI-compatible alias accepts the same request at
@@ -105,7 +105,7 @@ Gemini's OpenAI-compatible alias accepts the same request at
 ```sh
 curl -s http://127.0.0.1:8787/openai/v1/responses \
   -H 'Content-Type: application/json' \
-  -d '{"model":"eliza-doctor","input":"I need help."}'
+  -d '{"model":"eliza-1966","input":"I need help."}'
 ```
 
 ### OpenAI Speech
@@ -113,7 +113,7 @@ curl -s http://127.0.0.1:8787/openai/v1/responses \
 ```sh
 curl -s http://127.0.0.1:8787/openai/v1/audio/speech \
   -H 'Content-Type: application/json' \
-  -d '{"model":"eliza-retro-tts","input":"Hello from the nineties.","voice":"Kore","response_format":"wav"}' \
+  -d '{"model":"flite","input":"Hello from the nineties.","voice":"Kore","response_format":"wav"}' \
   --output speech.wav
 ```
 
@@ -127,13 +127,13 @@ The endpoint supports MP3, WAV, and signed 16-bit little-endian PCM. Set
 curl -s http://127.0.0.1:8787/anthropic/v1/messages \
   -H 'Content-Type: application/json' \
   -H 'anthropic-version: 2023-06-01' \
-  -d '{"model":"eliza-doctor","max_tokens":128,"messages":[{"role":"user","content":"I am sad."}]}'
+  -d '{"model":"eliza-1966","max_tokens":128,"messages":[{"role":"user","content":"I am sad."}]}'
 ```
 
 ### Gemini Generate Content
 
 ```sh
-curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-doctor:generateContent \
+curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-1966:generateContent \
   -H 'Content-Type: application/json' \
   -d '{"contents":[{"role":"user","parts":[{"text":"I am sad."}]}]}'
 ```
@@ -141,7 +141,7 @@ curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-doctor:generateContent 
 Gemini speech uses the same route with the dedicated model and audio modality:
 
 ```sh
-curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-retro-tts:generateContent \
+curl -s http://127.0.0.1:8787/gemini/v1beta/models/flite:generateContent \
   -H 'Content-Type: application/json' \
   -d '{"contents":[{"role":"user","parts":[{"text":"Hello from the nineties."}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"voice":"retro"}},"responseFormat":{"audio":{"mimeType":"AUDIO_WAV"}}}}'
 ```
@@ -156,7 +156,7 @@ retains the existing JSON-array or `?alt=sse` transports. Select both under
 ```sh
 curl -s http://127.0.0.1:8787/ollama/api/chat \
   -H 'Content-Type: application/json' \
-  -d '{"model":"eliza-doctor","stream":false,"messages":[{"role":"user","content":"I am sad."}]}'
+  -d '{"model":"eliza-1966","stream":false,"messages":[{"role":"user","content":"I am sad."}]}'
 ```
 
 ## Runtime configuration
@@ -167,7 +167,7 @@ curl -s http://127.0.0.1:8787/ollama/api/chat \
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | Listener IP address |
 | `--port` | `8787` | Listener port |
-| `--model` | `eliza-doctor` | Nonblank model advertised by catalog routes |
+| `--model` | `eliza-1966` | Nonblank model advertised by catalog routes |
 | `--auth` | `none` | `none` or `bearer` |
 | `--bearer-token` | unset | Required and nonempty when `--auth bearer` is selected |
 | `--cors` | `none` | `none` or `permissive` |
@@ -259,8 +259,8 @@ the interface at `http://127.0.0.1:3000`:
 nix develop --command just chat
 ```
 
-Choose `eliza-doctor`, send a message, then use the speaker button beneath its
-reply to exercise `eliza-retro-tts`. To test a tool round trip, enable
+Choose `eliza-1966`, send a message, then use the speaker button beneath its
+reply to exercise `flite`. To test a tool round trip, enable
 `Hello MCP` under **+ > Integrations > Tools**, then send:
 
 ```text

@@ -1,7 +1,7 @@
 POST {{base_url}}/openai/v1/responses
 Content-Type: application/json
 {
-  "model": "eliza-doctor",
+  "model": "eliza-1966",
   "input": [{
     "type": "message",
     "role": "user",

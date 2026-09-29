@@ -244,7 +244,7 @@ fn tags_response_for_eliza(model: ModelId) -> ModelListResponse {
             model,
             modified_at: CREATED_AT,
             size: 0,
-            digest: "eliza-doctor",
+            digest: "eliza-1966",
             details: ModelDetails {
                 parent_model: "",
                 format: "eliza",

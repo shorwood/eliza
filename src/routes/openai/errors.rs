@@ -121,7 +121,7 @@ pub(super) enum OpenAiError {
     #[diagnostic(code(eliza::openai::unsupported_input_item))]
     UnsupportedInputItem,
     /// Speech synthesis used a model other than the local speech model.
-    #[error("speech requires model `eliza-retro-tts`")]
+    #[error("speech requires model `flite`")]
     #[diagnostic(code(eliza::openai::speech_model_required))]
     SpeechModelRequired,
     /// Speech synthesis received an empty voice name.
