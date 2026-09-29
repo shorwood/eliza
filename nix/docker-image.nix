@@ -27,7 +27,7 @@ dockerTools.buildLayeredImage {
     Labels = {
       "org.opencontainers.image.title" = "ELIZA Compatibility Server";
       "org.opencontainers.image.description" = "Classic ELIZA through provider-compatible HTTP APIs";
-      "org.opencontainers.image.licenses" = "MIT";
+      "org.opencontainers.image.licenses" = "MIT AND Apache-2.0";
       "org.opencontainers.image.version" = package.version;
     };
   };

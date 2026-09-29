@@ -61,6 +61,33 @@ pub(super) enum GeminiError {
     #[error("only text parts are supported")]
     #[diagnostic(code(eliza::gemini::unsupported_text_part))]
     UnsupportedTextPart { param: &'static str },
+    #[error("audio generation requires model `eliza-retro-tts`")]
+    #[diagnostic(code(eliza::gemini::speech_model_required))]
+    SpeechModelRequired,
+    #[error("model `eliza-retro-tts` only supports AUDIO responses")]
+    #[diagnostic(code(eliza::gemini::speech_model_audio_only))]
+    SpeechModelAudioOnly,
+    #[error("responseModalities must contain exactly TEXT or AUDIO")]
+    #[diagnostic(code(eliza::gemini::invalid_response_modalities))]
+    InvalidResponseModalities,
+    #[error("speechConfig and a nonempty voice are required")]
+    #[diagnostic(code(eliza::gemini::missing_speech_config))]
+    MissingSpeechConfig,
+    #[error("unsupported speech response format")]
+    #[diagnostic(code(eliza::gemini::unsupported_speech_format))]
+    UnsupportedSpeechFormat,
+    #[error("audio generation supports only user text parts")]
+    #[diagnostic(code(eliza::gemini::speech_text_only))]
+    SpeechTextOnly,
+    #[error("tools and system instructions are not supported for audio generation")]
+    #[diagnostic(code(eliza::gemini::speech_controls_unsupported))]
+    SpeechControlsUnsupported,
+    #[error("multi-speaker speech requires exactly two distinct speaker mappings")]
+    #[diagnostic(code(eliza::gemini::invalid_speaker_config))]
+    InvalidSpeakerConfig,
+    #[error("speech part has a missing or unknown speaker")]
+    #[diagnostic(code(eliza::gemini::unknown_speaker))]
+    UnknownSpeaker,
 }
 
 impl ProblemDetails for GeminiError {
@@ -72,7 +99,10 @@ impl ProblemDetails for GeminiError {
             | Self::UnsupportedRole
             | Self::UnsupportedUserPart
             | Self::UnsupportedModelPart
-            | Self::UnsupportedTextPart { .. } => ProblemClass::UnsupportedRequest,
+            | Self::UnsupportedTextPart { .. }
+            | Self::UnsupportedSpeechFormat
+            | Self::SpeechTextOnly
+            | Self::SpeechControlsUnsupported => ProblemClass::UnsupportedRequest,
             _ => ProblemClass::InvalidRequest,
         }
     }
@@ -91,7 +121,16 @@ impl ProblemDetails for GeminiError {
             | Self::MissingFunctionResponse
             | Self::UnsupportedUserPart
             | Self::MissingFunctionCallName
-            | Self::UnsupportedModelPart => Some("contents.parts"),
+            | Self::UnsupportedModelPart
+            | Self::SpeechTextOnly
+            | Self::UnknownSpeaker => Some("contents.parts"),
+            Self::SpeechModelRequired | Self::SpeechModelAudioOnly => Some("model"),
+            Self::InvalidResponseModalities => Some("generationConfig.responseModalities"),
+            Self::MissingSpeechConfig | Self::InvalidSpeakerConfig => {
+                Some("generationConfig.speechConfig")
+            }
+            Self::UnsupportedSpeechFormat => Some("generationConfig.responseFormat.audio.mimeType"),
+            Self::SpeechControlsUnsupported => Some("generationConfig"),
         }
     }
 }

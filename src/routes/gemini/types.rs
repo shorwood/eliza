@@ -67,17 +67,23 @@ pub(super) struct ContentFunctionResponse {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(untagged)]
+pub(super) struct ContentSpeechMetadata {
+    pub(super) speaker: Option<String>,
+    pub(super) style: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged, rename_all_fields = "camelCase")]
 pub(super) enum ContentPart {
     Text {
         text: String,
+        #[serde(alias = "speech_metadata")]
+        speech_metadata: Option<ContentSpeechMetadata>,
     },
     FunctionCall {
-        #[serde(rename = "functionCall")]
         function_call: ContentFunctionCall,
     },
     FunctionResponse {
-        #[serde(rename = "functionResponse")]
         function_response: ContentFunctionResponse,
     },
     Unsupported {
@@ -213,8 +219,86 @@ impl Lower for ToolConfig {
 }
 
 // -----------------------------------------------------------------------------
+// Speech: Defines voice selection and audio response contracts.
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(super) enum SpeechResponseModality {
+    Text,
+    Audio,
+    #[serde(other)]
+    Unsupported,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SpeechPrebuiltVoiceConfig {
+    pub(super) voice_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SpeechVoiceConfig {
+    pub(super) voice: Option<String>,
+    pub(super) prebuilt_voice_config: Option<SpeechPrebuiltVoiceConfig>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SpeechSpeakerVoiceConfig {
+    pub(super) speaker: Option<String>,
+    pub(super) voice_config: Option<SpeechVoiceConfig>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SpeechMultiSpeakerVoiceConfig {
+    pub(super) speaker_voice_configs: Option<Vec<SpeechSpeakerVoiceConfig>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(super) enum SpeechAudioFormat {
+    #[default]
+    AudioWav,
+    AudioL16,
+    AudioMulaw,
+    AudioAlaw,
+    #[serde(other)]
+    Unsupported,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SpeechConfig {
+    pub(super) voice_config: Option<SpeechVoiceConfig>,
+    pub(super) multi_speaker_voice_config: Option<SpeechMultiSpeakerVoiceConfig>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SpeechAudioConfig {
+    pub(super) mime_type: Option<SpeechAudioFormat>,
+    pub(super) sample_rate: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct SpeechResponseFormat {
+    pub(super) audio: Option<SpeechAudioConfig>,
+}
+
+// -----------------------------------------------------------------------------
 // Generate: Defines unary and streaming generation contracts.
 // -----------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GenerateConfig {
+    pub(super) response_modalities: Option<Vec<SpeechResponseModality>>,
+    pub(super) response_format: Option<SpeechResponseFormat>,
+    pub(super) speech_config: Option<SpeechConfig>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +307,7 @@ pub(super) struct GenerateContentRequest {
     pub(super) system_instruction: Option<Content>,
     pub(super) tools: Option<ToolGroupList>,
     pub(super) tool_config: Option<ToolConfig>,
+    pub(super) generation_config: Option<GenerateConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -252,15 +337,18 @@ pub(super) struct GenerateFunctionCall {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-#[serde(untagged)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GenerateInlineData {
+    pub(super) mime_type: String,
+    pub(super) data: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(untagged, rename_all_fields = "camelCase")]
 pub(super) enum GenerateOutputPart {
-    Text {
-        text: String,
-    },
-    FunctionCall {
-        #[serde(rename = "functionCall")]
-        function_call: GenerateFunctionCall,
-    },
+    Text { text: String },
+    FunctionCall { function_call: GenerateFunctionCall },
+    InlineData { inline_data: GenerateInlineData },
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

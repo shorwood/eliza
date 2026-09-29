@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use super::errors::{GeminiError, GeminiFailureResponse, GeminiRejection};
+use super::speech::{RequestMode, SpeechDelivery};
 use super::types::{
     Content, ContentFunctionResponseValue, ContentPart, ContentRole, GenerateCandidate,
     GenerateContentRequest, GenerateContentResponse, GenerateFinishReason, GenerateFunctionCall,
@@ -196,7 +197,7 @@ fn user_parts_lower(
     let mut text = Vec::new();
     for part in parts {
         match part {
-            ContentPart::Text { text: part } => text.push(part),
+            ContentPart::Text { text: part, .. } => text.push(part),
             ContentPart::FunctionResponse { function_response } => {
                 user_text_flush(&mut text, turns);
                 let response = user_function_response_text(function_response.response)?;
@@ -228,7 +229,7 @@ fn model_parts_lower(
 ) -> Result<(), GeminiError> {
     for part in parts {
         match part {
-            ContentPart::Text { text } => turns.push(CompatTurn::Assistant(text)),
+            ContentPart::Text { text, .. } => turns.push(CompatTurn::Assistant(text)),
             ContentPart::FunctionCall { function_call } => {
                 turns.push(function_call.lower()?);
             }
@@ -258,7 +259,7 @@ fn text_parts(parts: Vec<ContentPart>, param: &'static str) -> Result<String, Ge
     let text = parts
         .into_iter()
         .map(|part| match part {
-            ContentPart::Text { text } => Ok(text),
+            ContentPart::Text { text, .. } => Ok(text),
             ContentPart::FunctionCall { .. }
             | ContentPart::FunctionResponse { .. }
             | ContentPart::Unsupported { .. } => Err(GeminiError::UnsupportedTextPart { param }),
@@ -331,6 +332,47 @@ fn stream_records(response: &CompatTurnResponse) -> Vec<GenerateContentResponse>
 }
 
 // -----------------------------------------------------------------------------
+// GenerateTransport: Owns text response rendering after execution.
+// -----------------------------------------------------------------------------
+
+/// Completed Gemini text result with its selected delivery contract.
+struct GenerateTransport {
+    /// Unary or streaming action selected by the path.
+    kind: GeminiActionKind,
+    /// Optional streaming media selector.
+    format: Option<GenerateStreamFormat>,
+    /// Completed neutral result.
+    response: CompatTurnResponse,
+    /// Optional delay between SSE events.
+    delay_ms: u64,
+}
+
+impl IntoResponse for GenerateTransport {
+    fn into_response(self) -> Response {
+        // Unary generation has no incremental transport to render.
+        if !self.kind.is_stream() {
+            return Json(GenerateContentResponse::from(self.response)).into_response();
+        }
+        let records = stream_records(&self.response);
+
+        // Explicit SSE selection bypasses JSON-array rendering.
+        if matches!(self.format, Some(GenerateStreamFormat::Sse)) {
+            let events = records
+                .iter()
+                .map(json_event)
+                .collect::<Result<Vec<Event>, _>>();
+            return match events {
+                Ok(events) => SseEvents::from(events)
+                    .with_delay(self.delay_ms)
+                    .into_response(),
+                Err(error) => GeminiRejection::from_error(&error).into_response(),
+            };
+        }
+        Json(records).into_response()
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Generate: Authenticates and executes native Gemini generation.
 // -----------------------------------------------------------------------------
 
@@ -387,6 +429,31 @@ async fn generate(
         }
     };
 
+    let speech_delivery = if !action.kind.is_stream() {
+        SpeechDelivery::Unary
+    } else if matches!(query.alt, Some(GenerateStreamFormat::Sse)) {
+        SpeechDelivery::Sse
+    } else {
+        SpeechDelivery::JsonStream
+    };
+
+    match RequestMode::for_payload(&payload) {
+        // Audio generation owns its provider-native response.
+        Ok(RequestMode::Audio) => {
+            return super::speech::generate(&state, action.model, speech_delivery, payload).await;
+        }
+        Ok(RequestMode::Text) => {}
+        // Invalid modality lists fail before ordinary text lowering.
+        Err(error) => {
+            return GeminiRejection::from_error(&error).into_response();
+        }
+    }
+
+    // The dedicated speech model does not silently fall back to text.
+    if action.model.as_str() == crate::speech::core::MODEL_ID {
+        return GeminiRejection::from_error(&GeminiError::SpeechModelAudioOnly).into_response();
+    }
+
     // Lower and execute the provider request under shared resource limits.
     let lowering = GeminiRequest {
         model: action.model.clone(),
@@ -412,28 +479,13 @@ async fn generate(
         }
     };
 
-    // Unary actions return one complete GenerateContent response.
-    if !action.kind.is_stream() {
-        return Json(GenerateContentResponse::from(response)).into_response();
+    GenerateTransport {
+        kind: action.kind,
+        format: query.alt,
+        response,
+        delay_ms: state.config.stream_delay_ms,
     }
-    let records = stream_records(&response);
-
-    // Choose SSE only when the query explicitly requests it.
-    if matches!(query.alt, Some(GenerateStreamFormat::Sse)) {
-        let events = records
-            .iter()
-            .map(json_event)
-            .collect::<Result<Vec<Event>, _>>();
-
-        // Finish the request through an SSE response or native encoding error.
-        return match events {
-            Ok(events) => SseEvents::from(events)
-                .with_delay(state.config.stream_delay_ms)
-                .into_response(),
-            Err(error) => GeminiRejection::from_error(&error).into_response(),
-        };
-    }
-    Json(records).into_response()
+    .into_response()
 }
 
 // -----------------------------------------------------------------------------

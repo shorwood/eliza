@@ -3,13 +3,16 @@
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::http::header;
+use axum::http::{HeaderValue, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::{StreamExt, stream};
 use serde::Serialize;
 
 use super::errors::EncodingError;
+
+/// Binary delivery chunk size shared by audio responses.
+const BYTE_STREAM_CHUNK_SIZE: usize = 12 * 1024;
 
 // -----------------------------------------------------------------------------
 // StreamChunks: Splits provider output at readable boundaries.
@@ -32,6 +35,56 @@ pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
         chunks.push(current);
     }
     chunks
+}
+
+// -----------------------------------------------------------------------------
+// ByteStreamResponse: Delivers a completed binary payload in paced chunks.
+// -----------------------------------------------------------------------------
+
+/// Chunked binary response used by audio-compatible endpoints.
+pub(crate) struct ByteStreamResponse {
+    /// Complete payload split when the response is rendered.
+    bytes: Vec<u8>,
+    /// Response media type.
+    media_type: String,
+    /// Delay inserted before each transport chunk.
+    delay_ms: u64,
+}
+
+impl ByteStreamResponse {
+    /// Build a chunked response from one bounded, precomputed payload.
+    #[must_use]
+    pub(crate) fn new(bytes: Vec<u8>, media_type: String, delay_ms: u64) -> Self {
+        Self {
+            bytes,
+            media_type,
+            delay_ms,
+        }
+    }
+}
+
+impl IntoResponse for ByteStreamResponse {
+    fn into_response(self) -> Response {
+        let chunks = self
+            .bytes
+            .chunks(BYTE_STREAM_CHUNK_SIZE)
+            .map(Bytes::copy_from_slice)
+            .collect::<Vec<_>>();
+        let delay_ms = self.delay_ms;
+        let body = Body::from_stream(stream::iter(chunks).then(move |chunk| async move {
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Ok::<_, std::convert::Infallible>(chunk)
+        }));
+        let mut response = body.into_response();
+        if let Ok(media_type) = HeaderValue::from_str(&self.media_type) {
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, media_type);
+        }
+        response
+    }
 }
 
 // -----------------------------------------------------------------------------
