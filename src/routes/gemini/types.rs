@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::errors::GeminiError;
 use crate::types::json::JsonObject;
+use crate::types::lower::Lower;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurn, CompatTurnResponse, FunctionCall, FunctionTool, TokenUsage,
@@ -36,17 +37,19 @@ pub(super) struct ContentFunctionCall {
     args: Option<JsonObject>,
 }
 
-impl TryFrom<ContentFunctionCall> for CompatTurn {
+impl Lower for ContentFunctionCall {
+    type Canonical = CompatTurn;
+
     type Error = GeminiError;
 
-    fn try_from(function_call: ContentFunctionCall) -> Result<Self, Self::Error> {
-        let name = function_call
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        let name = self
             .name
             .filter(|name| !name.is_empty())
             .ok_or(GeminiError::MissingFunctionCallName)?;
-        Ok(Self::ToolCall(FunctionCall {
+        Ok(CompatTurn::ToolCall(FunctionCall {
             name,
-            arguments: function_call.args.unwrap_or_default(),
+            arguments: self.args.unwrap_or_default(),
         }))
     }
 }
@@ -121,14 +124,12 @@ pub(super) struct ToolGroup {
 #[serde(transparent)]
 pub(super) struct ToolGroupList(Vec<ToolGroup>);
 
-impl ToolGroupList {
-    /// Lower provider tool groups into the neutral function contract.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GeminiError`] when a group has no function declarations or a
-    /// declaration has no name.
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, GeminiError> {
+impl Lower for ToolGroupList {
+    type Canonical = Vec<FunctionTool>;
+
+    type Error = GeminiError;
+
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
         let mut functions = Vec::new();
         for group in self.0 {
             let declarations = group
@@ -198,18 +199,14 @@ pub(super) struct ToolConfig {
     function_calling_config: Option<ToolFunctionCallingConfig>,
 }
 
-impl ToolConfig {
-    /// Lower optional Gemini tool configuration into a neutral tool choice.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GeminiError`] when the configured calling mode is unsupported.
-    pub(super) fn into_domain(
-        config: Option<Self>,
-        param: &'static str,
-    ) -> Result<CompatToolChoice, GeminiError> {
-        match config.and_then(|config| config.function_calling_config) {
-            Some(config) => config.lower(param),
+impl Lower for ToolConfig {
+    type Canonical = CompatToolChoice;
+
+    type Error = GeminiError;
+
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        match self.function_calling_config {
+            Some(config) => config.lower("toolConfig"),
             None => Ok(CompatToolChoice::Auto),
         }
     }

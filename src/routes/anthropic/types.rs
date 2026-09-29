@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::errors::AnthropicError;
 use crate::types::json::JsonObject;
+use crate::types::lower::Lower;
 use crate::types::model::ModelId;
 use crate::types::turn::{
     CompatOutput, CompatTurnResponse, FunctionTool, TokenUsage, ToolChoice as CompatToolChoice,
@@ -100,13 +101,12 @@ impl Tool {
 #[serde(transparent)]
 pub(super) struct ToolList(Vec<Tool>);
 
-impl ToolList {
-    /// Lower provider tool declarations into the neutral function contract.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AnthropicError`] when a tool omits its name or input schema.
-    pub(super) fn into_domain(self) -> Result<Vec<FunctionTool>, AnthropicError> {
+impl Lower for ToolList {
+    type Canonical = Vec<FunctionTool>;
+
+    type Error = AnthropicError;
+
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
         self.0
             .into_iter()
             .map(|tool| {
@@ -138,19 +138,21 @@ pub(super) enum ToolChoice {
     Unsupported,
 }
 
-impl TryFrom<Option<ToolChoice>> for CompatToolChoice {
+impl Lower for ToolChoice {
+    type Canonical = CompatToolChoice;
+
     type Error = AnthropicError;
 
-    fn try_from(choice: Option<ToolChoice>) -> Result<Self, Self::Error> {
-        match choice {
-            None | Some(ToolChoice::Auto) => Ok(Self::Auto),
-            Some(ToolChoice::None) => Ok(Self::None),
-            Some(ToolChoice::Any) => Ok(Self::Required),
-            Some(ToolChoice::Tool { name }) => name
+    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+        match self {
+            Self::Auto => Ok(CompatToolChoice::Auto),
+            Self::None => Ok(CompatToolChoice::None),
+            Self::Any => Ok(CompatToolChoice::Required),
+            Self::Tool { name } => name
                 .filter(|name| !name.is_empty())
-                .map(Self::Named)
+                .map(CompatToolChoice::Named)
                 .ok_or(AnthropicError::MissingNamedToolChoice),
-            Some(ToolChoice::Unsupported) => Err(AnthropicError::UnsupportedToolChoice),
+            Self::Unsupported => Err(AnthropicError::UnsupportedToolChoice),
         }
     }
 }

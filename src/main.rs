@@ -1,6 +1,10 @@
 //! Standalone classic ELIZA compatibility server.
 #![feature(register_tool)]
 #![register_tool(rlib)]
+#![allow(
+    rlib::long_method_chains,
+    reason = "Bon typestate builders are clearest as uninterrupted fluent construction"
+)]
 
 mod errors;
 mod eliza;

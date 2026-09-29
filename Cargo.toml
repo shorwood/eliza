@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 aide = { version = "0.15.1", features = ["axum", "axum-json", "axum-query", "scalar"] }
 axum = "0.8.9"
+bon = "=3.9.3"
 clap = { version = "4.6.1", features = ["derive"] }
 derive_more = { version = "2.1.1", features = ["from", "from_str"] }
 futures-util = "0.3"

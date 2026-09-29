@@ -3,5 +3,6 @@
 pub(crate) mod errors;
 pub(crate) mod http;
 pub(crate) mod json;
+pub(crate) mod lower;
 pub(crate) mod model;
 pub(crate) mod turn;
