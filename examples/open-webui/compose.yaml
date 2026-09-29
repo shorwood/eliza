@@ -20,7 +20,7 @@ services:
     environment:
       WEBUI_AUTH: "False"
       WEBUI_SECRET_KEY: eliza-open-webui-example-secret-key
-      CORS_ALLOW_ORIGIN: "http://127.0.0.1:${ELIZA_OPEN_WEBUI_PORT:-3000}"
+      CORS_ALLOW_ORIGIN: "http://127.0.0.1:${ELIZA_OPEN_WEBUI_PORT:-3000};http://localhost:${ELIZA_OPEN_WEBUI_PORT:-3000}"
       ENABLE_PERSISTENT_CONFIG: "False"
       ENABLE_OLLAMA_API: "False"
       OFFLINE_MODE: "True"
