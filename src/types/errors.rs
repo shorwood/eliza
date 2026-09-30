@@ -1,5 +1,6 @@
 //! Typed failures raised by provider-neutral request handling.
 
+use eliza_mad::engine::{Error as ElizaError, ErrorKind as ElizaErrorKind};
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -35,6 +36,24 @@ impl ProblemDetails for ModelError {
 /// Conversation validation or execution failure.
 #[derive(Debug, Diagnostic, Error)]
 pub(crate) enum TurnError {
+    /// Provider text cannot be represented by the historical input contract.
+    #[error("invalid ELIZA input: {source}")]
+    #[diagnostic(code(eliza::turn::invalid_eliza_input))]
+    ElizaInput {
+        /// Historical input-contract failure.
+        #[source]
+        source: ElizaError,
+    },
+
+    /// The compiled MAD-SLIP engine failed to execute.
+    #[error("ELIZA engine failed: {source}")]
+    #[diagnostic(code(eliza::turn::engine))]
+    ElizaRuntime {
+        /// Compilation, startup, or execution failure.
+        #[source]
+        source: ElizaError,
+    },
+
     /// An explicit fixture directive has the wrong outer shape.
     #[error("tool directive must be `@tool <name> <json-object>`")]
     #[diagnostic(code(eliza::turn::malformed_tool_directive))]
@@ -131,11 +150,35 @@ pub(crate) enum TurnError {
     RequiredToolDirective,
 }
 
+impl From<ElizaError> for TurnError {
+    fn from(source: ElizaError) -> Self {
+        if source.kind() == ElizaErrorKind::Input {
+            Self::ElizaInput { source }
+        } else {
+            Self::ElizaRuntime { source }
+        }
+    }
+}
+
 impl ProblemDetails for TurnError {
     fn class(&self) -> ProblemClass {
         match self {
+            Self::ElizaRuntime { .. } => ProblemClass::Internal,
             Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => ProblemClass::RequestTooLarge,
-            _ => ProblemClass::InvalidRequest,
+            Self::ElizaInput { .. }
+            | Self::MalformedToolDirective
+            | Self::MissingToolArguments
+            | Self::MissingToolName
+            | Self::InvalidToolArguments { .. }
+            | Self::ToolDirectiveForbidden
+            | Self::ToolChoiceDisallows { .. }
+            | Self::MissingOrdinaryUserTurn
+            | Self::ToolNotOffered { .. }
+            | Self::OrphanToolResult
+            | Self::MissingToolDirective
+            | Self::MismatchedToolDirective
+            | Self::MissingUserText
+            | Self::RequiredToolDirective => ProblemClass::InvalidRequest,
         }
     }
 
@@ -145,7 +188,8 @@ impl ProblemDetails for TurnError {
             | Self::ToolChoiceDisallows { .. }
             | Self::RequiredToolDirective => Some("tool_choice"),
             Self::ToolNotOffered { .. } => Some("tools"),
-            Self::MalformedToolDirective
+            Self::ElizaInput { .. }
+            | Self::MalformedToolDirective
             | Self::MissingToolArguments
             | Self::MissingToolName
             | Self::InvalidToolArguments { .. }
@@ -154,7 +198,9 @@ impl ProblemDetails for TurnError {
             | Self::MissingToolDirective
             | Self::MismatchedToolDirective
             | Self::MissingUserText => Some("messages"),
-            Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => None,
+            Self::ElizaRuntime { .. } | Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => {
+                None
+            }
         }
     }
 }
