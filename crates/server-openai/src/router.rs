@@ -39,7 +39,7 @@ impl Routes {
         });
         let speech = speech::router().with_state(SpeechState {
             config: self.config,
-            service: self.speech,
+            speech: self.speech,
         });
         router.merge(speech)
     }
