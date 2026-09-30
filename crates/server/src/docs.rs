@@ -5,14 +5,13 @@ use aide::openapi::{Info, License, OpenApi};
 use aide::scalar::Scalar;
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-
-use super::context::AppState;
+use eliza_http::context::AppState;
 
 // -----------------------------------------------------------------------------
 // OpenapiJson: Serves the generated specification.
 // -----------------------------------------------------------------------------
 
-/// Returns the generated `OpenAPI` document mounted into the router.
+/// Return the generated `OpenAPI` document mounted into the router.
 async fn openapi_json(Extension(api): Extension<OpenApi>) -> Json<OpenApi> {
     Json(api)
 }
