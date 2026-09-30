@@ -41,8 +41,8 @@ impl TestServer {
 
         // Launch the server without polluting Hurl's contract output.
         let mut command = Command::new(env!("CARGO_BIN_EXE_eliza"));
-        command.args(["serve", "--host", "127.0.0.1", "--port"]);
-        command.arg(address.port().to_string());
+        command.args(["serve", "--bind"]);
+        command.arg(address.to_string());
         command.args(extra_args);
         command.stdout(Stdio::null());
         command.stderr(Stdio::inherit());
@@ -162,7 +162,7 @@ fn http_contracts_public() -> io::Result<()> {
 /// Returns an I/O error when the server or Hurl fails.
 #[test]
 fn http_contracts_authenticated() -> io::Result<()> {
-    let server = TestServer::spawn(&["--auth", "bearer", "--bearer-token", "secret"])?;
+    let server = TestServer::spawn(&["--api-key", "secret"])?;
     let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/auth");
     server.run_hurl(&contracts, Some("secret"))
 }

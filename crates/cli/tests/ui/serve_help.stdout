@@ -3,73 +3,52 @@ Run the local provider-compatible ELIZA HTTP server
 Usage: eliza serve [OPTIONS]
 
 Options:
-      --host <HOST>
-          Bind address
-          
-          [default: 127.0.0.1]
-
-      --port <PORT>
-          Bind port
-          
-          [default: 8787]
-
-      --model <MODEL>
-          Provider-visible model id
-          
-          [default: eliza-1966]
-
-      --auth <AUTH>
-          Authentication mode for provider endpoints
-
-          Possible values:
-          - none:   Do not require provider authentication
-          - bearer: Require each provider's native bearer or API-key header
-          
-          [default: none]
-
-      --bearer-token <BEARER_TOKEN>
-          Required token when --auth bearer is used
-
-      --cors <CORS>
-          CORS behavior
-
-          Possible values:
-          - none:       Do not install a CORS layer
-          - permissive: Install Axum's permissive CORS layer
-          
-          [default: none]
-
-      --stream-delay-ms <STREAM_DELAY_MS>
-          Optional delay between streaming chunks
-          
-          [default: 0]
-
-      --max-input-chars <MAX_INPUT_CHARS>
-          Reject requests whose combined input content exceeds this character count
-          
-          [default: 8000]
-
-      --max-history-messages <MAX_HISTORY_MESSAGES>
-          Bound replay work by limiting the number of user turns accepted
-          
-          [default: 200]
-
-      --log <LOG>
-          Log rendering mode
-
-          Possible values:
-          - text: Human-readable tracing output
-          - json: JSON tracing output
-          
-          [default: text]
-
   -h, --help
           Print help (see a summary with '-h')
 
-Provider paths:
-  OpenAI:    GET /openai/v1/models, POST /openai/v1/chat/completions, POST /openai/v1/responses, POST /openai/v1/audio/speech
-  Gemini OA: POST /gemini/v1beta/openai/chat/completions
-  Anthropic: GET /anthropic/v1/models, POST /anthropic/v1/messages
-  Gemini:    GET /gemini/v1beta/models, POST /gemini/v1beta/models/{model}:generateContent, POST /gemini/v1beta/models/{model}:streamGenerateContent
-  Ollama:    GET /ollama/api/tags, POST /ollama/api/chat
-  Docs:      GET /docs, GET /openapi.json
+Listener:
+      --bind <IP:PORT>
+          IP address and port on which to listen
+          
+          [default: 127.0.0.1:8787]
+
+Chat:
+      --chat-model <ID>
+          Chat model ID advertised by provider catalogs
+          
+          [default: eliza-1966]
+
+      --max-history-messages <MESSAGES>
+          Maximum chat transcript entries accepted per request
+          
+          [default: 200]
+
+Security:
+      --api-key <KEY>
+          Require this key through each provider's native authentication scheme
+
+      --allow-any-origin
+          Allow browser requests from any origin using permissive CORS
+
+Requests:
+      --max-input-chars <CHARS>
+          Maximum combined text accepted per request, across every modality
+          
+          [default: 8000]
+
+Streaming:
+      --stream-delay-ms <MS>
+          Delay between chunks for every streaming response
+          
+          [default: 0]
+
+Logging:
+      --json-logs
+          Render tracing events as JSON instead of human-readable text
+
+Built-in modality models:
+  Chat:       eliza-1966 (configurable with --chat-model)
+  Speech:     flite (fixed)
+  Embeddings: fnv-embed (fixed)
+
+Explore every provider route at /docs or /openapi.json.

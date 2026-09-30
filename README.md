@@ -49,12 +49,12 @@ docker load --input result
 ```
 
 The image runs as an unprivileged user and defaults to
-`eliza serve --host 0.0.0.0`. Arguments after the image name replace that
+`eliza serve --bind 0.0.0.0:8787`. Arguments after the image name replace that
 default command, so include `serve` when supplying options:
 
 ```sh
 docker run --rm -p 127.0.0.1:8787:8787 eliza:0.1.0 \
-  serve --host 0.0.0.0 --log json
+  serve --bind 0.0.0.0:8787 --json-logs
 ```
 
 For a registry-published image, replace `eliza:0.1.0` with its full image
@@ -98,8 +98,8 @@ Every provider route is namespaced. Unprefixed routes such as `/v1/models` and
 | Ollama | `GET /ollama/api/tags`<br>`POST /ollama/api/chat`<br>`POST /ollama/api/embed` | NDJSON by default for chat streaming; otherwise JSON |
 | Documentation | `GET /docs`<br>`GET /openapi.json` | HTML and JSON |
 
-OpenAI and Gemini model lists advertise the model selected by `--model`, which
-defaults to `eliza-1966`, plus the fixed `flite` speech model and
+OpenAI and Gemini model lists advertise the model selected by `--chat-model`,
+which defaults to `eliza-1966`, plus the fixed `flite` speech model and
 `fnv-embed` embedding model. Ollama advertises the configured chat
 model and embedding model; Anthropic advertises only the chat model.
 
@@ -213,16 +213,14 @@ OpenAI Chat shape.
 
 | Option | Default | Contract |
 | --- | --- | --- |
-| `--host` | `127.0.0.1` | Listener IP address |
-| `--port` | `8787` | Listener port |
-| `--model` | `eliza-1966` | Nonblank model advertised by catalog routes |
-| `--auth` | `none` | `none` or `bearer` |
-| `--bearer-token` | unset | Required and nonempty when `--auth bearer` is selected |
-| `--cors` | `none` | `none` or `permissive` |
-| `--stream-delay-ms` | `0` | Delay inserted between emitted stream chunks |
-| `--max-input-chars` | `8000` | Maximum combined characters in instructions, history, tool definitions, and output schemas |
+| `--bind` | `127.0.0.1:8787` | Listener IP address and port |
+| `--chat-model` | `eliza-1966` | Nonblank chat model advertised by catalog routes |
 | `--max-history-messages` | `200` | Maximum normalized transcript entries accepted in one request |
-| `--log` | `text` | `text` or `json` tracing output |
+| `--api-key` | unset | Nonempty shared key; supplying it enables provider authentication |
+| `--allow-any-origin` | off | Enable permissive CORS for browser clients |
+| `--max-input-chars` | `8000` | Maximum combined text accepted across every modality |
+| `--stream-delay-ms` | `0` | Delay inserted between emitted stream chunks |
+| `--json-logs` | off | Render tracing events as JSON instead of text |
 
 Both limits must be greater than zero. `RUST_LOG` may be used as the standard
 tracing filter; it defaults to `info` when absent or invalid.
@@ -238,14 +236,14 @@ For the container image, use
 
 ### Authentication
 
-`--auth bearer --bearer-token <token>` protects every provider route with one
-shared secret, rendered through each provider's native authentication scheme:
+`--api-key <key>` protects every provider route with one shared secret,
+accepted through each provider's native authentication scheme:
 
 | Surface | Required header |
 | --- | --- |
-| OpenAI, Gemini OpenAI alias, Ollama | `Authorization: Bearer <token>` |
-| Anthropic | `x-api-key: <token>` |
-| Native Gemini | `x-goog-api-key: <token>` |
+| OpenAI, Gemini OpenAI alias, Ollama | `Authorization: Bearer <key>` |
+| Anthropic | `x-api-key: <key>` |
+| Native Gemini | `x-goog-api-key: <key>` |
 
 Health and documentation routes remain public. Authentication failures and
 request failures use provider-native JSON envelopes and include a stable
