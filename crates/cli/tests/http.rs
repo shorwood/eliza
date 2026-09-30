@@ -151,7 +151,8 @@ fn wait_until_ready(child: &mut Child, address: SocketAddr) -> io::Result<()> {
 #[test]
 fn http_contracts_public() -> io::Result<()> {
     let server = TestServer::spawn(&[])?;
-    server.run_hurl(Path::new("tests/http/public"), None)
+    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/public");
+    server.run_hurl(&contracts, None)
 }
 
 /// Run the authenticated HTTP contracts.
@@ -162,5 +163,6 @@ fn http_contracts_public() -> io::Result<()> {
 #[test]
 fn http_contracts_authenticated() -> io::Result<()> {
     let server = TestServer::spawn(&["--auth", "bearer", "--bearer-token", "secret"])?;
-    server.run_hurl(Path::new("tests/http/auth"), Some("secret"))
+    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/auth");
+    server.run_hurl(&contracts, Some("secret"))
 }

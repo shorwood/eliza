@@ -1,4 +1,4 @@
-// nix develop path:. -c cargo test --test cli --locked
+// nix develop path:. -c cargo test -p eliza-cli --test cli --locked
 //! End-to-end UI contracts for the compiled CLI.
 
 #![expect(

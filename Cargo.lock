@@ -408,15 +408,6 @@ dependencies = [
 
 [[package]]
 name = "convert_case"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
-dependencies = [
- "unicode-segmentation",
-]
-
-[[package]]
-name = "convert_case"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
@@ -533,7 +524,6 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -574,30 +564,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "eliza"
+name = "eliza-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "eliza-http",
+ "eliza-server",
+ "miette",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "eliza-http"
 version = "0.1.0"
 dependencies = [
  "aide",
- "audio-codec-algorithms",
  "axum",
- "base64",
  "bon",
- "clap",
  "derive_more",
- "eliza-mad",
- "flite-rs",
+ "eliza-modality-chat",
+ "eliza-modality-embedding",
+ "eliza-modality-speech",
  "futures-util",
  "miette",
- "rusty_mp3",
  "schemars 0.9.0",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
- "tower-http 0.7.0",
  "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -607,6 +605,134 @@ dependencies = [
  "mad",
  "slip",
  "thiserror",
+]
+
+[[package]]
+name = "eliza-modality-chat"
+version = "0.1.0"
+dependencies = [
+ "bon",
+ "eliza-mad",
+ "miette",
+ "schemars 0.9.0",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "eliza-modality-embedding"
+version = "0.1.0"
+dependencies = [
+ "miette",
+ "thiserror",
+]
+
+[[package]]
+name = "eliza-modality-speech"
+version = "0.1.0"
+dependencies = [
+ "audio-codec-algorithms",
+ "flite-rs",
+ "miette",
+ "rusty_mp3",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "eliza-server"
+version = "0.1.0"
+dependencies = [
+ "aide",
+ "axum",
+ "eliza-http",
+ "eliza-server-anthropic",
+ "eliza-server-gemini",
+ "eliza-server-ollama",
+ "eliza-server-openai",
+ "miette",
+ "schemars 0.9.0",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tower-http 0.7.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "eliza-server-anthropic"
+version = "0.1.0"
+dependencies = [
+ "aide",
+ "axum",
+ "eliza-http",
+ "eliza-modality-chat",
+ "miette",
+ "schemars 0.9.0",
+ "serde",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "eliza-server-gemini"
+version = "0.1.0"
+dependencies = [
+ "aide",
+ "axum",
+ "base64",
+ "eliza-http",
+ "eliza-modality-chat",
+ "eliza-modality-embedding",
+ "eliza-modality-speech",
+ "eliza-server-openai",
+ "futures-util",
+ "miette",
+ "schemars 0.9.0",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "eliza-server-ollama"
+version = "0.1.0"
+dependencies = [
+ "aide",
+ "axum",
+ "eliza-http",
+ "eliza-modality-chat",
+ "eliza-modality-embedding",
+ "miette",
+ "schemars 0.9.0",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "eliza-server-openai"
+version = "0.1.0"
+dependencies = [
+ "aide",
+ "axum",
+ "base64",
+ "eliza-http",
+ "eliza-modality-chat",
+ "eliza-modality-embedding",
+ "eliza-modality-speech",
+ "futures-util",
+ "miette",
+ "schemars 0.9.0",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1765,7 +1891,7 @@ version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de0a33f1bac45f16e50146c248bcbbfaa44518c7252d274e972c7f4ad71aaba7"
 dependencies = [
- "convert_case 0.11.0",
+ "convert_case",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -2156,16 +2282,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
-dependencies = [
- "errno",
- "libc",
-]
-
-[[package]]
 name = "simd_cesu8"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2396,7 +2512,6 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
- "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

@@ -1,19 +1,17 @@
-//! Internal diagnostics for CLI validation and server startup.
+//! Diagnostics raised while lowering CLI arguments into server configuration.
 
 use std::fmt;
-use std::net::SocketAddr;
 
 use miette::Diagnostic;
 use thiserror::Error;
 
-/// Internal startup and configuration error surface.
-#[derive(Debug, Diagnostic, Error)]
-pub(super) enum AppError {
-    /// Bearer auth token was provided as an empty CLI value.
-    #[error("bearer token must not be empty")]
-    #[diagnostic(code(eliza::config::empty_bearer_token))]
-    EmptyBearerToken,
+// -----------------------------------------------------------------------------
+// ConfigError: Rejects invalid combinations of otherwise parsed options.
+// -----------------------------------------------------------------------------
 
+/// CLI-to-server configuration failure.
+#[derive(Debug, Diagnostic, Error)]
+pub(super) enum ConfigError {
     /// Bearer auth mode was selected without a bearer token.
     #[error("--auth bearer requires --bearer-token")]
     #[diagnostic(
@@ -29,26 +27,6 @@ pub(super) enum AppError {
         /// Typed request limit whose CLI value must be positive.
         limit: RequestLimit,
     },
-
-    /// TCP listener failed to bind.
-    #[error("failed to bind {addr}: {source}")]
-    #[diagnostic(code(eliza::serve::bind))]
-    Bind {
-        /// Socket address the server attempted to bind.
-        addr: SocketAddr,
-        /// Operating-system error returned by the listener.
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// Axum server returned an IO runtime error.
-    #[error("server error: {0}")]
-    #[diagnostic(code(eliza::serve::runtime))]
-    Serve(
-        /// Runtime I/O failure returned by Axum.
-        #[source]
-        std::io::Error,
-    ),
 }
 
 // -----------------------------------------------------------------------------
