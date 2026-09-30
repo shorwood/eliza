@@ -1,0 +1,20 @@
+[package]
+name = "eliza-server-anthropic"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aide = { version = "0.15.1", features = ["axum", "axum-json"] }
+axum = "0.8.9"
+eliza-http = { path = "../http" }
+eliza-modality-chat = { path = "../modality-chat" }
+miette = { version = "7.6.0", features = ["derive"] }
+schemars = "0.9.0"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+uuid = { version = "1.23.4", features = ["v7"] }
+
+[lints]
+workspace = true
