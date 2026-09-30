@@ -1,0 +1,21 @@
+[package]
+name = "eliza-server-ollama"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aide = { version = "0.15.1", features = ["axum", "axum-json"] }
+axum = "0.8.9"
+eliza-http = { path = "../http" }
+eliza-modality-chat = { path = "../modality-chat" }
+eliza-modality-embedding = { path = "../modality-embedding" }
+miette = { version = "7.6.0", features = ["derive"] }
+schemars = "0.9.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+
+[lints]
+workspace = true
