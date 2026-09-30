@@ -1,5 +1,6 @@
 //! Shared provider HTTP boundary types and helpers.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
@@ -12,11 +13,39 @@ use serde::Serialize;
 use super::errors::EncodingError;
 
 // -----------------------------------------------------------------------------
+// RequestLimits: Bounds normalized request size and replay work.
+// -----------------------------------------------------------------------------
+
+/// Bounds transcript size and replay work.
+#[derive(Debug, Clone, Copy, bon::Builder)]
+pub struct RequestLimits {
+    /// Maximum serialized input size across all request components.
+    max_input_chars: NonZeroUsize,
+    /// Maximum number of normalized history turns.
+    max_history_messages: NonZeroUsize,
+}
+
+impl RequestLimits {
+    /// Return the maximum serialized input size.
+    #[must_use]
+    pub const fn max_input_chars(self) -> NonZeroUsize {
+        self.max_input_chars
+    }
+
+    /// Return the maximum normalized history length.
+    #[must_use]
+    pub const fn max_history_messages(self) -> NonZeroUsize {
+        self.max_history_messages
+    }
+}
+
+// -----------------------------------------------------------------------------
 // StreamChunks: Splits provider output at readable boundaries.
 // -----------------------------------------------------------------------------
 
 /// Split provider output into readable streaming chunks.
-pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
+#[must_use]
+pub fn stream_chunks(text: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
     for character in text.chars() {
@@ -43,10 +72,12 @@ pub(crate) fn stream_chunks(text: &str) -> Vec<String> {
 /// # Errors
 ///
 /// Returns an internal rejection when response serialization fails.
-pub(crate) fn json_event<T: Serialize>(value: &T) -> Result<Event, EncodingError> {
+pub fn json_event<T: Serialize>(value: &T) -> Result<Event, EncodingError> {
     Event::default()
         .json_data(value)
-        .map_err(|source| EncodingError::Sse { source })
+        .map_err(|source| EncodingError::Sse {
+            detail: source.to_string(),
+        })
 }
 
 // -----------------------------------------------------------------------------
@@ -54,7 +85,7 @@ pub(crate) fn json_event<T: Serialize>(value: &T) -> Result<Event, EncodingError
 // -----------------------------------------------------------------------------
 
 /// SSE response with delivery pacing owned by its response type.
-pub(crate) struct SseResponse {
+pub struct SseResponse {
     /// Events delivered in insertion order.
     events: Vec<Event>,
     /// Delay inserted before each event.
@@ -93,14 +124,15 @@ impl IntoResponse for SseResponse {
 
 /// Owned SSE events ready for optional paced delivery.
 #[derive(derive_more::From)]
-pub(crate) struct SseEvents(
+pub struct SseEvents(
     /// Events delivered in insertion order.
     Vec<Event>,
 );
 
 impl SseEvents {
     /// Attach optional pacing before rendering these events.
-    pub(crate) fn with_delay(self, delay_ms: u64) -> SseResponse {
+    #[must_use]
+    pub fn with_delay(self, delay_ms: u64) -> SseResponse {
         SseResponse {
             events: self.0,
             delay_ms,
@@ -113,7 +145,7 @@ impl SseEvents {
 // -----------------------------------------------------------------------------
 
 /// Newline-delimited JSON records with optional delivery pacing.
-pub(crate) struct NdjsonResponse {
+pub struct NdjsonResponse {
     /// Records delivered in insertion order.
     records: Vec<Bytes>,
     /// Delay inserted before each record.
@@ -126,12 +158,14 @@ impl NdjsonResponse {
     /// # Errors
     ///
     /// Returns an internal rejection when a typed record cannot be serialized.
-    pub(crate) fn new(records: Vec<impl Serialize>, delay_ms: u64) -> Result<Self, EncodingError> {
+    pub fn new(records: Vec<impl Serialize>, delay_ms: u64) -> Result<Self, EncodingError> {
         let records = records
             .into_iter()
             .map(|record| {
-                let mut line = serde_json::to_vec(&record)
-                    .map_err(|source| EncodingError::Ndjson { source })?;
+                let mut line =
+                    serde_json::to_vec(&record).map_err(|source| EncodingError::Ndjson {
+                        detail: source.to_string(),
+                    })?;
                 line.push(b'\n');
                 Ok(Bytes::from(line))
             })
@@ -154,7 +188,8 @@ impl IntoResponse for NdjsonResponse {
 }
 
 /// Return the current Unix timestamp, or zero before the Unix epoch.
-pub(crate) fn unix_timestamp() -> u64 {
+#[must_use]
+pub fn unix_timestamp() -> u64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
         Err(_) => 0,
