@@ -10,6 +10,7 @@ use axum::response::{IntoResponse, Response};
 use super::super::context::{AppState, ProviderAuth, provider_authenticate};
 use super::errors::{OpenAiFailureResponse, OpenAiRejection};
 use super::types::{ModelDescriptor, ModelListResponse};
+use crate::embedding;
 use crate::speech::core as speech;
 
 /// List the configured model in `OpenAI`'s native envelope.
@@ -27,7 +28,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         owned_by: "eliza",
     };
 
-    // Wrap the descriptor with OpenAI's list contract.
+    // Include the fixed speech capability unless it is already configured.
     let mut data = vec![descriptor];
     if state.config.model.as_str() != speech::MODEL_ID {
         data.push(ModelDescriptor {
@@ -37,6 +38,18 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
             owned_by: "eliza",
         });
     }
+
+    // Include the fixed embedding capability unless it is already configured.
+    if state.config.model.as_str() != embedding::EMBEDDING_MODEL_ID {
+        data.push(ModelDescriptor {
+            id: embedding::embedding_model_id(),
+            object: "model",
+            created: 0,
+            owned_by: "eliza",
+        });
+    }
+
+    // Wrap every descriptor with OpenAI's list contract.
     let response = ModelListResponse {
         object: "list",
         data,

@@ -8,6 +8,7 @@
 
 mod errors;
 mod eliza;
+mod embedding;
 mod problem;
 mod routes;
 mod serve;

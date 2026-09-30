@@ -17,6 +17,33 @@ use crate::types::errors::EncodingError;
 /// Failure detected while lowering a Gemini request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum GeminiError {
+    /// An embedding body selected a model other than the fixed resource.
+    #[error("embeddings require model `models/fnv-embed`")]
+    #[diagnostic(code(eliza::gemini::embedding_model_required))]
+    EmbeddingModelRequired,
+    /// A native embedding request omitted its content.
+    #[error("embedding content and text parts are required")]
+    #[diagnostic(code(eliza::gemini::missing_embedding_content))]
+    MissingEmbeddingContent,
+    /// A native batch embedding request omitted its request list.
+    #[error("embedding requests are required")]
+    #[diagnostic(code(eliza::gemini::missing_embedding_requests))]
+    MissingEmbeddingRequests,
+    /// Native embedding content contained a non-text part.
+    #[error("embeddings support only text content parts")]
+    #[diagnostic(code(eliza::gemini::embedding_text_only))]
+    EmbeddingTextOnly,
+    /// Legacy and current Gemini dimension fields disagreed.
+    #[error("embedding dimensionality fields must agree")]
+    #[diagnostic(code(eliza::gemini::conflicting_embedding_dimensions))]
+    ConflictingEmbeddingDimensions,
+    /// A current Gemini embedding control cannot be honored locally.
+    #[error("unsupported embedding control `{param}`")]
+    #[diagnostic(code(eliza::gemini::unsupported_embedding_control))]
+    UnsupportedEmbeddingControl {
+        /// Request field selecting unsupported behavior.
+        param: &'static str,
+    },
     /// A tool group omitted its function declarations.
     #[error("only client function declarations are supported")]
     #[diagnostic(code(eliza::gemini::missing_function_declarations))]
@@ -126,7 +153,9 @@ pub(super) enum GeminiError {
 impl ProblemDetails for GeminiError {
     fn class(&self) -> ProblemClass {
         match self {
-            Self::MissingFunctionDeclarations
+            Self::EmbeddingTextOnly
+            | Self::UnsupportedEmbeddingControl { .. }
+            | Self::MissingFunctionDeclarations
             | Self::UnsupportedCallingMode { .. }
             | Self::UnsupportedModelAction { .. }
             | Self::UnsupportedRole
@@ -142,8 +171,12 @@ impl ProblemDetails for GeminiError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::MissingEmbeddingContent | Self::EmbeddingTextOnly => Some("content.parts"),
+            Self::MissingEmbeddingRequests => Some("requests"),
+            Self::ConflictingEmbeddingDimensions => Some("outputDimensionality"),
             Self::MissingFunctionDeclarations | Self::MissingFunctionName => Some("tools"),
-            Self::UnsupportedCallingMode { param }
+            Self::UnsupportedEmbeddingControl { param }
+            | Self::UnsupportedCallingMode { param }
             | Self::MissingTextParts { param }
             | Self::UnsupportedTextPart { param } => Some(param),
             Self::UnsupportedModelAction { .. } | Self::MissingModelAction | Self::EmptyModel => {
@@ -157,7 +190,9 @@ impl ProblemDetails for GeminiError {
             | Self::UnsupportedModelPart
             | Self::SpeechTextOnly
             | Self::UnknownSpeaker => Some("contents.parts"),
-            Self::SpeechModelRequired | Self::SpeechModelAudioOnly => Some("model"),
+            Self::EmbeddingModelRequired
+            | Self::SpeechModelRequired
+            | Self::SpeechModelAudioOnly => Some("model"),
             Self::InvalidResponseModalities => Some("generationConfig.responseModalities"),
             Self::MissingSpeechConfig | Self::InvalidSpeakerConfig => {
                 Some("generationConfig.speechConfig")
