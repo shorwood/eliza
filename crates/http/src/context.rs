@@ -1,14 +1,108 @@
 //! Shared route configuration and provider authentication.
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
+use eliza_modality_speech::service::SpeechService;
+use miette::Diagnostic;
+use thiserror::Error;
 
-use super::errors::AuthenticationError;
-use crate::cli::{AuthMode, BearerToken};
-use crate::speech::service::SpeechService;
-use crate::types::model::ModelId;
-use crate::types::turn::RequestLimits;
+use crate::model::ModelId;
+use crate::problem::{ProblemClass, ProblemDetails};
+use crate::response::RequestLimits;
+
+// -----------------------------------------------------------------------------
+// AuthMode: Controls provider endpoint authentication.
+// -----------------------------------------------------------------------------
+
+/// Authentication mode for provider-compatible endpoints.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum AuthMode {
+    /// Do not require provider authentication.
+    None,
+    /// Require each provider's native bearer or API-key header.
+    Bearer,
+}
+
+// -----------------------------------------------------------------------------
+// BearerToken: Validates and redacts the shared provider credential.
+// -----------------------------------------------------------------------------
+
+/// Invalid shared bearer/API-key token.
+#[derive(Debug, Diagnostic, Error)]
+pub enum BearerTokenError {
+    /// Tokens cannot be empty.
+    #[error("bearer token must not be empty")]
+    #[diagnostic(code(eliza::config::empty_bearer_token))]
+    Empty,
+}
+
+/// Shared bearer/API-key token used when authentication is enabled.
+#[derive(Clone, Eq, PartialEq)]
+pub struct BearerToken(
+    /// Validated nonempty secret value.
+    String,
+);
+
+impl BearerToken {
+    /// Return the raw token value for header comparison.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for BearerToken {
+    type Error = BearerTokenError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            Err(BearerTokenError::Empty)
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+
+impl FromStr for BearerToken {
+    type Err = BearerTokenError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.to_owned().try_into()
+    }
+}
+
+impl AsRef<str> for BearerToken {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Debug for BearerToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BearerToken(<redacted>)")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// AuthenticationError: Rejects invalid provider credentials.
+// -----------------------------------------------------------------------------
+
+/// Provider authentication failure.
+#[derive(Debug, Diagnostic, Error)]
+pub enum AuthenticationError {
+    /// Configured credentials were absent, malformed, or incorrect.
+    #[error("authentication failed")]
+    #[diagnostic(code(eliza::auth::failed))]
+    Failed,
+}
+
+impl ProblemDetails for AuthenticationError {
+    fn class(&self) -> ProblemClass {
+        ProblemClass::Authentication
+    }
+}
 
 // -----------------------------------------------------------------------------
 // RouteConfig: Stores behavior consumed by HTTP routes.
@@ -16,18 +110,18 @@ use crate::types::turn::RequestLimits;
 
 /// Route-visible server behavior without listener or tracing concerns.
 #[derive(Debug, Clone, bon::Builder)]
-pub(crate) struct RouteConfig {
+pub struct RouteConfig {
     /// Provider-visible model identifier.
-    pub(super) model: ModelId,
+    pub model: ModelId,
     /// Authentication policy for provider endpoints.
     auth: AuthMode,
     /// Expected credential when bearer authentication is enabled.
     #[builder(required)]
     bearer_token: Option<BearerToken>,
     /// Optional delay between streamed chunks.
-    pub(super) stream_delay_ms: u64,
+    pub stream_delay_ms: u64,
     /// Shared request-size and replay bounds.
-    pub(super) limits: RequestLimits,
+    pub limits: RequestLimits,
 }
 
 // -----------------------------------------------------------------------------
@@ -36,11 +130,20 @@ pub(crate) struct RouteConfig {
 
 /// Shared immutable state cloned into every provider route.
 #[derive(Debug, Clone)]
-pub(super) struct AppState {
+pub struct AppState {
     /// Validated behavior shared by handlers.
-    pub(super) config: Arc<RouteConfig>,
+    pub config: Arc<RouteConfig>,
     /// Bounded executor for CPU-heavy speech synthesis and encoding.
-    pub(super) speech: SpeechService,
+    pub speech: SpeechService,
+}
+
+impl From<RouteConfig> for AppState {
+    fn from(config: RouteConfig) -> Self {
+        Self {
+            config: Arc::new(config),
+            speech: SpeechService::default(),
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -49,7 +152,7 @@ pub(super) struct AppState {
 
 /// Credential header used by one provider surface.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum ProviderAuth {
+pub enum ProviderAuth {
     /// `Authorization: Bearer <token>`.
     Bearer,
     /// Raw API key in the named header.
@@ -98,7 +201,7 @@ fn provider_credential(
 /// # Errors
 ///
 /// Returns a provider rejection when configured credentials do not match.
-pub(super) fn provider_authenticate(
+pub fn provider_authenticate(
     headers: &HeaderMap,
     config: &RouteConfig,
     provider: ProviderAuth,
