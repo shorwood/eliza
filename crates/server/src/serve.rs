@@ -1,12 +1,9 @@
 //! Server configuration, listener, CORS, and tracing.
 
-use std::net::{IpAddr, SocketAddr};
-use std::num::NonZeroUsize;
+use std::net::SocketAddr;
 
 use axum::Router;
 use eliza_http::context::RouteConfig;
-use eliza_http::model::ModelId;
-use eliza_http::response::RequestLimits;
 use miette::Diagnostic;
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -92,31 +89,6 @@ pub struct ServerConfig {
     cors: CorsMode,
     /// Log rendering mode.
     log: LogFormat,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        let limits = RequestLimits::builder()
-            .max_input_chars(
-                NonZeroUsize::new(8000).expect("default max input chars should be nonzero"),
-            )
-            .max_history_messages(
-                NonZeroUsize::new(200).expect("default max history messages should be nonzero"),
-            )
-            .build();
-        let routes = RouteConfig::builder();
-        let routes = routes.chat_model(ModelId::default());
-        let routes = routes.api_key(None);
-        let routes = routes.stream_delay_ms(0);
-        let routes = routes.limits(limits);
-        let routes = routes.build();
-        Self {
-            address: SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 8787),
-            routes,
-            cors: CorsMode::None,
-            log: LogFormat::Text,
-        }
-    }
 }
 
 impl ServerConfig {

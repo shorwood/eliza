@@ -10,5 +10,5 @@
     "--stream-delay-ms", "1",
     "--json-logs"
   ],
-  "code": 1
+  "code": 2
 }

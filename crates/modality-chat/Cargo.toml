@@ -6,7 +6,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-bon = "=3.9.3"
 eliza-mad = { path = "../eliza-mad" }
 miette = { version = "7.6.0", features = ["derive"] }
 schemars = "0.9.0"

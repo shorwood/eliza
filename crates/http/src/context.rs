@@ -1,5 +1,6 @@
 //! Shared route configuration and provider authentication.
 
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 
 use axum::http::HeaderMap;
@@ -8,7 +9,6 @@ use thiserror::Error;
 
 use crate::model::ModelId;
 use crate::problem::{ProblemClass, ProblemDetails};
-use crate::response::RequestLimits;
 
 // -----------------------------------------------------------------------------
 // ApiKey: Validates and redacts the shared provider credential.
@@ -90,16 +90,51 @@ impl ProblemDetails for AuthenticationError {
 }
 
 // -----------------------------------------------------------------------------
+// RequestLimits: Bounds normalized request size and replay work.
+// -----------------------------------------------------------------------------
+
+/// Bounds transcript size and replay work.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestLimits {
+    /// Maximum serialized input size across all request components.
+    max_input_chars: NonZeroUsize,
+    /// Maximum number of normalized history turns.
+    max_history_messages: NonZeroUsize,
+}
+
+impl RequestLimits {
+    /// Construct validated request bounds.
+    #[must_use]
+    pub const fn new(max_input_chars: NonZeroUsize, max_history_messages: NonZeroUsize) -> Self {
+        Self {
+            max_input_chars,
+            max_history_messages,
+        }
+    }
+
+    /// Return the maximum serialized input size.
+    #[must_use]
+    pub const fn max_input_chars(self) -> NonZeroUsize {
+        self.max_input_chars
+    }
+
+    /// Return the maximum normalized history length.
+    #[must_use]
+    pub const fn max_history_messages(self) -> NonZeroUsize {
+        self.max_history_messages
+    }
+}
+
+// -----------------------------------------------------------------------------
 // RouteConfig: Stores behavior consumed by HTTP routes.
 // -----------------------------------------------------------------------------
 
 /// Route-visible server behavior without listener or tracing concerns.
-#[derive(Debug, Clone, bon::Builder)]
+#[derive(Debug, Clone)]
 pub struct RouteConfig {
     /// Provider-visible chat model identifier.
     pub chat_model: ModelId,
     /// Expected credential when provider authentication is enabled.
-    #[builder(required)]
     api_key: Option<ApiKey>,
     /// Optional delay between streamed chunks.
     pub stream_delay_ms: u64,
@@ -108,6 +143,22 @@ pub struct RouteConfig {
 }
 
 impl RouteConfig {
+    /// Construct behavior shared by every provider route.
+    #[must_use]
+    pub const fn new(
+        chat_model: ModelId,
+        api_key: Option<ApiKey>,
+        stream_delay_ms: u64,
+        limits: RequestLimits,
+    ) -> Self {
+        Self {
+            chat_model,
+            api_key,
+            stream_delay_ms,
+            limits,
+        }
+    }
+
     /// Check provider authentication headers against this route configuration.
     ///
     /// # Errors
@@ -207,15 +258,14 @@ mod tests {
 
     /// Build the smallest route configuration needed by authentication tests.
     fn route_config_with_api_key(api_key: Option<&str>) -> RouteConfig {
-        RouteConfig {
-            chat_model: ModelId::default(),
-            api_key: api_key.map(|key| ApiKey(key.to_owned())),
-            stream_delay_ms: 0,
-            limits: RequestLimits::builder()
-                .max_input_chars(NonZeroUsize::MIN)
-                .max_history_messages(NonZeroUsize::MIN)
-                .build(),
-        }
+        RouteConfig::new(
+            "test-chat"
+                .parse()
+                .expect("test chat model should be valid"),
+            api_key.map(|key| ApiKey(key.to_owned())),
+            0,
+            RequestLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN),
+        )
     }
 
     /// Authentication-disabled routes ignore provider headers.
