@@ -69,6 +69,20 @@ curl -s http://127.0.0.1:8787/healthz
 Interactive Scalar documentation is served at `/docs`; the generated OpenAPI
 3.1 document is served at `/openapi.json`.
 
+## Architecture
+
+Dependencies flow from `server` into the flat `server-*` provider adapters,
+then into generic `http` transport primitives and provider-neutral
+`modality-*` execution. Provider crates own wire DTOs, lowering, rendering,
+native errors, and route state. The composition root owns shared resources,
+provider namespaces, and cross-provider aliases; `http` does not depend on a
+modality.
+
+Within each provider crate, modules follow concrete endpoints or capabilities
+such as `chat`, `generate`, `embeddings`, `speech`, and `models`. New shared
+code belongs in a `modality-*` crate only when its execution is genuinely
+provider-neutral; there is deliberately no umbrella modality trait.
+
 ## HTTP surface
 
 Every provider route is namespaced. Unprefixed routes such as `/v1/models` and
