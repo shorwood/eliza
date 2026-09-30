@@ -3,10 +3,9 @@
 use aide::axum::ApiRouter;
 use aide::axum::routing::get_with;
 use axum::Json;
+use eliza_http::context::AppState;
 use schemars::JsonSchema;
 use serde::Serialize;
-
-use super::context::AppState;
 
 // -----------------------------------------------------------------------------
 // HealthResponse: Describes liveness state.
@@ -21,7 +20,7 @@ struct HealthResponse {
     service: &'static str,
 }
 
-/// Reports that the in-process HTTP service is alive.
+/// Report that the in-process HTTP service is alive.
 async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
