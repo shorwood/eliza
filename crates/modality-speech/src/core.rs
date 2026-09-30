@@ -1,7 +1,7 @@
 //! Provider-neutral speech requests and responses.
 use std::num::NonZeroUsize;
 
-use super::errors::SpeechError;
+use super::errors::Error;
 
 // -----------------------------------------------------------------------------
 // ModelId: Publishes the built-in speech model identifier.
@@ -32,12 +32,12 @@ pub enum AudioFormat {
 }
 
 // -----------------------------------------------------------------------------
-// Speech: Defines provider-neutral synthesis input.
+// Segment: Defines one independently voiced request part.
 // -----------------------------------------------------------------------------
 
 /// One independently voiced piece of a speech request.
 #[derive(Debug, Clone)]
-pub struct SpeechSegment {
+pub struct Segment {
     /// Text pronounced by Flite's English speech pipeline.
     pub text: String,
     /// Arbitrary provider voice identifier.
@@ -50,16 +50,20 @@ pub struct SpeechSegment {
     pub pause_after_ms: u16,
 }
 
+// -----------------------------------------------------------------------------
+// Request: Defines provider-neutral synthesis input.
+// -----------------------------------------------------------------------------
+
 /// Provider-neutral speech request.
 #[derive(Debug, Clone)]
-pub struct SpeechRequest {
+pub struct Request {
     /// Ordered text and voice segments.
-    pub segments: Vec<SpeechSegment>,
+    pub segments: Vec<Segment>,
     /// Output samples per second.
     pub sample_rate: u32,
 }
 
-impl SpeechRequest {
+impl Request {
     /// Approximate input tokens using the convention used by chat adapters.
     #[must_use]
     pub fn input_tokens(&self) -> usize {
@@ -74,10 +78,10 @@ impl SpeechRequest {
     /// # Errors
     ///
     /// Returns a typed request failure for invalid text, rate, speed, or size.
-    pub(super) fn validate(&self, max_chars: NonZeroUsize) -> Result<(), SpeechError> {
+    pub(super) fn validate(&self, max_chars: NonZeroUsize) -> Result<(), Error> {
         // The synthesizer and exposed encodings intentionally support three rates.
         if !matches!(self.sample_rate, 8_000 | 16_000 | 24_000) {
-            return Err(SpeechError::UnsupportedSampleRate {
+            return Err(Error::UnsupportedSampleRate {
                 sample_rate: self.sample_rate,
             });
         }
@@ -89,7 +93,7 @@ impl SpeechRequest {
                 .iter()
                 .all(|segment| segment.text.trim().is_empty())
         {
-            return Err(SpeechError::EmptyInput);
+            return Err(Error::EmptyInput);
         }
 
         let chars = self
@@ -100,7 +104,7 @@ impl SpeechRequest {
 
         // Bound parsing and synthesis work before acquiring a worker permit.
         if chars > max_chars.get() {
-            return Err(SpeechError::InputTooLarge {
+            return Err(Error::InputTooLarge {
                 actual: chars,
                 limit: max_chars.get(),
             });
@@ -109,7 +113,7 @@ impl SpeechRequest {
         for segment in &self.segments {
             // Empty pieces make speaker ordering and usage accounting ambiguous.
             if segment.text.trim().is_empty() {
-                return Err(SpeechError::EmptyInput);
+                return Err(Error::EmptyInput);
             }
 
             // Keep the deliberately small English fixture surface ASCII-only.
@@ -117,12 +121,12 @@ impl SpeechRequest {
                 !character.is_ascii()
                     || (character.is_ascii_control() && !character.is_ascii_whitespace())
             }) {
-                return Err(SpeechError::UnsupportedCharacter { character });
+                return Err(Error::UnsupportedCharacter { character });
             }
 
             // Enforce the provider speaking-rate range.
             if !(0.25..=4.0).contains(&segment.speed) {
-                return Err(SpeechError::InvalidSpeed);
+                return Err(Error::InvalidSpeed);
             }
         }
         Ok(())
@@ -140,12 +144,12 @@ pub fn output_tokens(sample_count: usize, sample_rate: u32) -> usize {
 }
 
 // -----------------------------------------------------------------------------
-// RenderedAudio: Carries encoded engine output to provider adapters.
+// Audio: Carries encoded engine output to provider adapters.
 // -----------------------------------------------------------------------------
 
 /// Encoded audio returned to a provider adapter.
 #[derive(Debug)]
-pub struct RenderedAudio {
+pub struct Audio {
     /// Complete encoded payload.
     pub bytes: Vec<u8>,
     /// Provider-safe MIME type including the sample rate where relevant.
@@ -156,7 +160,7 @@ pub struct RenderedAudio {
     pub(super) sample_rate: u32,
 }
 
-impl RenderedAudio {
+impl Audio {
     /// Approximate audio tokens as 20 ms frames.
     #[must_use]
     pub fn output_tokens(&self) -> usize {

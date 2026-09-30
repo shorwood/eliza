@@ -7,15 +7,12 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::errors::EncodingError;
 use eliza_http::extraction::ExtractionError;
-use eliza_http::lower::Lower;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks, unix_timestamp};
-use eliza_modality_chat::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall,
-};
+use eliza_modality_chat as chat;
 use uuid::Uuid;
 
 use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
@@ -25,28 +22,16 @@ use super::types::{
     ResponsesRequestToolOutput, ResponsesResponse, ResponsesResponseIds, ResponsesResponseOutput,
     ResponsesResponseProgress, ResponsesResponseStatus, ResponsesResponseStreamEvent,
 };
+use crate::context::AppState;
 
-// -----------------------------------------------------------------------------
-// ResponsesLowering: Lowers one request into the neutral contract.
-// -----------------------------------------------------------------------------
-
-/// Responses input awaiting provider-neutral conversion.
-struct ResponsesLowering(
-    /// Typed provider request.
-    ResponsesRequest,
-);
-
-impl Lower for ResponsesLowering {
-    type Canonical = CompatTurnRequest;
-
+impl TryFrom<ResponsesRequest> for chat::turn::Request {
     type Error = OpenAiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        let payload = self.0;
+    fn try_from(payload: ResponsesRequest) -> Result<Self, Self::Error> {
         let output_format = payload
             .text
             .and_then(|config| config.format)
-            .map(Lower::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
 
@@ -58,14 +43,14 @@ impl Lower for ResponsesLowering {
         let turns = lower_input(payload.input, &mut system)?;
 
         // Lower tool declarations and selection policy independently.
-        let tools = payload.tools.unwrap_or_default().lower()?;
+        let tools = payload.tools.unwrap_or_default().try_into()?;
         let tool_choice = payload
             .tool_choice
-            .map(Lower::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
 
-        let request = CompatTurnRequest::builder()
+        let request = chat::turn::Request::builder()
             .system_text(system)
             .turns(turns);
         let request = request.tools(tools).tool_choice(tool_choice);
@@ -88,13 +73,13 @@ fn lower_message_item(
     role: ResponsesRequestRole,
     content: ResponsesRequestContent,
     system: &mut Vec<String>,
-    turns: &mut Vec<CompatTurn>,
+    turns: &mut Vec<chat::turn::Turn>,
 ) -> Result<(), OpenAiError> {
     let text = text_content(content, "input.content")?;
     match role {
-        ResponsesRequestRole::User => turns.push(CompatTurn::User(text)),
+        ResponsesRequestRole::User => turns.push(chat::turn::Turn::User(text)),
         ResponsesRequestRole::System | ResponsesRequestRole::Developer => system.push(text),
-        ResponsesRequestRole::Assistant => turns.push(CompatTurn::Assistant(text)),
+        ResponsesRequestRole::Assistant => turns.push(chat::turn::Turn::Assistant(text)),
         // Unknown provider roles cannot be replayed safely.
         ResponsesRequestRole::Unsupported => return Err(OpenAiError::UnsupportedResponsesRole),
     }
@@ -110,7 +95,7 @@ fn lower_message_item(
 fn lower_item(
     item: ResponsesRequestInputItem,
     system: &mut Vec<String>,
-    turns: &mut Vec<CompatTurn>,
+    turns: &mut Vec<chat::turn::Turn>,
 ) -> Result<(), OpenAiError> {
     match item {
         ResponsesRequestInputItem::Message { role, content } => {
@@ -119,14 +104,14 @@ fn lower_item(
         ResponsesRequestInputItem::FunctionCall { name, arguments } => {
             let name = required_name(name, "input.name")?;
             let arguments = arguments.ok_or(OpenAiError::MissingFunctionCallArguments)?;
-            turns.push(CompatTurn::ToolCall(FunctionCall {
+            turns.push(chat::turn::Turn::ToolCall(chat::turn::FunctionCall {
                 name,
                 arguments: arguments.into_object("input.arguments")?,
             }));
         }
         ResponsesRequestInputItem::FunctionCallOutput { output } => {
             let output = output.ok_or(OpenAiError::MissingFunctionOutput)?;
-            turns.push(CompatTurn::ToolResult(match output {
+            turns.push(chat::turn::Turn::ToolResult(match output {
                 ResponsesRequestToolOutput::Text(text) => text,
                 ResponsesRequestToolOutput::Object(object) => object.serialized(),
             }));
@@ -146,9 +131,9 @@ fn lower_item(
 fn lower_input(
     input: ResponsesRequestInput,
     system: &mut Vec<String>,
-) -> Result<Vec<CompatTurn>, OpenAiError> {
+) -> Result<Vec<chat::turn::Turn>, OpenAiError> {
     match input {
-        ResponsesRequestInput::Text(text) => Ok(vec![CompatTurn::User(text)]),
+        ResponsesRequestInput::Text(text) => Ok(vec![chat::turn::Turn::User(text)]),
         ResponsesRequestInput::Items(items) => {
             let mut turns = Vec::new();
             for item in items {
@@ -245,10 +230,10 @@ struct ResponseContext {
 
 impl ResponseContext {
     /// Attach provider-owned response facts to one canonical result.
-    fn new(model: ModelId, response: &CompatTurnResponse) -> Self {
+    fn new(model: ModelId, response: &chat::turn::Response) -> Self {
         let item_id = match response.output {
-            CompatOutput::Text(_) => format!("msg_{}", Uuid::now_v7().simple()),
-            CompatOutput::ToolCall(_) => format!("fc_{}", Uuid::now_v7().simple()),
+            chat::turn::Output::Text(_) => format!("msg_{}", Uuid::now_v7().simple()),
+            chat::turn::Output::ToolCall(_) => format!("fc_{}", Uuid::now_v7().simple()),
         };
         let call_id = format!("call_{}", Uuid::now_v7().simple());
         let output = ResponsesResponseOutput::from_compat(
@@ -260,8 +245,8 @@ impl ResponseContext {
             ResponsesResponseStatus::Completed,
         );
         let output_text = match &response.output {
-            CompatOutput::Text(text) => text.clone(),
-            CompatOutput::ToolCall(_) => String::new(),
+            chat::turn::Output::Text(text) => text.clone(),
+            chat::turn::Output::ToolCall(_) => String::new(),
         };
         Self {
             item_id,
@@ -377,7 +362,7 @@ fn stream_push_tool(
     events: &mut Vec<Event>,
     sequence: &mut Sequence,
     context: &ResponseContext,
-    call: &FunctionCall,
+    call: &chat::turn::FunctionCall,
 ) -> Result<(), EncodingError> {
     stream_push_event(
         events,
@@ -426,11 +411,11 @@ fn stream_push_output(
     events: &mut Vec<Event>,
     sequence: &mut Sequence,
     context: &ResponseContext,
-    output: &CompatOutput,
+    output: &chat::turn::Output,
 ) -> Result<(), EncodingError> {
     match output {
-        CompatOutput::Text(text) => stream_push_text(events, sequence, context, text),
-        CompatOutput::ToolCall(call) => stream_push_tool(events, sequence, context, call),
+        chat::turn::Output::Text(text) => stream_push_text(events, sequence, context, text),
+        chat::turn::Output::ToolCall(call) => stream_push_tool(events, sequence, context, call),
     }
 }
 
@@ -441,7 +426,7 @@ fn stream_push_output(
 /// Returns [`EncodingError`] when any response event cannot be serialized.
 fn stream_response(
     model: ModelId,
-    response: &CompatTurnResponse,
+    response: &chat::turn::Response,
 ) -> Result<SseEvents, EncodingError> {
     let context = ResponseContext::new(model, response);
     let mut sequence = Sequence::default();
@@ -482,7 +467,7 @@ fn stream_response(
 }
 
 // -----------------------------------------------------------------------------
-// OpenAiResponses: Handles and mounts the endpoint.
+// OpenAiResponses: Handles the endpoint.
 // -----------------------------------------------------------------------------
 
 /// Handle one unary or streaming Responses API request.
@@ -506,7 +491,7 @@ async fn open_ai_responses(
     // Capture transport policy before lowering consumes the request body.
     let model = payload.model.clone();
     let should_stream = payload.should_stream.unwrap_or(false);
-    let request = match ResponsesLowering(payload).lower() {
+    let request: chat::turn::Request = match payload.try_into() {
         Ok(request) => request,
         // Provider validation failures use OpenAI's native envelope.
         Err(error) => {
@@ -523,7 +508,7 @@ async fn open_ai_responses(
         Ok(response) => response,
         // Shared execution failures still render as OpenAI errors.
         Err(error) => {
-            return OpenAiRejection::from_error(&error).into_response();
+            return OpenAiRejection::chat(&error, "input").into_response();
         }
     };
 
@@ -539,21 +524,20 @@ async fn open_ai_responses(
     }
 }
 
-/// `OpenAI` Responses endpoint.
-pub(super) struct OpenAiResponses;
+// -----------------------------------------------------------------------------
+// Router: Publishes the Responses endpoint.
+// -----------------------------------------------------------------------------
 
-impl OpenAiResponses {
-    /// Mount the Responses route.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/v1/responses",
-            post_with(open_ai_responses, |operation| {
-                operation
-                    .summary("OpenAI response")
-                    .tag("openai")
-                    .response::<200, Json<ResponsesResponse>>()
-                    .default_response::<Json<OpenAiFailureResponse>>()
-            }),
-        )
-    }
+/// Build the Responses route.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/v1/responses",
+        post_with(open_ai_responses, |operation| {
+            operation
+                .summary("OpenAI response")
+                .tag("openai")
+                .response::<200, Json<ResponsesResponse>>()
+                .default_response::<Json<OpenAiFailureResponse>>()
+        }),
+    )
 }

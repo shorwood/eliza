@@ -2,7 +2,8 @@
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
-use eliza_modality_chat::structured_output::StructuredOutputError;
+use eliza_modality_chat as chat;
+use eliza_modality_embedding as embedding;
 use miette::Diagnostic;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -15,6 +16,10 @@ use thiserror::Error;
 /// Failure detected while lowering an Ollama request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OllamaError {
+    /// An embedding request selected a model other than the fixed fixture.
+    #[error("embeddings require model `fnv-embed`")]
+    #[diagnostic(code(eliza::embedding::model_required))]
+    EmbeddingModelRequired,
     /// An embedding request used an input shape outside the text subset.
     #[error("embedding input must be a string or an array of strings")]
     #[diagnostic(code(eliza::ollama::unsupported_embedding_input))]
@@ -25,7 +30,7 @@ pub(super) enum OllamaError {
     InvalidResponseSchema {
         /// Shared compiler failure with an RFC 6901 path.
         #[source]
-        source: StructuredOutputError,
+        source: chat::structured_output::StructuredOutputError,
     },
     /// The request selected an unknown structured-output format.
     #[error("unsupported response format")]
@@ -37,7 +42,7 @@ pub(super) enum OllamaError {
     UnsupportedResponseSchema {
         /// Shared compiler failure with an RFC 6901 path.
         #[source]
-        source: StructuredOutputError,
+        source: chat::structured_output::StructuredOutputError,
     },
     /// The request enabled unsupported reasoning output.
     #[error("reasoning output is not supported")]
@@ -106,6 +111,7 @@ impl ProblemDetails for OllamaError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::EmbeddingModelRequired => Some("model"),
             Self::UnsupportedEmbeddingInput => Some("input"),
             Self::InvalidResponseSchema { .. }
             | Self::UnsupportedResponseFormat
@@ -148,6 +154,37 @@ impl OllamaRejection {
     /// Capture a typed diagnostic for Ollama rendering.
     pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
         Self(Problem::from_error(error))
+    }
+}
+
+impl From<&chat::errors::Error> for OllamaRejection {
+    fn from(error: &chat::errors::Error) -> Self {
+        let class = match error.kind() {
+            chat::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            chat::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            chat::errors::ErrorKind::Internal => ProblemClass::Internal,
+        };
+        let param = match error.field() {
+            Some(chat::errors::ErrorField::Input) => Some("messages"),
+            Some(chat::errors::ErrorField::Tools) => Some("tools"),
+            Some(chat::errors::ErrorField::ToolChoice) => Some("tool_choice"),
+            None => None,
+        };
+        Self(Problem::from_diagnostic(error, class, param))
+    }
+}
+
+impl From<&embedding::engine::Error> for OllamaRejection {
+    fn from(error: &embedding::engine::Error) -> Self {
+        let class = match error.kind() {
+            embedding::engine::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            embedding::engine::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+        };
+        let param = match error.field() {
+            embedding::engine::ErrorField::Input => Some("input"),
+            embedding::engine::ErrorField::Dimensions => Some("dimensions"),
+        };
+        Self(Problem::from_diagnostic(error, class, param))
     }
 }
 

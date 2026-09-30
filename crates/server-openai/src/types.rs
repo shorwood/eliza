@@ -1,14 +1,8 @@
 //! `OpenAI` wire contracts shared by its route adapters.
 //! Empty metadata on documented newtype fields avoids a `schemars` 0.9 derive collision.
-use eliza_http::lower::Lower;
 use eliza_http::model::ModelId;
 use eliza_http::response::unix_timestamp;
-use eliza_modality_chat::json::JsonObject;
-use eliza_modality_chat::structured_output::{StructuredOutput, StructuredOutputErrorKind};
-use eliza_modality_chat::turn::{
-    CompatOutput, CompatTurnResponse, FunctionCall, FunctionTool, TokenUsage,
-    ToolChoice as CompatToolChoice,
-};
+use eliza_modality_chat as chat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -59,7 +53,7 @@ pub(super) enum ToolFunctionArguments {
     Object(
         /// Structured arguments.
         #[schemars(title = "", description = "")]
-        JsonObject,
+        chat::json::JsonObject,
     ),
 }
 
@@ -69,7 +63,10 @@ impl ToolFunctionArguments {
     /// # Errors
     ///
     /// Returns [`OpenAiError`] when encoded arguments are not a JSON object.
-    pub(super) fn into_object(self, param: &'static str) -> Result<JsonObject, OpenAiError> {
+    pub(super) fn into_object(
+        self,
+        param: &'static str,
+    ) -> Result<chat::json::JsonObject, OpenAiError> {
         match self {
             Self::Object(arguments) => Ok(arguments),
             Self::Encoded(arguments) => serde_json::from_str(&arguments)
@@ -128,7 +125,7 @@ pub(super) enum ChatContent {
     Object(
         /// Structured content value.
         #[schemars(title = "", description = "")]
-        JsonObject,
+        chat::json::JsonObject,
     ),
 }
 
@@ -152,7 +149,7 @@ impl ChatToolFunction {
     ///
     /// Returns [`OpenAiError`] when the name or arguments are absent or the
     /// arguments are not a JSON object.
-    fn lower(self, param: &'static str) -> Result<FunctionCall, OpenAiError> {
+    fn lower(self, param: &'static str) -> Result<chat::turn::FunctionCall, OpenAiError> {
         let name = self
             .name
             .filter(|name| !name.is_empty())
@@ -160,7 +157,7 @@ impl ChatToolFunction {
         let arguments = self
             .arguments
             .ok_or(OpenAiError::MissingToolCallArguments { param })?;
-        Ok(FunctionCall {
+        Ok(chat::turn::FunctionCall {
             name,
             arguments: arguments.into_object(param)?,
         })
@@ -183,7 +180,10 @@ impl ChatToolCall {
     /// # Errors
     ///
     /// Returns [`OpenAiError`] for a non-function call or missing function data.
-    pub(super) fn lower(self, param: &'static str) -> Result<FunctionCall, OpenAiError> {
+    pub(super) fn lower(
+        self,
+        param: &'static str,
+    ) -> Result<chat::turn::FunctionCall, OpenAiError> {
         // Reject non-function calls before interpreting function-only fields.
         if matches!(self.kind, ToolFunctionKind::Unsupported) {
             return Err(OpenAiError::UnsupportedToolCallKind { param });
@@ -203,7 +203,7 @@ pub(super) struct ChatToolDefinition {
     /// Optional human-readable function description.
     description: Option<String>,
     /// JSON Schema describing accepted parameters.
-    parameters: Option<JsonObject>,
+    parameters: Option<chat::json::JsonObject>,
 }
 
 impl ChatToolDefinition {
@@ -244,13 +244,12 @@ pub(super) struct ChatToolList(
     Vec<ChatTool>,
 );
 
-impl Lower for ChatToolList {
-    type Canonical = Vec<FunctionTool>;
-
+impl TryFrom<ChatToolList> for Vec<chat::turn::FunctionTool> {
     type Error = OpenAiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        self.0
+    fn try_from(tools: ChatToolList) -> Result<Self, Self::Error> {
+        tools
+            .0
             .into_iter()
             .map(|tool| {
                 // A function list cannot normalize provider extension tools.
@@ -263,7 +262,7 @@ impl Lower for ChatToolList {
                     .name
                     .filter(|name| !name.is_empty())
                     .ok_or(OpenAiError::MissingFunctionName { param: "tools" })?;
-                Ok(FunctionTool::new(name, definition_chars))
+                Ok(chat::turn::FunctionTool::new(name, definition_chars))
             })
             .collect()
     }
@@ -304,21 +303,21 @@ pub(super) enum ChatToolChoice {
     ),
 }
 
-impl Lower for ChatToolChoice {
-    type Canonical = CompatToolChoice;
-
+impl TryFrom<ChatToolChoice> for chat::turn::ToolChoice {
     type Error = OpenAiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        match self {
-            Self::Mode(ToolChoiceMode::Auto) => Ok(CompatToolChoice::Auto),
-            Self::Mode(ToolChoiceMode::None) => Ok(CompatToolChoice::None),
-            Self::Mode(ToolChoiceMode::Required) => Ok(CompatToolChoice::Required),
-            Self::Mode(ToolChoiceMode::Unsupported) => Err(OpenAiError::UnsupportedToolChoiceMode),
-            Self::Named(choice) if matches!(choice.kind, ToolFunctionKind::Function) => {
-                Ok(CompatToolChoice::Named(choice.function.name))
+    fn try_from(choice: ChatToolChoice) -> Result<Self, Self::Error> {
+        match choice {
+            ChatToolChoice::Mode(ToolChoiceMode::Auto) => Ok(Self::Auto),
+            ChatToolChoice::Mode(ToolChoiceMode::None) => Ok(Self::None),
+            ChatToolChoice::Mode(ToolChoiceMode::Required) => Ok(Self::Required),
+            ChatToolChoice::Mode(ToolChoiceMode::Unsupported) => {
+                Err(OpenAiError::UnsupportedToolChoiceMode)
             }
-            Self::Named(_) => Err(OpenAiError::UnsupportedNamedToolChoice),
+            ChatToolChoice::Named(choice) if matches!(choice.kind, ToolFunctionKind::Function) => {
+                Ok(chat::turn::ToolChoice::Named(choice.function.name))
+            }
+            ChatToolChoice::Named(_) => Err(OpenAiError::UnsupportedNamedToolChoice),
         }
     }
 }
@@ -336,7 +335,7 @@ pub(super) struct ChatRequestJsonSchema {
     /// Optional schema description accepted without changing local output.
     _description: Option<String>,
     /// JSON Schema compiled into the local deterministic witness.
-    schema: Option<JsonObject>,
+    schema: Option<chat::json::JsonObject>,
     /// Strictness hint accepted as a no-op because local output is always exact.
     _strict: Option<bool>,
 }
@@ -379,28 +378,6 @@ pub(super) struct ChatRequestStreamOptions {
     pub(super) should_include_usage: Option<bool>,
 }
 
-/// Validate and compile Chat Completions' nested schema payload.
-///
-/// # Errors
-///
-/// Returns a typed `OpenAI` error for missing metadata or an invalid schema.
-fn compile_chat_schema(
-    definition: Option<ChatRequestJsonSchema>,
-) -> Result<StructuredOutput, OpenAiError> {
-    let definition = definition.ok_or(OpenAiError::InvalidResponseFormat {
-        param: "response_format",
-        reason: "json_schema is required",
-    })?;
-    validate_schema_name(definition.name, "response_format")?;
-    let schema = definition
-        .schema
-        .ok_or(OpenAiError::InvalidResponseFormat {
-            param: "response_format",
-            reason: "json_schema.schema is required",
-        })?;
-    compile_schema(schema, "response_format")
-}
-
 /// Text-output format requested from Chat Completions.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -417,23 +394,6 @@ pub(super) enum ChatRequestResponseFormat {
     /// Any future or unknown output format.
     #[serde(other)]
     Unsupported,
-}
-
-impl Lower for ChatRequestResponseFormat {
-    type Canonical = StructuredOutput;
-
-    type Error = OpenAiError;
-
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        match self {
-            Self::Text => Ok(StructuredOutput::default()),
-            Self::JsonObject => Ok(StructuredOutput::json_object()),
-            Self::JsonSchema { json_schema } => compile_chat_schema(json_schema),
-            Self::Unsupported => Err(OpenAiError::UnsupportedResponseFormat {
-                param: "response_format",
-            }),
-        }
-    }
 }
 
 /// Chat Completions request accepted by the adapter.
@@ -454,6 +414,45 @@ pub(crate) struct ChatRequest {
     pub(super) tool_choice: Option<ChatToolChoice>,
     /// Optional plain-text, JSON-object, or JSON-Schema output control.
     pub(super) response_format: Option<ChatRequestResponseFormat>,
+}
+
+/// Validate and compile Chat Completions' nested schema payload.
+///
+/// # Errors
+///
+/// Returns a typed `OpenAI` error for missing metadata or an invalid schema.
+fn compile_chat_schema(
+    definition: Option<ChatRequestJsonSchema>,
+) -> Result<chat::structured_output::StructuredOutput, OpenAiError> {
+    let definition = definition.ok_or(OpenAiError::InvalidResponseFormat {
+        param: "response_format",
+        reason: "json_schema is required",
+    })?;
+    validate_schema_name(definition.name, "response_format")?;
+    let schema = definition
+        .schema
+        .ok_or(OpenAiError::InvalidResponseFormat {
+            param: "response_format",
+            reason: "json_schema.schema is required",
+        })?;
+    compile_schema(schema, "response_format")
+}
+
+impl TryFrom<ChatRequestResponseFormat> for chat::structured_output::StructuredOutput {
+    type Error = OpenAiError;
+
+    fn try_from(format: ChatRequestResponseFormat) -> Result<Self, Self::Error> {
+        match format {
+            ChatRequestResponseFormat::Text => Ok(Self::default()),
+            ChatRequestResponseFormat::JsonObject => Ok(Self::json_object()),
+            ChatRequestResponseFormat::JsonSchema { json_schema } => {
+                compile_chat_schema(json_schema)
+            }
+            ChatRequestResponseFormat::Unsupported => Err(OpenAiError::UnsupportedResponseFormat {
+                param: "response_format",
+            }),
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -520,7 +519,7 @@ pub(super) enum ResponsesRequestToolOutput {
     Object(
         /// Function-result object.
         #[schemars(title = "", description = "")]
-        JsonObject,
+        chat::json::JsonObject,
     ),
 }
 
@@ -610,7 +609,7 @@ pub(super) struct ResponsesRequestTool {
     /// Optional human-readable function description.
     description: Option<String>,
     /// JSON Schema describing accepted parameters.
-    parameters: Option<JsonObject>,
+    parameters: Option<chat::json::JsonObject>,
 }
 
 impl ResponsesRequestTool {
@@ -634,13 +633,12 @@ pub(super) struct ResponsesRequestToolList(
     Vec<ResponsesRequestTool>,
 );
 
-impl Lower for ResponsesRequestToolList {
-    type Canonical = Vec<FunctionTool>;
-
+impl TryFrom<ResponsesRequestToolList> for Vec<chat::turn::FunctionTool> {
     type Error = OpenAiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        self.0
+    fn try_from(tools: ResponsesRequestToolList) -> Result<Self, Self::Error> {
+        tools
+            .0
             .into_iter()
             .map(|tool| {
                 // A function list cannot normalize provider extension tools.
@@ -652,7 +650,7 @@ impl Lower for ResponsesRequestToolList {
                     .name
                     .filter(|name| !name.is_empty())
                     .ok_or(OpenAiError::MissingFunctionName { param: "tools" })?;
-                Ok(FunctionTool::new(name, definition_chars))
+                Ok(chat::turn::FunctionTool::new(name, definition_chars))
             })
             .collect()
     }
@@ -694,26 +692,28 @@ pub(super) enum ResponsesRequestToolChoice {
     ),
 }
 
-impl Lower for ResponsesRequestToolChoice {
-    type Canonical = CompatToolChoice;
-
+impl TryFrom<ResponsesRequestToolChoice> for chat::turn::ToolChoice {
     type Error = OpenAiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        match self {
-            Self::Mode(ToolChoiceMode::Auto) => Ok(CompatToolChoice::Auto),
-            Self::Mode(ToolChoiceMode::None) => Ok(CompatToolChoice::None),
-            Self::Mode(ToolChoiceMode::Required) => Ok(CompatToolChoice::Required),
-            Self::Mode(ToolChoiceMode::Unsupported) => Err(OpenAiError::UnsupportedToolChoiceMode),
-            Self::Named(choice) if matches!(choice.kind, ToolFunctionKind::Function) => {
+    fn try_from(choice: ResponsesRequestToolChoice) -> Result<Self, Self::Error> {
+        match choice {
+            ResponsesRequestToolChoice::Mode(ToolChoiceMode::Auto) => Ok(Self::Auto),
+            ResponsesRequestToolChoice::Mode(ToolChoiceMode::None) => Ok(Self::None),
+            ResponsesRequestToolChoice::Mode(ToolChoiceMode::Required) => Ok(Self::Required),
+            ResponsesRequestToolChoice::Mode(ToolChoiceMode::Unsupported) => {
+                Err(OpenAiError::UnsupportedToolChoiceMode)
+            }
+            ResponsesRequestToolChoice::Named(choice)
+                if matches!(choice.kind, ToolFunctionKind::Function) =>
+            {
                 let name = choice.name.filter(|name| !name.is_empty()).ok_or(
                     OpenAiError::MissingFunctionName {
                         param: "tool_choice",
                     },
                 )?;
-                Ok(CompatToolChoice::Named(name))
+                Ok(chat::turn::ToolChoice::Named(name))
             }
-            Self::Named(_) => Err(OpenAiError::UnsupportedNamedToolChoice),
+            ResponsesRequestToolChoice::Named(_) => Err(OpenAiError::UnsupportedNamedToolChoice),
         }
     }
 }
@@ -740,13 +740,17 @@ fn validate_schema_name(name: Option<String>, param: &'static str) -> Result<(),
 ///
 /// Returns the provider-specific form of a shared schema compiler error.
 fn compile_schema(
-    schema: JsonObject,
+    schema: chat::json::JsonObject,
     param: &'static str,
-) -> Result<StructuredOutput, OpenAiError> {
-    StructuredOutput::try_from(schema).map_err(|source| match source.kind() {
-        StructuredOutputErrorKind::Invalid => OpenAiError::InvalidResponseSchema { param, source },
-        StructuredOutputErrorKind::Unsupported => {
-            OpenAiError::UnsupportedResponseSchema { param, source }
+) -> Result<chat::structured_output::StructuredOutput, OpenAiError> {
+    chat::structured_output::StructuredOutput::try_from(schema).map_err(|source| {
+        match source.kind() {
+            chat::structured_output::StructuredOutputErrorKind::Invalid => {
+                OpenAiError::InvalidResponseSchema { param, source }
+            }
+            chat::structured_output::StructuredOutputErrorKind::Unsupported => {
+                OpenAiError::UnsupportedResponseSchema { param, source }
+            }
         }
     })
 }
@@ -774,7 +778,7 @@ pub(super) enum ResponsesRequestTextFormat {
         /// Optional schema description accepted without changing local output.
         _description: Option<String>,
         /// JSON Schema compiled into the local deterministic witness.
-        schema: Option<JsonObject>,
+        schema: Option<chat::json::JsonObject>,
         /// Strictness hint accepted as a no-op because local output is always exact.
         _strict: Option<bool>,
     },
@@ -783,16 +787,14 @@ pub(super) enum ResponsesRequestTextFormat {
     Unsupported,
 }
 
-impl Lower for ResponsesRequestTextFormat {
-    type Canonical = StructuredOutput;
-
+impl TryFrom<ResponsesRequestTextFormat> for chat::structured_output::StructuredOutput {
     type Error = OpenAiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        match self {
-            Self::Text => Ok(StructuredOutput::default()),
-            Self::JsonObject => Ok(StructuredOutput::json_object()),
-            Self::JsonSchema { name, schema, .. } => {
+    fn try_from(format: ResponsesRequestTextFormat) -> Result<Self, Self::Error> {
+        match format {
+            ResponsesRequestTextFormat::Text => Ok(Self::default()),
+            ResponsesRequestTextFormat::JsonObject => Ok(Self::json_object()),
+            ResponsesRequestTextFormat::JsonSchema { name, schema, .. } => {
                 validate_schema_name(name, "text.format")?;
                 let schema = schema.ok_or(OpenAiError::InvalidResponseFormat {
                     param: "text.format",
@@ -800,9 +802,11 @@ impl Lower for ResponsesRequestTextFormat {
                 })?;
                 compile_schema(schema, "text.format")
             }
-            Self::Unsupported => Err(OpenAiError::UnsupportedResponseFormat {
-                param: "text.format",
-            }),
+            ResponsesRequestTextFormat::Unsupported => {
+                Err(OpenAiError::UnsupportedResponseFormat {
+                    param: "text.format",
+                })
+            }
         }
     }
 }
@@ -875,7 +879,7 @@ pub(super) struct ChatResponseToolCall {
 
 impl ChatResponseToolCall {
     /// Build a provider-shaped tool call from its canonical representation.
-    fn from_call(call: &FunctionCall, id: String) -> Self {
+    fn from_call(call: &chat::turn::FunctionCall, id: String) -> Self {
         Self {
             id,
             kind: ToolFunctionKind::Function,
@@ -909,8 +913,8 @@ impl From<String> for ChatResponseMessage {
     }
 }
 
-impl From<FunctionCall> for ChatResponseMessage {
-    fn from(call: FunctionCall) -> Self {
+impl From<chat::turn::FunctionCall> for ChatResponseMessage {
+    fn from(call: chat::turn::FunctionCall) -> Self {
         let id = format!("call_{}", Uuid::now_v7().simple());
         Self {
             role: AssistantRole::Assistant,
@@ -946,8 +950,8 @@ pub(super) struct ChatResponseUsage {
     total_tokens: usize,
 }
 
-impl From<TokenUsage> for ChatResponseUsage {
-    fn from(usage: TokenUsage) -> Self {
+impl From<chat::turn::Usage> for ChatResponseUsage {
+    fn from(usage: chat::turn::Usage) -> Self {
         Self {
             prompt_tokens: usage.prompt,
             completion_tokens: usage.completion,
@@ -975,13 +979,13 @@ pub(crate) struct ChatResponse {
 
 impl ChatResponse {
     /// Attach the provider-owned model identity to one canonical result.
-    pub(super) fn from_compat(model: ModelId, response: CompatTurnResponse) -> Self {
+    pub(super) fn from_compat(model: ModelId, response: chat::turn::Response) -> Self {
         let (message, finish_reason) = match response.output {
-            CompatOutput::Text(text) => (
+            chat::turn::Output::Text(text) => (
                 ChatResponseMessage::from(text),
                 ChatResponseFinishReason::Stop,
             ),
-            CompatOutput::ToolCall(call) => (
+            chat::turn::Output::ToolCall(call) => (
                 ChatResponseMessage::from(call),
                 ChatResponseFinishReason::ToolCalls,
             ),
@@ -1162,12 +1166,12 @@ pub(super) enum ResponsesResponseOutput {
 impl ResponsesResponseOutput {
     /// Build one provider-shaped output item from canonical model output.
     pub(super) fn from_compat(
-        output: &CompatOutput,
+        output: &chat::turn::Output,
         ids: ResponsesResponseIds,
         status: ResponsesResponseStatus,
     ) -> Self {
         match output {
-            CompatOutput::Text(text) => {
+            chat::turn::Output::Text(text) => {
                 let content = vec![ResponsesResponseText::from(text)];
                 Self::Message {
                     id: ids.item,
@@ -1176,7 +1180,7 @@ impl ResponsesResponseOutput {
                     content,
                 }
             }
-            CompatOutput::ToolCall(call) => Self::FunctionCall {
+            chat::turn::Output::ToolCall(call) => Self::FunctionCall {
                 id: ids.item,
                 call_id: ids.call,
                 name: call.name.clone(),
@@ -1216,8 +1220,8 @@ pub(super) struct ResponsesResponseUsage {
     total_tokens: usize,
 }
 
-impl From<TokenUsage> for ResponsesResponseUsage {
-    fn from(usage: TokenUsage) -> Self {
+impl From<chat::turn::Usage> for ResponsesResponseUsage {
+    fn from(usage: chat::turn::Usage) -> Self {
         Self {
             input_tokens: usage.prompt,
             input_tokens_details: ResponsesResponseInputTokenDetails { cached_tokens: 0 },

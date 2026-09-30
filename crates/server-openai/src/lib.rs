@@ -3,8 +3,9 @@
 #![feature(register_tool)]
 #![register_tool(rlib)]
 
-pub mod alias;
 mod chat_completions;
+mod compatibility;
+mod context;
 mod embeddings;
 mod errors;
 mod models;

@@ -7,19 +7,18 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
-use eliza_modality_embedding::engine::{
-    EMBEDDING_DEFAULT_DIMENSIONS, EmbeddingInput, EmbeddingRequest, EmbeddingResponse,
-};
+use eliza_modality_embedding as embedding;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::errors::{OllamaError, OllamaFailureResponse, OllamaRejection};
+use crate::context::AppState;
 
 // -----------------------------------------------------------------------------
-// Ollama: Adapts Ollama's unary and batch embedding contract.
+// OllamaEmbedding: Adapts Ollama's embedding contract.
 // -----------------------------------------------------------------------------
 
 /// Ollama text input shapes.
@@ -92,7 +91,7 @@ struct OllamaEmbeddingResponse {
 
 impl OllamaEmbeddingResponse {
     /// Restore the provider model around one provider-neutral result.
-    fn from_embedding(model: ModelId, response: EmbeddingResponse) -> Self {
+    fn from_embedding(model: ModelId, response: embedding::engine::Response) -> Self {
         Self {
             model,
             embeddings: response.embeddings,
@@ -103,84 +102,83 @@ impl OllamaEmbeddingResponse {
     }
 }
 
-/// Ollama embeddings endpoint.
-pub(super) struct OllamaEmbeddings;
-
-impl OllamaEmbeddings {
-    /// Mount the Ollama embeddings route.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/api/embed",
-            post_with(Self::handle, |operation| {
-                operation
-                    .summary("Ollama embeddings")
-                    .tag("ollama")
-                    .response::<200, Json<OllamaEmbeddingResponse>>()
-                    .default_response::<Json<OllamaFailureResponse>>()
-            }),
-        )
+/// Authenticate, validate, embed, and render one request.
+async fn handle(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: Result<Json<OllamaEmbeddingRequest>, JsonRejection>,
+) -> Response {
+    // Authentication failures use Ollama's native error envelope.
+    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+        return OllamaRejection::from_error(&error).into_response();
     }
 
-    /// Authenticate, validate, embed, and render one request.
-    #[expect(
-        clippy::unused_async,
-        reason = "Axum handlers must return a future even when their work is synchronous"
-    )]
-    async fn handle(
-        State(state): State<AppState>,
-        headers: HeaderMap,
-        payload: Result<Json<OllamaEmbeddingRequest>, JsonRejection>,
-    ) -> Response {
-        // Authentication failures use Ollama's native error envelope.
-        if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    // Decode the authenticated request body.
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        // Malformed JSON retains Ollama's extraction error details.
+        Err(error) => {
+            return OllamaRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
+
+    // Model routing is a provider concern, not an engine concern.
+    if payload.model.as_str() != embedding::engine::MODEL_ID {
+        return OllamaRejection::from_error(&OllamaError::EmbeddingModelRequired).into_response();
+    }
+
+    // Lower Ollama's supported text input shapes.
+    let texts = match payload.input.into_texts() {
+        Ok(texts) => texts,
+        // Unsupported input shapes retain Ollama's error schema.
+        Err(error) => {
             return OllamaRejection::from_error(&error).into_response();
         }
+    };
 
-        // Decode the authenticated request body.
-        let Json(payload) = match payload {
-            Ok(payload) => payload,
-            // Malformed JSON retains Ollama's extraction error details.
-            Err(error) => {
-                return OllamaRejection::from_error(&ExtractionError::from(error)).into_response();
-            }
-        };
+    // Build one provider-neutral batch with a shared vector size.
+    let dimensions = payload
+        .dimensions
+        .unwrap_or(embedding::engine::MODEL_DEFAULT_DIMENSIONS);
+    let inputs = texts
+        .into_iter()
+        .map(|text| embedding::engine::Input { text, dimensions })
+        .collect();
 
-        // Lower Ollama's supported text input shapes.
-        let texts = match payload.input.into_texts() {
-            Ok(texts) => texts,
-            // Unsupported input shapes retain Ollama's error schema.
-            Err(error) => {
-                return OllamaRejection::from_error(&error).into_response();
-            }
-        };
+    // Assemble the provider-neutral embedding batch.
+    let request = embedding::engine::Request { inputs };
 
-        // Build one provider-neutral batch with a shared vector size.
-        let dimensions = payload.dimensions.unwrap_or(EMBEDDING_DEFAULT_DIMENSIONS);
-        let inputs = texts
-            .into_iter()
-            .map(|text| EmbeddingInput { text, dimensions })
-            .collect();
+    // Execute the shared engine and restore Ollama's envelope.
+    let response = match request.complete(state.config.limits.max_input_chars()) {
+        Ok(response) => response,
+        // Shared validation failures must retain Ollama's error envelope.
+        Err(error) => {
+            return OllamaRejection::from(&error).into_response();
+        }
+    };
 
-        // Assemble the provider-neutral embedding batch.
-        let request = EmbeddingRequest { inputs };
+    // Restore Ollama's response envelope after provider-neutral execution.
+    Json(OllamaEmbeddingResponse::from_embedding(
+        payload.model,
+        response,
+    ))
+    .into_response()
+}
 
-        // Execute the shared engine and restore Ollama's envelope.
-        let response = match request.complete(
-            payload.model.as_str(),
-            state.config.limits.max_input_chars(),
-        ) {
-            Ok(response) => response,
-            // Shared validation failures must retain Ollama's error envelope.
-            Err(error) => {
-                return OllamaRejection::from_error(&error).into_response();
-            }
-        };
+// -----------------------------------------------------------------------------
+// Router: Publishes the native embeddings endpoint.
+// -----------------------------------------------------------------------------
 
-        // Restore Ollama's response envelope after provider-neutral execution.
-        Json(OllamaEmbeddingResponse::from_embedding(
-            payload.model,
-            response,
-        ))
-        .into_response()
-    }
+/// Build the Ollama embeddings route.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/api/embed",
+        post_with(handle, |operation| {
+            operation
+                .summary("Ollama embeddings")
+                .tag("ollama")
+                .response::<200, Json<OllamaEmbeddingResponse>>()
+                .default_response::<Json<OllamaFailureResponse>>()
+        }),
+    )
 }

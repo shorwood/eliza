@@ -2,7 +2,7 @@
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
-use eliza_modality_chat::structured_output::StructuredOutputError;
+use eliza_modality_chat as chat;
 use miette::Diagnostic;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -25,7 +25,7 @@ pub(super) enum AnthropicError {
     InvalidOutputSchema {
         /// Shared compiler failure with an RFC 6901 path.
         #[source]
-        source: StructuredOutputError,
+        source: chat::structured_output::StructuredOutputError,
     },
     /// A tool declaration omitted its name.
     #[error("tool is missing its name")]
@@ -89,7 +89,7 @@ pub(super) enum AnthropicError {
     UnsupportedOutputSchema {
         /// Shared compiler failure with an RFC 6901 path.
         #[source]
-        source: StructuredOutputError,
+        source: chat::structured_output::StructuredOutputError,
     },
 }
 
@@ -202,6 +202,23 @@ impl AnthropicRejection {
     /// Capture a typed diagnostic for Anthropic rendering.
     pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
         Self(Problem::from_error(error))
+    }
+}
+
+impl From<&chat::errors::Error> for AnthropicRejection {
+    fn from(error: &chat::errors::Error) -> Self {
+        let class = match error.kind() {
+            chat::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            chat::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            chat::errors::ErrorKind::Internal => ProblemClass::Internal,
+        };
+        let param = match error.field() {
+            Some(chat::errors::ErrorField::Input) => Some("messages"),
+            Some(chat::errors::ErrorField::Tools) => Some("tools"),
+            Some(chat::errors::ErrorField::ToolChoice) => Some("tool_choice"),
+            None => None,
+        };
+        Self(Problem::from_diagnostic(error, class, param))
     }
 }
 

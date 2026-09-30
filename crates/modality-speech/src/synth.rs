@@ -2,8 +2,8 @@
 
 use flite_rs::{Engine, Flow};
 
-use super::core::{SpeechRequest, SpeechSegment};
-use super::errors::SpeechError;
+use super::core::{Request, Segment};
+use super::errors::Error;
 
 // -----------------------------------------------------------------------------
 // VoiceSettings: Maps provider voice controls onto Flite.
@@ -74,7 +74,7 @@ impl VoiceSettings {
     }
 
     /// Derive one deterministic Flite configuration from a speech segment.
-    fn for_segment(segment: &SpeechSegment) -> Self {
+    fn for_segment(segment: &Segment) -> Self {
         let hash_byte = Self::stable_hash(&segment.voice).to_le_bytes()[0];
         let mut settings = Self {
             pitch: Self::PITCHES[usize::from(hash_byte) % Self::PITCHES.len()],
@@ -106,7 +106,7 @@ struct OutputRate {
 }
 
 impl TryFrom<u32> for OutputRate {
-    type Error = SpeechError;
+    type Error = Error;
 
     fn try_from(sample_rate: u32) -> Result<Self, Self::Error> {
         match sample_rate {
@@ -122,7 +122,7 @@ impl TryFrom<u32> for OutputRate {
                 factor: 3,
                 samples_per_second: 24_000,
             }),
-            sample_rate => Err(SpeechError::UnsupportedSampleRate { sample_rate }),
+            sample_rate => Err(Error::UnsupportedSampleRate { sample_rate }),
         }
     }
 }
@@ -150,12 +150,12 @@ struct SampleStream<F> {
     /// Downstream consumer for complete PCM chunks.
     sink: F,
     /// First limit or sink failure, which also stops Flite.
-    failure: Option<SpeechError>,
+    failure: Option<Error>,
 }
 
 impl<F> SampleStream<F>
 where
-    F: FnMut(&[i16]) -> Result<(), SpeechError>,
+    F: FnMut(&[i16]) -> Result<(), Error>,
 {
     /// Start an empty bounded output stream.
     fn new(maximum: usize, rate: OutputRate, sink: F) -> Self {
@@ -172,7 +172,7 @@ where
     /// Reject an append that would exceed the configured output duration.
     fn ensure_room(&mut self, additional: usize) -> Flow {
         if self.total.saturating_add(additional) > self.maximum {
-            self.failure = Some(SpeechError::OutputTooLong);
+            self.failure = Some(Error::OutputTooLong);
             Flow::Stop
         } else {
             Flow::Continue
@@ -258,7 +258,7 @@ where
     /// # Errors
     ///
     /// Returns the first duration-limit or downstream sink failure.
-    fn finish(mut self) -> Result<usize, SpeechError> {
+    fn finish(mut self) -> Result<usize, Error> {
         if self.failure.is_none() {
             self.flush();
         }
@@ -270,13 +270,13 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`SpeechError::OutputTooLong`] when output exceeds the supplied sample limit, or an
+/// Returns [`Error::OutputTooLong`] when output exceeds the supplied sample limit, or an
 /// encoder failure when the downstream sink rejects PCM.
 pub(super) fn synthesize_streaming(
-    request: &SpeechRequest,
+    request: &Request,
     maximum_samples: usize,
-    sink: impl FnMut(&[i16]) -> Result<(), SpeechError>,
-) -> Result<usize, SpeechError> {
+    sink: impl FnMut(&[i16]) -> Result<(), Error>,
+) -> Result<usize, Error> {
     let rate = request.sample_rate.try_into()?;
     let mut engine = Engine::new();
     let mut output = SampleStream::new(maximum_samples, rate, sink);
@@ -298,10 +298,7 @@ pub(super) fn synthesize_streaming(
 /// # Errors
 ///
 /// Returns the same bounded synthesis failures as [`synthesize_streaming`].
-pub(super) fn synthesize(
-    request: &SpeechRequest,
-    maximum_samples: usize,
-) -> Result<Vec<i16>, SpeechError> {
+pub(super) fn synthesize(request: &Request, maximum_samples: usize) -> Result<Vec<i16>, Error> {
     let mut samples = Vec::new();
     synthesize_streaming(request, maximum_samples, |chunk| {
         samples.extend_from_slice(chunk);
@@ -375,10 +372,10 @@ mod tests {
         /// # Errors
         ///
         /// Returns the synthesis error under test.
-        fn render(self, sample_rate: u32, maximum_samples: usize) -> Result<Vec<i16>, SpeechError> {
+        fn render(self, sample_rate: u32, maximum_samples: usize) -> Result<Vec<i16>, Error> {
             synthesize(
-                &SpeechRequest {
-                    segments: vec![SpeechSegment {
+                &Request {
+                    segments: vec![Segment {
                         text: "You seem to be quite positive.".to_owned(),
                         voice: self.voice.to_owned(),
                         style: self.style.to_owned(),
@@ -402,7 +399,7 @@ mod tests {
     ///
     /// Panics when deterministic or audible output regresses.
     #[test]
-    fn synthesis_is_deterministic_and_audible() -> Result<(), SpeechError> {
+    fn synthesis_is_deterministic_and_audible() -> Result<(), Error> {
         let first = TestProfile::ORDINARY
             .render(TestProfile::HIGH_SAMPLE_RATE, TestProfile::MAXIMUM_SAMPLES)?;
         let second = TestProfile::ORDINARY
@@ -422,7 +419,7 @@ mod tests {
     ///
     /// Panics when a provider control no longer changes the output.
     #[test]
-    fn provider_controls_change_output() -> Result<(), SpeechError> {
+    fn provider_controls_change_output() -> Result<(), Error> {
         let ordinary = TestProfile::ORDINARY.render(
             TestProfile::NATIVE_SAMPLE_RATE,
             TestProfile::MAXIMUM_SAMPLES,
@@ -456,6 +453,6 @@ mod tests {
             TestProfile::HIGH_SAMPLE_RATE,
             TestProfile::TINY_SAMPLE_LIMIT,
         );
-        assert!(matches!(result, Err(SpeechError::OutputTooLong)));
+        assert!(matches!(result, Err(Error::OutputTooLong)));
     }
 }
