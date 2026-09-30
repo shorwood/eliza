@@ -1,4 +1,4 @@
-//! Tiny encoders for the speech formats exposed by provider adapters.
+//! Encoders for the speech formats exposed by provider adapters.
 
 use audio_codec_algorithms::{encode_alaw, encode_ulaw};
 use rusty_mp3::{Mp3Encoder, Mp3EncoderConfig};
@@ -27,6 +27,12 @@ fn audio_encode_l16(samples: &[i16]) -> Vec<u8> {
         .iter()
         .flat_map(|sample| sample.to_be_bytes())
         .collect()
+}
+
+/// Encode PCM samples through one G.711 companding function.
+fn audio_encode_g711(samples: &[i16], encode: impl Fn(i16) -> u8) -> Vec<u8> {
+    let copied = samples.iter().copied();
+    copied.map(encode).collect()
 }
 
 /// Build a mono PCM RIFF/WAVE header for a known or streaming data length.
@@ -71,7 +77,9 @@ fn audio_encode_mp3(samples: &[i16], sample_rate: u32) -> Result<Vec<u8>, Speech
     });
     encoder
         .push_pcm_s16(samples, 1, sample_rate)
-        .map_err(|source| SpeechError::Mp3Encoding { source })?;
+        .map_err(|source| SpeechError::Mp3Encoding {
+            detail: source.to_string(),
+        })?;
     encoder.finish();
     let mut bytes = Vec::new();
     while let Ok(packet) = encoder.next_packet() {
@@ -135,11 +143,11 @@ impl EncodedAudio {
                 media_type: audio_media_type(format, sample_rate),
             },
             AudioFormat::MuLaw => Self {
-                bytes: samples.iter().copied().map(encode_ulaw).collect(),
+                bytes: audio_encode_g711(samples, encode_ulaw),
                 media_type: audio_media_type(format, sample_rate),
             },
             AudioFormat::ALaw => Self {
-                bytes: samples.iter().copied().map(encode_alaw).collect(),
+                bytes: audio_encode_g711(samples, encode_alaw),
                 media_type: audio_media_type(format, sample_rate),
             },
         };
@@ -198,7 +206,9 @@ fn mp3_push(
 ) -> Result<Vec<u8>, SpeechError> {
     encoder
         .push_pcm_s16(samples, 1, sample_rate)
-        .map_err(|source| SpeechError::Mp3Encoding { source })?;
+        .map_err(|source| SpeechError::Mp3Encoding {
+            detail: source.to_string(),
+        })?;
     let bytes = mp3_drain(encoder);
     *emitted |= !bytes.is_empty();
     Ok(bytes)
@@ -213,7 +223,9 @@ fn mp3_finish(mut encoder: Mp3Encoder, mut emitted: bool) -> Result<Vec<u8>, Spe
     encoder.finish();
     encoder
         .next_packet()
-        .map_err(|source| SpeechError::Mp3Encoding { source })?;
+        .map_err(|source| SpeechError::Mp3Encoding {
+            detail: source.to_string(),
+        })?;
     let bytes = mp3_drain(&mut encoder);
     emitted |= !bytes.is_empty();
     emitted.then_some(bytes).ok_or(SpeechError::Mp3NoFrames)
@@ -285,8 +297,8 @@ impl StreamingEncoder {
             }
             StreamEncoding::Wav | StreamEncoding::Pcm => Ok(audio_encode_pcm(samples)),
             StreamEncoding::L16 => Ok(audio_encode_l16(samples)),
-            StreamEncoding::MuLaw => Ok(samples.iter().copied().map(encode_ulaw).collect()),
-            StreamEncoding::ALaw => Ok(samples.iter().copied().map(encode_alaw).collect()),
+            StreamEncoding::MuLaw => Ok(audio_encode_g711(samples, encode_ulaw)),
+            StreamEncoding::ALaw => Ok(audio_encode_g711(samples, encode_alaw)),
         }
     }
 

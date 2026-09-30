@@ -4,10 +4,10 @@ use std::num::NonZeroUsize;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::errors::TurnError;
-use super::json::JsonObject;
-use super::model::ModelId;
 use crate::eliza::{doctor, input_record};
+use crate::errors::TurnError;
+use crate::json::JsonObject;
+use crate::structured_output::StructuredOutput;
 
 // -----------------------------------------------------------------------------
 // ToolCompleteText: Defines the deterministic tool-result acknowledgement.
@@ -22,7 +22,7 @@ const TOOL_COMPLETE_TEXT: &str = "TOOL CALL COMPLETE";
 
 /// One client-defined function offered to ELIZA.
 #[derive(Debug, Clone)]
-pub(crate) struct FunctionTool {
+pub struct FunctionTool {
     /// Function name used by the wire adapter.
     name: String,
     /// Serialized definition size retained for limits and accounting.
@@ -31,7 +31,8 @@ pub(crate) struct FunctionTool {
 
 impl FunctionTool {
     /// Retain a validated function name and its provider definition.
-    pub(crate) fn new(name: String, definition_chars: usize) -> Self {
+    #[must_use]
+    pub fn new(name: String, definition_chars: usize) -> Self {
         Self {
             name,
             definition_chars,
@@ -50,11 +51,11 @@ impl FunctionTool {
 
 /// One normalized function call.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct FunctionCall {
+pub struct FunctionCall {
     /// Function selected by the explicit fixture directive.
-    pub(crate) name: String,
+    pub name: String,
     /// Caller-supplied JSON object passed through unchanged.
-    pub(crate) arguments: JsonObject,
+    pub arguments: JsonObject,
 }
 
 impl FunctionCall {
@@ -84,12 +85,22 @@ impl FunctionCall {
         if name.is_empty() {
             return Err(TurnError::MissingToolName);
         }
-        let arguments = serde_json::from_str::<JsonObject>(arguments.trim_start())
-            .map_err(|source| TurnError::InvalidToolArguments { source })?;
+        let arguments = Self::parse_arguments(arguments.trim_start())?;
         Ok(Some(Self {
             name: name.to_owned(),
             arguments,
         }))
+    }
+
+    /// Decode the JSON object carried by one fixture directive.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed rejection when the argument text is not a JSON object.
+    fn parse_arguments(arguments: &str) -> Result<JsonObject, TurnError> {
+        serde_json::from_str(arguments).map_err(|source| TurnError::InvalidToolArguments {
+            detail: source.to_string(),
+        })
     }
 
     /// Count the provider-visible name and serialized arguments.
@@ -104,7 +115,7 @@ impl FunctionCall {
 
 /// Tool selection requested by a provider client.
 #[derive(Debug, Clone, Default)]
-pub(crate) enum ToolChoice {
+pub enum ToolChoice {
     /// Call only when the prompt contains an explicit fixture directive.
     #[default]
     Auto,
@@ -155,7 +166,7 @@ impl ToolChoice {
 
 /// One provider message lowered into conversation history.
 #[derive(Debug, Clone)]
-pub(crate) enum CompatTurn {
+pub enum CompatTurn {
     /// Text replayed through the ELIZA engine.
     User(
         /// User-authored text.
@@ -216,7 +227,7 @@ struct PositionedInput<'turn> {
 
 /// Provider-neutral successful output.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CompatOutput {
+pub enum CompatOutput {
     /// Ordinary assistant text.
     Text(
         /// ELIZA response text.
@@ -235,9 +246,7 @@ pub(crate) enum CompatOutput {
 
 /// One provider-neutral request.
 #[derive(Debug, bon::Builder)]
-pub(crate) struct CompatTurnRequest {
-    /// Model identifier echoed in the provider response.
-    model: ModelId,
+pub struct CompatTurnRequest {
     /// System instructions retained for limits and token accounting.
     system_text: Vec<String>,
     /// Provider transcript normalized into execution order.
@@ -246,6 +255,9 @@ pub(crate) struct CompatTurnRequest {
     tools: Vec<FunctionTool>,
     /// Client policy governing function selection.
     tool_choice: ToolChoice,
+    /// Compiled text-response formatting applied after generation.
+    #[builder(default)]
+    output_format: StructuredOutput,
 }
 
 impl CompatTurnRequest {
@@ -268,7 +280,9 @@ impl CompatTurnRequest {
             .iter()
             .map(FunctionTool::char_count)
             .sum::<usize>();
-        Self::approximate_tokens(texts.iter().map(String::as_str)) + definition_chars.div_ceil(4)
+        let schema_chars = self.output_format.schema_chars();
+        Self::approximate_tokens(texts.iter().map(String::as_str))
+            + (definition_chars + schema_chars).div_ceil(4)
     }
 
     /// Replay ordinary user turns through a fresh deterministic ELIZA session.
@@ -304,7 +318,7 @@ impl CompatTurnRequest {
             .iter()
             .map(FunctionTool::char_count)
             .sum::<usize>();
-        system + turns + tools
+        system + turns + tools + self.output_format.schema_chars()
     }
 
     /// Enforce configured history and serialized-input bounds.
@@ -312,12 +326,16 @@ impl CompatTurnRequest {
     /// # Errors
     ///
     /// Returns a rejection when either configured bound is exceeded.
-    fn validate_limits(&self, limits: RequestLimits) -> Result<(), TurnError> {
+    fn validate_limits(
+        &self,
+        max_input_chars: NonZeroUsize,
+        max_history_messages: NonZeroUsize,
+    ) -> Result<(), TurnError> {
         // Reject histories that exceed the configured replay-work bound.
-        if self.turns.len() > limits.max_history_messages.get() {
+        if self.turns.len() > max_history_messages.get() {
             return Err(TurnError::TooManyTurns {
                 actual: self.turns.len(),
-                limit: limits.max_history_messages.get(),
+                limit: max_history_messages.get(),
             });
         }
 
@@ -325,10 +343,10 @@ impl CompatTurnRequest {
         let input_chars = self.input_char_count();
 
         // Reject serialized input beyond the configured character bound.
-        if input_chars > limits.max_input_chars.get() {
+        if input_chars > max_input_chars.get() {
             return Err(TurnError::InputTooLarge {
                 actual: input_chars,
-                limit: limits.max_input_chars.get(),
+                limit: max_input_chars.get(),
             });
         }
         Ok(())
@@ -426,8 +444,12 @@ impl CompatTurnRequest {
     ///
     /// Returns a provider rejection for invalid history, directives, choices,
     /// or configured request limits.
-    pub(crate) fn complete(self, limits: RequestLimits) -> Result<CompatTurnResponse, TurnError> {
-        self.validate_limits(limits)?;
+    pub fn complete(
+        self,
+        max_input_chars: NonZeroUsize,
+        max_history_messages: NonZeroUsize,
+    ) -> Result<CompatTurnResponse, TurnError> {
+        self.validate_limits(max_input_chars, max_history_messages)?;
 
         // Select the newest turn that can produce a response.
         let Some(latest) = self.latest_input() else {
@@ -435,7 +457,7 @@ impl CompatTurnRequest {
         };
 
         // Execute either a verified tool result or a new user request.
-        let output = match latest.turn {
+        let mut output = match latest.turn {
             CompatTurn::ToolResult(_) => {
                 self.validate_tool_result(latest.index)?;
                 CompatOutput::Text(TOOL_COMPLETE_TEXT.to_owned())
@@ -443,6 +465,11 @@ impl CompatTurnRequest {
             CompatTurn::User(text) => self.complete_user(text)?,
             CompatTurn::Assistant(_) | CompatTurn::ToolCall(_) => unreachable!(),
         };
+
+        // Structured formatting applies only after final text is available.
+        if let CompatOutput::Text(text) = &mut output {
+            *text = self.output_format.render(std::mem::take(text));
+        }
 
         let prompt = self.prompt_tokens();
         let completion = match &output {
@@ -460,12 +487,7 @@ impl CompatTurnRequest {
             total: prompt + completion,
         };
 
-        // Return the completed output with its model identity and accounting.
-        Ok(CompatTurnResponse {
-            model: self.model,
-            output,
-            usage,
-        })
+        Ok(CompatTurnResponse { output, usage })
     }
 }
 
@@ -475,16 +497,16 @@ impl CompatTurnRequest {
 
 /// Approximate provider token counts.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, JsonSchema)]
-pub(crate) struct TokenUsage {
+pub struct TokenUsage {
     /// Approximate input token count.
     #[serde(rename = "prompt_tokens")]
-    pub(crate) prompt: usize,
+    pub prompt: usize,
     /// Approximate output token count.
     #[serde(rename = "completion_tokens")]
-    pub(crate) completion: usize,
+    pub completion: usize,
     /// Prompt plus completion tokens.
     #[serde(rename = "total_tokens")]
-    pub(crate) total: usize,
+    pub total: usize,
 }
 
 // -----------------------------------------------------------------------------
@@ -493,33 +515,11 @@ pub(crate) struct TokenUsage {
 
 /// One completed provider-neutral turn.
 #[derive(Debug)]
-pub(crate) struct CompatTurnResponse {
-    /// Model id echoed by the provider adapter.
-    pub(crate) model: ModelId,
+pub struct CompatTurnResponse {
     /// Text or function call selected by the shared executor.
-    pub(crate) output: CompatOutput,
+    pub output: CompatOutput,
     /// Approximate token usage.
-    pub(crate) usage: TokenUsage,
-}
-
-// -----------------------------------------------------------------------------
-// RequestLimits: Bounds normalized request size and replay work.
-// -----------------------------------------------------------------------------
-
-/// Bounds transcript size and replay work.
-#[derive(Debug, Clone, Copy, bon::Builder)]
-pub(crate) struct RequestLimits {
-    /// Maximum serialized input size across all request components.
-    max_input_chars: NonZeroUsize,
-    /// Maximum number of normalized history turns.
-    max_history_messages: NonZeroUsize,
-}
-
-impl RequestLimits {
-    /// Return the maximum serialized input size.
-    pub(crate) const fn max_input_chars(self) -> NonZeroUsize {
-        self.max_input_chars
-    }
+    pub usage: TokenUsage,
 }
 
 // -----------------------------------------------------------------------------
@@ -531,16 +531,13 @@ impl RequestLimits {
     clippy::missing_panics_doc,
     reason = "test assertions are the intended panic contract"
 )]
+#[expect(
+    rlib::missing_section_dividers,
+    reason = "the shared it_should naming family already groups compact scenario tests"
+)]
 mod tests {
     use super::*;
-
-    /// Return permissive bounds for unit-sized transcripts.
-    fn it_should_fixture_limits() -> RequestLimits {
-        RequestLimits::builder()
-            .max_input_chars(NonZeroUsize::MAX)
-            .max_history_messages(NonZeroUsize::MAX)
-            .build()
-    }
+    use crate::structured_output::StructuredOutput;
 
     /// Return the function definition offered by fixture tests.
     fn it_should_fixture_tool() -> FunctionTool {
@@ -553,18 +550,42 @@ mod tests {
         )
     }
 
+    /// Build one request while keeping each typestate transition visible.
+    fn it_should_build_request(
+        turns: Vec<CompatTurn>,
+        tools: Vec<FunctionTool>,
+        tool_choice: ToolChoice,
+        output_format: StructuredOutput,
+    ) -> CompatTurnRequest {
+        let request = CompatTurnRequest::builder().system_text(Vec::new());
+        let request = request.turns(turns).tools(tools);
+        let request = request
+            .tool_choice(tool_choice)
+            .output_format(output_format);
+        request.build()
+    }
+
     /// Build one fixture request with the shared model and tool definition.
     fn it_should_fixture_request(
         turns: Vec<CompatTurn>,
         tool_choice: ToolChoice,
     ) -> CompatTurnRequest {
-        CompatTurnRequest::builder()
-            .model(ModelId::default())
-            .system_text(Vec::new())
-            .turns(turns)
-            .tools(vec![it_should_fixture_tool()])
-            .tool_choice(tool_choice)
-            .build()
+        it_should_build_request(
+            turns,
+            vec![it_should_fixture_tool()],
+            tool_choice,
+            StructuredOutput::default(),
+        )
+    }
+
+    /// Compile one structured-output schema for neutral execution fixtures.
+    #[expect(
+        rlib::ad_hoc_conversions,
+        reason = "the test helper deliberately unwraps a JSON literal at the fixture boundary"
+    )]
+    fn it_should_compile_fixture_format(schema: serde_json::Value) -> StructuredOutput {
+        let schema = serde_json::from_value::<JsonObject>(schema).unwrap();
+        StructuredOutput::try_from(schema).unwrap()
     }
 
     #[test]
@@ -575,7 +596,7 @@ mod tests {
             )],
             ToolChoice::Auto,
         )
-        .complete(it_should_fixture_limits())
+        .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap();
 
         assert_eq!(
@@ -591,7 +612,7 @@ mod tests {
     fn it_should_call_eliza_for_an_ordinary_turn() {
         let response =
             it_should_fixture_request(vec![CompatTurn::User("Hello".to_owned())], ToolChoice::Auto)
-                .complete(it_should_fixture_limits())
+                .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
                 .unwrap();
 
         assert!(matches!(response.output, CompatOutput::Text(_)));
@@ -603,7 +624,7 @@ mod tests {
             vec![CompatTurn::User("@tool echo []".to_owned())],
             ToolChoice::Auto,
         )
-        .complete(it_should_fixture_limits())
+        .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap_err();
 
         assert!(matches!(error, TurnError::InvalidToolArguments { .. }));
@@ -615,7 +636,7 @@ mod tests {
             vec![CompatTurn::User("Hello".to_owned())],
             ToolChoice::Required,
         )
-        .complete(it_should_fixture_limits())
+        .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap_err();
 
         assert!(matches!(error, TurnError::RequiredToolDirective));
@@ -627,7 +648,7 @@ mod tests {
             vec![CompatTurn::User("@tool echo {}".to_owned())],
             ToolChoice::Named("other".to_owned()),
         )
-        .complete(it_should_fixture_limits())
+        .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap_err();
 
         assert!(matches!(error, TurnError::ToolChoiceDisallows { .. }));
@@ -647,7 +668,7 @@ mod tests {
             ],
             ToolChoice::Auto,
         )
-        .complete(it_should_fixture_limits())
+        .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap();
 
         assert_eq!(
@@ -671,12 +692,114 @@ mod tests {
             ],
             ToolChoice::Auto,
         )
-        .complete(it_should_fixture_limits())
+        .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap();
 
         assert_eq!(
             response.output,
             CompatOutput::Text("I AM SORRY TO HEAR YOU ARE SAD".to_owned())
         );
+    }
+
+    #[test]
+    fn it_should_format_ordinary_text_before_completion_accounting() {
+        let format = it_should_compile_fixture_format(serde_json::json!({
+            "type":"object",
+            "properties":{"ok":{"type":"boolean"}},
+            "required":["ok"]
+        }));
+        let request = it_should_build_request(
+            vec![CompatTurn::User("I am sad".to_owned())],
+            Vec::new(),
+            ToolChoice::Auto,
+            format,
+        );
+        let response = request
+            .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+            .unwrap();
+
+        assert_eq!(
+            response.output,
+            CompatOutput::Text(r#"{"ok":false}"#.to_owned())
+        );
+        assert_eq!(response.usage.completion, 1);
+    }
+
+    #[test]
+    fn it_should_not_format_tool_calls() {
+        // Build a formatted request whose output is a function call.
+        let request = it_should_build_request(
+            vec![CompatTurn::User("@tool echo {}".to_owned())],
+            vec![it_should_fixture_tool()],
+            ToolChoice::Auto,
+            StructuredOutput::json_object(),
+        );
+
+        // Complete the request under unbounded fixture limits.
+        let response = request
+            .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+            .unwrap();
+
+        assert!(matches!(response.output, CompatOutput::ToolCall(_)));
+    }
+
+    #[test]
+    fn it_should_format_tool_result_acknowledgements() {
+        let call = FunctionCall {
+            name: "echo".to_owned(),
+            arguments: serde_json::from_value(serde_json::json!({})).unwrap(),
+        };
+        let request = it_should_build_request(
+            vec![
+                CompatTurn::User("@tool echo {}".to_owned()),
+                CompatTurn::ToolCall(call),
+                CompatTurn::ToolResult("done".to_owned()),
+            ],
+            vec![it_should_fixture_tool()],
+            ToolChoice::Auto,
+            StructuredOutput::json_object(),
+        );
+        let response = request
+            .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+            .unwrap();
+
+        assert_eq!(
+            response.output,
+            CompatOutput::Text(r#"{"response":"TOOL CALL COMPLETE"}"#.to_owned())
+        );
+    }
+
+    #[test]
+    fn it_should_count_the_serialized_schema_toward_input_limits() {
+        // Account for the exact serialized schema and user text.
+        let schema = serde_json::json!({"type":"string"});
+        let format = it_should_compile_fixture_format(schema.clone());
+        let schema_chars = schema.to_string().chars().count();
+
+        // Derive the failing limit from the request's complete character count.
+        let user_input = "Hello";
+        let input_chars = user_input.chars().count();
+        let expected_actual = input_chars + schema_chars;
+        let expected_limit = expected_actual - 1;
+        let max_input_chars = NonZeroUsize::new(expected_limit).unwrap();
+
+        // Submit the request with a limit one character below its full input.
+        let request = it_should_build_request(
+            vec![CompatTurn::User(user_input.to_owned())],
+            Vec::new(),
+            ToolChoice::Auto,
+            format,
+        );
+
+        // Capture the boundary rejection for exact accounting assertions.
+        let error = request
+            .complete(max_input_chars, NonZeroUsize::MAX)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TurnError::InputTooLarge { actual, limit }
+                if actual == expected_actual && limit == expected_limit
+        ));
     }
 }
