@@ -1,0 +1,35 @@
+            EXTERNAL FUNCTION (LST,TAPE)                                        006340
+            NORMAL MODE IS INTEGER                                              006350
+            ENTRY TO LPRINT.                                                    006360
+            BLANK = $      $                                                    006370
+            EXECUTE PLACE.(TAPE,0)                                              006380
+            LEFTP = 606074606060K                                               006390
+            RIGHTP= 606034606060K                                               006400
+            BOTH  = 607460603460K                                               006410
+            EXECUTE NEWTOP.(SEQRDR.(LST),LIST.(STACK))                          006420
+            S=POPTOP.(STACK)                                                    006430
+BEGIN       EXECUTE PLACE.(LEFTP,1)                                             006440
+NEXT        WORD=SEQLR.(S,FLAG)                                                 006450
+            W'R FLAG .L. 0                                                      006460
+            EXECUTE PLACE.(WORD,1)                                              006470
+            W'R S .G. 0, PLACE.(BLANK,1)                                        006480
+            T'O NEXT                                                            006490
+            OR W'R FLAG .G. 0                                                   006500
+            EXECUTE PLACE.(RIGHTP,1)                                            006510
+            W'R LISTMT.(STACK) .E. 0, T'O DONE                                  006520
+            S=POPTOP.(STACK)                                                    006530
+            T'O NEXT                                                            006540
+            OTHERWISE                                                           006550
+            W'R LISTMT.(WORD) .E. 0                                             006560
+            EXECUTE PLACE.(BOTH,1)                                              006570
+            T'O NEXT                                                            006580
+            OTHERWISE                                                           006590
+            EXECUTE NEWTOP.(S,STACK)                                            006600
+            S=SEQRDR.(WORD)                                                     006610
+            T'O BEGIN                                                           006620
+            E'L                                                                 006630
+            E'L                                                                 006640
+DONE        EXECUTE PLACE.(0,-1)                                                006650
+            EXECUTE IRALST.(STACK)                                              006660
+            FUNCTION RETURN LST                                                 006670
+            END OF FUNCTION                                                     006680
