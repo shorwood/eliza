@@ -1,23 +1,44 @@
 //! Assembly of provider-compatible routes.
 
-use aide::axum::ApiRouter;
+use std::sync::Arc;
+
 use axum::Router;
-use eliza_http::context::{AppState, RouteConfig};
+use eliza_http::context::RouteConfig;
+use eliza_modality_speech::service::Service as SpeechService;
 
-use crate::docs::Docs;
-use crate::health::Health;
+use crate::docs::ApiDocs as _;
+use crate::health;
 
-/// Complete provider-compatible HTTP surface.
-pub(super) struct Routes;
+/// Configured complete provider-compatible route tree.
+pub(super) struct Routes {
+    /// Validated behavior shared by provider adapters.
+    config: RouteConfig,
+}
 
 impl Routes {
+    /// Capture validated route behavior for composition.
+    pub(super) fn for_config(config: RouteConfig) -> Self {
+        Self { config }
+    }
+
     /// Build every provider route and generate its `OpenAPI` document.
-    pub(super) fn build(config: RouteConfig) -> Router {
-        let router = Health::mount(ApiRouter::new());
-        let router = router.nest("/openai", eliza_server_openai::router::mount());
-        let router = router.nest("/anthropic", eliza_server_anthropic::router::mount());
-        let router = router.nest("/gemini", eliza_server_gemini::router::mount());
-        let router = router.nest("/ollama", eliza_server_ollama::router::mount());
-        Docs::finish(router).with_state(AppState::from(config))
+    pub(super) fn into_router(self) -> Router {
+        let config = Arc::new(self.config);
+        let speech = SpeechService::default();
+        let router = health::router();
+        let openai = eliza_server_openai::router::Routes::new(Arc::clone(&config), speech.clone())
+            .into_router();
+        let anthropic =
+            eliza_server_anthropic::router::Routes::from(Arc::clone(&config)).into_router();
+        let openai_compat = eliza_server_openai::router::Routes::compatibility(Arc::clone(&config));
+        let gemini = eliza_server_gemini::router::Routes::new(Arc::clone(&config), speech)
+            .into_router()
+            .nest("/v1beta/openai", openai_compat);
+        let ollama = eliza_server_ollama::router::Routes::from(config).into_router();
+        let router = router.nest("/openai", openai);
+        let router = router.nest("/anthropic", anthropic);
+        let router = router.nest("/gemini", gemini);
+        let router = router.nest("/ollama", ollama);
+        router.finish_docs()
     }
 }

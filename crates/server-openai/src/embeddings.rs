@@ -7,20 +7,18 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
-use eliza_modality_embedding::engine::{
-    EMBEDDING_DEFAULT_DIMENSIONS, EmbeddingInput as CompatEmbeddingInput, EmbeddingRequest,
-    EmbeddingResponse,
-};
+use eliza_modality_embedding as embedding;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
+use crate::context::AppState;
 
 // -----------------------------------------------------------------------------
-// OpenAi: Adapts OpenAI's unary and batch embedding contract.
+// OpenAiEmbedding: Adapts OpenAI's embedding contract.
 // -----------------------------------------------------------------------------
 
 /// `OpenAI` embedding output encoding.
@@ -149,7 +147,7 @@ pub(crate) struct OpenAiEmbeddingResponse {
 
 impl OpenAiEmbeddingResponse {
     /// Restore the provider model around one provider-neutral result.
-    fn from_embedding(model: ModelId, response: EmbeddingResponse) -> Self {
+    fn from_embedding(model: ModelId, response: embedding::engine::Response) -> Self {
         let indexed_embeddings = response.embeddings.into_iter().enumerate();
         let data = indexed_embeddings
             .map(|(index, embedding)| OpenAiEmbeddingData {
@@ -170,94 +168,90 @@ impl OpenAiEmbeddingResponse {
     }
 }
 
-/// OpenAI-compatible embeddings endpoint.
-pub(crate) struct OpenAiEmbeddings;
+/// Authenticate, validate, embed, and render one request.
+pub(crate) async fn handle(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: Result<Json<OpenAiEmbeddingRequest>, JsonRejection>,
+) -> Response {
+    // Authentication failures use OpenAI's native error envelope.
+    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+        return OpenAiRejection::from_error(&error).into_response();
+    }
 
-impl OpenAiEmbeddings {
-    /// Authenticate, validate, embed, and render one request.
-    #[expect(
-        clippy::unused_async,
-        reason = "Axum handlers must return a future even when their work is synchronous"
-    )]
-    pub(crate) async fn handle(
-        State(state): State<AppState>,
-        headers: HeaderMap,
-        payload: Result<Json<OpenAiEmbeddingRequest>, JsonRejection>,
-    ) -> Response {
-        // Authentication failures use OpenAI's native error envelope.
-        if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    // Decode the authenticated request body.
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        // Malformed JSON retains OpenAI's extraction error details.
+        Err(error) => {
+            return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
+
+    // Separate provider controls before lowering input.
+    let OpenAiEmbeddingRequest {
+        model,
+        input,
+        dimensions,
+        encoding_format,
+        user,
+    } = payload;
+
+    // User metadata is accepted without affecting deterministic output.
+    drop(user);
+
+    // Model routing is a provider concern, not an engine concern.
+    if model.as_str() != embedding::engine::MODEL_ID {
+        return OpenAiRejection::from_error(&OpenAiError::EmbeddingModelRequired).into_response();
+    }
+
+    // This fixture emits JSON floating-point vectors only.
+    if !matches!(
+        encoding_format.unwrap_or_default(),
+        OpenAiEmbeddingEncoding::Float
+    ) {
+        return OpenAiRejection::from_error(&OpenAiError::UnsupportedEmbeddingEncoding)
+            .into_response();
+    }
+
+    // Lower supported text input shapes into an ordered batch.
+    let texts = match input.into_texts() {
+        Ok(texts) => texts,
+        // Unsupported input shapes retain OpenAI's error schema.
+        Err(error) => {
             return OpenAiRejection::from_error(&error).into_response();
         }
+    };
 
-        // Decode the authenticated request body.
-        let Json(payload) = match payload {
-            Ok(payload) => payload,
-            // Malformed JSON retains OpenAI's extraction error details.
-            Err(error) => {
-                return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
-            }
-        };
+    // Build one provider-neutral batch with a shared vector size.
+    let dimensions = dimensions.unwrap_or(embedding::engine::MODEL_DEFAULT_DIMENSIONS);
+    let inputs = texts
+        .into_iter()
+        .map(|text| embedding::engine::Input { text, dimensions })
+        .collect();
 
-        // Separate provider controls before lowering input.
-        let OpenAiEmbeddingRequest {
-            model,
-            input,
-            dimensions,
-            encoding_format,
-            user,
-        } = payload;
+    // Assemble the provider-neutral embedding batch.
+    let request = embedding::engine::Request { inputs };
 
-        // User metadata is accepted without affecting deterministic output.
-        drop(user);
-
-        // This fixture emits JSON floating-point vectors only.
-        if !matches!(
-            encoding_format.unwrap_or_default(),
-            OpenAiEmbeddingEncoding::Float
-        ) {
-            return OpenAiRejection::from_error(&OpenAiError::UnsupportedEmbeddingEncoding)
-                .into_response();
+    // Execute the shared engine and restore OpenAI's envelope.
+    match request.complete(state.config.limits.max_input_chars()) {
+        Ok(response) => {
+            Json(OpenAiEmbeddingResponse::from_embedding(model, response)).into_response()
         }
-
-        // Lower supported text input shapes into an ordered batch.
-        let texts = match input.into_texts() {
-            Ok(texts) => texts,
-            // Unsupported input shapes retain OpenAI's error schema.
-            Err(error) => {
-                return OpenAiRejection::from_error(&error).into_response();
-            }
-        };
-
-        // Build one provider-neutral batch with a shared vector size.
-        let dimensions = dimensions.unwrap_or(EMBEDDING_DEFAULT_DIMENSIONS);
-        let inputs = texts
-            .into_iter()
-            .map(|text| CompatEmbeddingInput { text, dimensions })
-            .collect();
-
-        // Assemble the provider-neutral embedding batch.
-        let request = EmbeddingRequest { inputs };
-
-        // Execute the shared engine and restore OpenAI's envelope.
-        match request.complete(model.as_str(), state.config.limits.max_input_chars()) {
-            Ok(response) => {
-                Json(OpenAiEmbeddingResponse::from_embedding(model, response)).into_response()
-            }
-            Err(error) => OpenAiRejection::from_error(&error).into_response(),
-        }
+        Err(error) => OpenAiRejection::from(&error).into_response(),
     }
+}
 
-    /// Mount the `OpenAI` embeddings route.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/v1/embeddings",
-            post_with(Self::handle, |operation| {
-                operation
-                    .summary("OpenAI embeddings")
-                    .tag("openai")
-                    .response::<200, Json<OpenAiEmbeddingResponse>>()
-                    .default_response::<Json<OpenAiFailureResponse>>()
-            }),
-        )
-    }
+/// Mount the `OpenAI` embeddings route.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/v1/embeddings",
+        post_with(handle, |operation| {
+            operation
+                .summary("OpenAI embeddings")
+                .tag("openai")
+                .response::<200, Json<OpenAiEmbeddingResponse>>()
+                .default_response::<Json<OpenAiFailureResponse>>()
+        }),
+    )
 }

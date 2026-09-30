@@ -13,8 +13,6 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
-use crate::routes::Routes;
-
 // -----------------------------------------------------------------------------
 // CorsMode: Controls browser cross-origin access.
 // -----------------------------------------------------------------------------
@@ -141,7 +139,7 @@ impl ServerConfig {
 
     /// Build the complete provider-compatible router.
     fn into_router(self) -> Router {
-        let router = Routes::build(self.routes);
+        let router = crate::routes::Routes::for_config(self.routes).into_router();
         match self.cors {
             CorsMode::None => router,
             CorsMode::Permissive => router.layer(CorsLayer::permissive()),

@@ -4,7 +4,7 @@ use audio_codec_algorithms::{encode_alaw, encode_ulaw};
 use rusty_mp3::{Mp3Encoder, Mp3EncoderConfig};
 
 use super::core::AudioFormat;
-use super::errors::SpeechError;
+use super::errors::Error;
 
 // -----------------------------------------------------------------------------
 // Audio: Encodes buffered PCM and derives its provider metadata.
@@ -70,14 +70,14 @@ fn audio_encode_wav(samples: &[i16], sample_rate: u32) -> Vec<u8> {
 /// # Errors
 ///
 /// Returns an encoding failure when the codec rejects PCM or emits no frame.
-fn audio_encode_mp3(samples: &[i16], sample_rate: u32) -> Result<Vec<u8>, SpeechError> {
+fn audio_encode_mp3(samples: &[i16], sample_rate: u32) -> Result<Vec<u8>, Error> {
     let mut encoder = Mp3Encoder::new(Mp3EncoderConfig {
         bitrate_kbps: 64,
         vbr_quality: None,
     });
     encoder
         .push_pcm_s16(samples, 1, sample_rate)
-        .map_err(|source| SpeechError::Mp3Encoding {
+        .map_err(|source| Error::Mp3Encoding {
             detail: source.to_string(),
         })?;
     encoder.finish();
@@ -87,7 +87,7 @@ fn audio_encode_mp3(samples: &[i16], sample_rate: u32) -> Result<Vec<u8>, Speech
     }
     (!bytes.is_empty())
         .then_some(bytes)
-        .ok_or(SpeechError::Mp3NoFrames)
+        .ok_or(Error::Mp3NoFrames)
 }
 
 /// Return the provider-facing MIME type for one encoding and sample rate.
@@ -124,7 +124,7 @@ impl EncodedAudio {
         samples: &[i16],
         sample_rate: u32,
         format: AudioFormat,
-    ) -> Result<Self, SpeechError> {
+    ) -> Result<Self, Error> {
         let encoded = match format {
             AudioFormat::Mp3 => Self {
                 bytes: audio_encode_mp3(samples, sample_rate)?,
@@ -203,10 +203,10 @@ fn mp3_push(
     emitted: &mut bool,
     samples: &[i16],
     sample_rate: u32,
-) -> Result<Vec<u8>, SpeechError> {
+) -> Result<Vec<u8>, Error> {
     encoder
         .push_pcm_s16(samples, 1, sample_rate)
-        .map_err(|source| SpeechError::Mp3Encoding {
+        .map_err(|source| Error::Mp3Encoding {
             detail: source.to_string(),
         })?;
     let bytes = mp3_drain(encoder);
@@ -219,16 +219,14 @@ fn mp3_push(
 /// # Errors
 ///
 /// Returns an encoding failure when the codec emits no audio frame.
-fn mp3_finish(mut encoder: Mp3Encoder, mut emitted: bool) -> Result<Vec<u8>, SpeechError> {
+fn mp3_finish(mut encoder: Mp3Encoder, mut emitted: bool) -> Result<Vec<u8>, Error> {
     encoder.finish();
-    encoder
-        .next_packet()
-        .map_err(|source| SpeechError::Mp3Encoding {
-            detail: source.to_string(),
-        })?;
+    encoder.next_packet().map_err(|source| Error::Mp3Encoding {
+        detail: source.to_string(),
+    })?;
     let bytes = mp3_drain(&mut encoder);
     emitted |= !bytes.is_empty();
-    emitted.then_some(bytes).ok_or(SpeechError::Mp3NoFrames)
+    emitted.then_some(bytes).ok_or(Error::Mp3NoFrames)
 }
 
 // -----------------------------------------------------------------------------
@@ -290,7 +288,7 @@ impl StreamingEncoder {
     /// # Errors
     ///
     /// Returns an encoding failure when the MP3 encoder rejects input.
-    pub(super) fn push(&mut self, samples: &[i16]) -> Result<Vec<u8>, SpeechError> {
+    pub(super) fn push(&mut self, samples: &[i16]) -> Result<Vec<u8>, Error> {
         match &mut self.encoding {
             StreamEncoding::Mp3 { encoder, emitted } => {
                 mp3_push(encoder, emitted, samples, self.sample_rate)
@@ -307,7 +305,7 @@ impl StreamingEncoder {
     /// # Errors
     ///
     /// Returns an encoding failure when MP3 produced no audio frames.
-    pub(super) fn finish(self) -> Result<Vec<u8>, SpeechError> {
+    pub(super) fn finish(self) -> Result<Vec<u8>, Error> {
         match self.encoding {
             StreamEncoding::Mp3 { encoder, emitted } => mp3_finish(*encoder, emitted),
             StreamEncoding::Wav

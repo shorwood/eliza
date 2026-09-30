@@ -1,13 +1,32 @@
-//! Anthropic route-tree assembly.
+//! Anthropic route-tree assembly and state.
+
+use std::sync::Arc;
 
 use aide::axum::ApiRouter;
-use eliza_http::context::AppState;
+use eliza_http::context::RouteConfig;
 
-use super::messages::AnthropicMessages;
-use super::models::AnthropicModels;
+use super::context::AppState;
+use super::{messages, models};
 
-/// Build the complete Anthropic-compatible route tree for mounting.
-pub fn mount() -> ApiRouter<AppState> {
-    let router = AnthropicModels::mount(ApiRouter::new());
-    AnthropicMessages::mount(router)
+/// Configured Anthropic-compatible route tree.
+pub struct Routes {
+    /// Dependencies shared by every Anthropic-compatible endpoint.
+    state: AppState,
+}
+
+impl Routes {
+    /// Build the Anthropic-compatible router.
+    pub fn into_router(self) -> ApiRouter {
+        models::router()
+            .merge(messages::router())
+            .with_state(self.state)
+    }
+}
+
+impl From<Arc<RouteConfig>> for Routes {
+    fn from(config: Arc<RouteConfig>) -> Self {
+        Self {
+            state: AppState { config },
+        }
+    }
 }

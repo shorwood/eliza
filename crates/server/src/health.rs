@@ -3,7 +3,6 @@
 use aide::axum::ApiRouter;
 use aide::axum::routing::get_with;
 use axum::Json;
-use eliza_http::context::AppState;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -28,21 +27,12 @@ async fn healthz() -> Json<HealthResponse> {
     })
 }
 
-// -----------------------------------------------------------------------------
-// Health: Mounts the liveness endpoint.
-// -----------------------------------------------------------------------------
-
-/// Liveness endpoint and its documentation contract.
-pub(super) struct Health;
-
-impl Health {
-    /// Mount the documented liveness route.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/healthz",
-            get_with(healthz, |operation| {
-                operation.summary("Health check").tag("system")
-            }),
-        )
-    }
+/// Build the documented liveness route.
+pub(super) fn router() -> ApiRouter {
+    ApiRouter::new().api_route(
+        "/healthz",
+        get_with(healthz, |operation| {
+            operation.summary("Health check").tag("system")
+        }),
+    )
 }

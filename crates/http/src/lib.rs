@@ -6,7 +6,6 @@
 pub mod context;
 pub mod errors;
 pub mod extraction;
-pub mod lower;
 pub mod model;
 pub mod problem;
 pub mod response;

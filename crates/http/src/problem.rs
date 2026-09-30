@@ -6,9 +6,6 @@ use aide::openapi::{MediaType, Operation, Response as ApiResponse, SchemaObject}
 use axum::Json;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use eliza_modality_chat::errors::TurnError;
-use eliza_modality_embedding::engine::EmbeddingError;
-use eliza_modality_speech::errors::SpeechError;
 use miette::Diagnostic;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -78,104 +75,6 @@ pub trait ProblemDetails: Diagnostic + std::error::Error {
     }
 }
 
-impl ProblemDetails for EmbeddingError {
-    fn class(&self) -> ProblemClass {
-        match self {
-            Self::InputTooLarge { .. } => ProblemClass::RequestTooLarge,
-            Self::ModelRequired
-            | Self::EmptyBatch
-            | Self::BlankInput { .. }
-            | Self::InvalidDimensions { .. } => ProblemClass::InvalidRequest,
-        }
-    }
-
-    fn param(&self) -> Option<&'static str> {
-        match self {
-            Self::ModelRequired => Some("model"),
-            Self::InvalidDimensions { .. } => Some("dimensions"),
-            Self::EmptyBatch | Self::BlankInput { .. } | Self::InputTooLarge { .. } => {
-                Some("input")
-            }
-        }
-    }
-}
-
-impl ProblemDetails for SpeechError {
-    fn class(&self) -> ProblemClass {
-        match self {
-            Self::InputTooLarge { .. } | Self::OutputTooLong => ProblemClass::RequestTooLarge,
-            Self::EmptyInput
-            | Self::InvalidSpeed
-            | Self::UnsupportedCharacter { .. }
-            | Self::UnsupportedSampleRate { .. } => ProblemClass::InvalidRequest,
-            Self::Mp3Encoding { .. }
-            | Self::Mp3NoFrames
-            | Self::Unavailable
-            | Self::Worker { .. } => ProblemClass::Internal,
-        }
-    }
-
-    fn param(&self) -> Option<&'static str> {
-        match self {
-            Self::EmptyInput | Self::InputTooLarge { .. } | Self::UnsupportedCharacter { .. } => {
-                Some("input")
-            }
-            Self::InvalidSpeed => Some("speed"),
-            Self::UnsupportedSampleRate { .. } => Some("sample_rate"),
-            Self::Mp3Encoding { .. }
-            | Self::Mp3NoFrames
-            | Self::OutputTooLong
-            | Self::Unavailable
-            | Self::Worker { .. } => None,
-        }
-    }
-}
-
-impl ProblemDetails for TurnError {
-    fn class(&self) -> ProblemClass {
-        match self {
-            Self::ElizaRuntime { .. } => ProblemClass::Internal,
-            Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => ProblemClass::RequestTooLarge,
-            Self::ElizaInput { .. }
-            | Self::MalformedToolDirective
-            | Self::MissingToolArguments
-            | Self::MissingToolName
-            | Self::InvalidToolArguments { .. }
-            | Self::ToolDirectiveForbidden
-            | Self::ToolChoiceDisallows { .. }
-            | Self::MissingOrdinaryUserTurn
-            | Self::ToolNotOffered { .. }
-            | Self::OrphanToolResult
-            | Self::MissingToolDirective
-            | Self::MismatchedToolDirective
-            | Self::MissingUserText
-            | Self::RequiredToolDirective => ProblemClass::InvalidRequest,
-        }
-    }
-
-    fn param(&self) -> Option<&'static str> {
-        match self {
-            Self::ToolDirectiveForbidden
-            | Self::ToolChoiceDisallows { .. }
-            | Self::RequiredToolDirective => Some("tool_choice"),
-            Self::ToolNotOffered { .. } => Some("tools"),
-            Self::ElizaInput { .. }
-            | Self::MalformedToolDirective
-            | Self::MissingToolArguments
-            | Self::MissingToolName
-            | Self::InvalidToolArguments { .. }
-            | Self::MissingOrdinaryUserTurn
-            | Self::OrphanToolResult
-            | Self::MissingToolDirective
-            | Self::MismatchedToolDirective
-            | Self::MissingUserText => Some("messages"),
-            Self::ElizaRuntime { .. } | Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => {
-                None
-            }
-        }
-    }
-}
-
 // -----------------------------------------------------------------------------
 // Problem: Carries one RFC 9457 response.
 // -----------------------------------------------------------------------------
@@ -211,11 +110,25 @@ pub struct Problem {
 impl Problem {
     /// Capture public problem facts from a typed diagnostic.
     pub fn from_error(error: &impl ProblemDetails) -> Self {
-        // Classify public transport facts before rendering provider shapes.
-        let class = error.class();
-        let status = error.status();
-        let param = error.param();
+        Self::from_parts(error, error.class(), error.status(), error.param())
+    }
 
+    /// Capture public problem facts from a diagnostic classified by an adapter.
+    pub fn from_diagnostic(
+        error: &impl Diagnostic,
+        class: ProblemClass,
+        param: Option<&'static str>,
+    ) -> Self {
+        Self::from_parts(error, class, class.status(), param)
+    }
+
+    /// Build a problem from an already classified diagnostic.
+    fn from_parts(
+        error: &impl Diagnostic,
+        class: ProblemClass,
+        status: StatusCode,
+        param: Option<&'static str>,
+    ) -> Self {
         // Keep the exact diagnostic identity while hiding internal details.
         let code = error.code().map_or_else(
             || "eliza::internal::missing_diagnostic_code".to_owned(),
@@ -376,7 +289,7 @@ mod tests {
     /// Panics when the internal detail is exposed through the public message.
     #[test]
     fn internal_problem_redacts_its_detail() {
-        let problem = Problem::from_error(&SpeechError::Unavailable);
+        let problem = Problem::from_diagnostic(&ModelError::Empty, ProblemClass::Internal, None);
 
         assert!(problem.detail.is_none());
         assert_eq!(problem.message(), "Internal server error");
