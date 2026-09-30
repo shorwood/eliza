@@ -1,5 +1,0 @@
-Error: eliza::serve::missing_bearer_token
-
-  × --auth bearer requires --bearer-token
-  help: pass --bearer-token or use --auth none
-

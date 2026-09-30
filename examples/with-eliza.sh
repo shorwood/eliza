@@ -5,7 +5,7 @@ set -eu
 port="${ELIZA_EXAMPLE_PORT:-8787}"
 base_url="http://127.0.0.1:${port}"
 
-target/debug/eliza serve --host 127.0.0.1 --port "$port" &
+target/debug/eliza serve --bind "127.0.0.1:${port}" &
 server_pid=$!
 
 cleanup() {

@@ -13,14 +13,6 @@ use thiserror::Error;
 /// CLI-to-server configuration failure.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum ConfigError {
-    /// Bearer auth mode was selected without a bearer token.
-    #[error("--auth bearer requires --bearer-token")]
-    #[diagnostic(
-        code(eliza::serve::missing_bearer_token),
-        help("pass --bearer-token or use --auth none")
-    )]
-    MissingBearerToken,
-
     /// Numeric request limit flag was set to zero.
     #[error("--{limit} must be greater than zero")]
     #[diagnostic(code(eliza::serve::zero_limit))]

@@ -1,7 +1,5 @@
 error: unexpected argument '--wat' found
 
-  tip: a similar argument exists: '--auth'
-
-Usage: eliza serve --auth <AUTH>
+Usage: eliza serve [OPTIONS]
 
 For more information, try '--help'.

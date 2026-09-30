@@ -11,39 +11,26 @@ use crate::problem::{ProblemClass, ProblemDetails};
 use crate::response::RequestLimits;
 
 // -----------------------------------------------------------------------------
-// AuthMode: Controls provider endpoint authentication.
-// -----------------------------------------------------------------------------
-
-/// Authentication mode for provider-compatible endpoints.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum AuthMode {
-    /// Do not require provider authentication.
-    None,
-    /// Require each provider's native bearer or API-key header.
-    Bearer,
-}
-
-// -----------------------------------------------------------------------------
-// BearerToken: Validates and redacts the shared provider credential.
+// ApiKey: Validates and redacts the shared provider credential.
 // -----------------------------------------------------------------------------
 
 /// Invalid shared bearer/API-key token.
 #[derive(Debug, Diagnostic, Error)]
-pub enum BearerTokenError {
-    /// Tokens cannot be empty.
-    #[error("bearer token must not be empty")]
-    #[diagnostic(code(eliza::config::empty_bearer_token))]
+pub enum ApiKeyError {
+    /// API keys cannot be empty.
+    #[error("API key must not be empty")]
+    #[diagnostic(code(eliza::config::empty_api_key))]
     Empty,
 }
 
 /// Shared bearer/API-key token used when authentication is enabled.
 #[derive(Clone, Eq, PartialEq)]
-pub struct BearerToken(
+pub struct ApiKey(
     /// Validated nonempty secret value.
     String,
 );
 
-impl BearerToken {
+impl ApiKey {
     /// Return the raw token value for header comparison.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -51,35 +38,35 @@ impl BearerToken {
     }
 }
 
-impl TryFrom<String> for BearerToken {
-    type Error = BearerTokenError;
+impl TryFrom<String> for ApiKey {
+    type Error = ApiKeyError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            Err(BearerTokenError::Empty)
+            Err(ApiKeyError::Empty)
         } else {
             Ok(Self(value))
         }
     }
 }
 
-impl FromStr for BearerToken {
-    type Err = BearerTokenError;
+impl FromStr for ApiKey {
+    type Err = ApiKeyError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         value.to_owned().try_into()
     }
 }
 
-impl AsRef<str> for BearerToken {
+impl AsRef<str> for ApiKey {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-impl std::fmt::Debug for BearerToken {
+impl std::fmt::Debug for ApiKey {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("BearerToken(<redacted>)")
+        formatter.write_str("ApiKey(<redacted>)")
     }
 }
 
@@ -109,13 +96,11 @@ impl ProblemDetails for AuthenticationError {
 /// Route-visible server behavior without listener or tracing concerns.
 #[derive(Debug, Clone, bon::Builder)]
 pub struct RouteConfig {
-    /// Provider-visible model identifier.
-    pub model: ModelId,
-    /// Authentication policy for provider endpoints.
-    auth: AuthMode,
-    /// Expected credential when bearer authentication is enabled.
+    /// Provider-visible chat model identifier.
+    pub chat_model: ModelId,
+    /// Expected credential when provider authentication is enabled.
     #[builder(required)]
-    bearer_token: Option<BearerToken>,
+    api_key: Option<ApiKey>,
     /// Optional delay between streamed chunks.
     pub stream_delay_ms: u64,
     /// Shared request-size and replay bounds.
@@ -133,14 +118,9 @@ impl RouteConfig {
         headers: &HeaderMap,
         provider: ProviderAuth,
     ) -> Result<(), AuthenticationError> {
-        // Endpoints are public when authentication is disabled.
-        if self.auth == AuthMode::None {
+        // Omitting a configured key leaves provider endpoints public.
+        let Some(expected) = self.api_key.as_ref() else {
             return Ok(());
-        }
-
-        // Bearer mode without a configured token is always unauthorized.
-        let Some(expected) = self.bearer_token.as_ref() else {
-            return Err(AuthenticationError::Failed);
         };
 
         // Compare only successfully decoded provider credentials.
@@ -226,11 +206,10 @@ mod tests {
     use super::*;
 
     /// Build the smallest route configuration needed by authentication tests.
-    fn route_config(auth: AuthMode, bearer_token: Option<&str>) -> RouteConfig {
+    fn route_config_with_api_key(api_key: Option<&str>) -> RouteConfig {
         RouteConfig {
-            model: ModelId::default(),
-            auth,
-            bearer_token: bearer_token.map(|token| BearerToken(token.to_owned())),
+            chat_model: ModelId::default(),
+            api_key: api_key.map(|key| ApiKey(key.to_owned())),
             stream_delay_ms: 0,
             limits: RequestLimits::builder()
                 .max_input_chars(NonZeroUsize::MIN)
@@ -242,7 +221,7 @@ mod tests {
     /// Authentication-disabled routes ignore provider headers.
     #[test]
     fn disabled_authentication_accepts_missing_credentials() {
-        let config = route_config(AuthMode::None, None);
+        let config = route_config_with_api_key(None);
 
         assert!(
             config
@@ -254,7 +233,7 @@ mod tests {
     /// Both supported provider schemes compare their decoded credential.
     #[test]
     fn authentication_accepts_matching_credentials() {
-        let config = route_config(AuthMode::Bearer, Some("secret"));
+        let config = route_config_with_api_key(Some("secret"));
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
@@ -273,7 +252,7 @@ mod tests {
     /// Missing, malformed, and mismatched credentials are rejected alike.
     #[test]
     fn authentication_rejects_invalid_credentials() {
-        let config = route_config(AuthMode::Bearer, Some("secret"));
+        let config = route_config_with_api_key(Some("secret"));
         let mut headers = HeaderMap::new();
 
         // A required credential cannot be omitted.

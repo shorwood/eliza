@@ -17,8 +17,8 @@ dockerTools.buildLayeredImage {
     Entrypoint = [ (lib.getExe package) ];
     Cmd = [
       "serve"
-      "--host"
-      "0.0.0.0"
+      "--bind"
+      "0.0.0.0:8787"
     ];
     ExposedPorts = {
       "8787/tcp" = { };
