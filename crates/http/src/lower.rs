@@ -1,7 +1,7 @@
 //! Conversion from provider wire contracts into provider-neutral types.
 
 /// Consumes a provider contract and validates its canonical representation.
-pub(crate) trait Lower {
+pub trait Lower {
     /// Provider-neutral representation produced by this conversion.
     type Canonical;
 

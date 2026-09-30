@@ -6,6 +6,9 @@ use aide::openapi::{MediaType, Operation, Response as ApiResponse, SchemaObject}
 use axum::Json;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use eliza_modality_chat::errors::TurnError;
+use eliza_modality_embedding::engine::EmbeddingError;
+use eliza_modality_speech::errors::SpeechError;
 use miette::Diagnostic;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -19,7 +22,7 @@ const ERROR_CODE_HEADER: &str = "x-eliza-error-code";
 
 /// Provider-neutral failure category.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum ProblemClass {
+pub enum ProblemClass {
     /// Input does not satisfy the request contract.
     InvalidRequest,
     /// Input requests behavior the server does not implement.
@@ -60,7 +63,7 @@ impl ProblemClass {
 // -----------------------------------------------------------------------------
 
 /// Typed error that can become provider-neutral problem details.
-pub(crate) trait ProblemDetails: Diagnostic + std::error::Error {
+pub trait ProblemDetails: Diagnostic + std::error::Error {
     /// Classify the failure for HTTP and provider rendering.
     fn class(&self) -> ProblemClass;
 
@@ -75,13 +78,112 @@ pub(crate) trait ProblemDetails: Diagnostic + std::error::Error {
     }
 }
 
+impl ProblemDetails for EmbeddingError {
+    fn class(&self) -> ProblemClass {
+        match self {
+            Self::InputTooLarge { .. } => ProblemClass::RequestTooLarge,
+            Self::ModelRequired
+            | Self::EmptyBatch
+            | Self::BlankInput { .. }
+            | Self::InvalidDimensions { .. } => ProblemClass::InvalidRequest,
+        }
+    }
+
+    fn param(&self) -> Option<&'static str> {
+        match self {
+            Self::ModelRequired => Some("model"),
+            Self::InvalidDimensions { .. } => Some("dimensions"),
+            Self::EmptyBatch | Self::BlankInput { .. } | Self::InputTooLarge { .. } => {
+                Some("input")
+            }
+        }
+    }
+}
+
+impl ProblemDetails for SpeechError {
+    fn class(&self) -> ProblemClass {
+        match self {
+            Self::InputTooLarge { .. } | Self::OutputTooLong => ProblemClass::RequestTooLarge,
+            Self::EmptyInput
+            | Self::InvalidSpeed
+            | Self::UnsupportedCharacter { .. }
+            | Self::UnsupportedSampleRate { .. } => ProblemClass::InvalidRequest,
+            Self::Mp3Encoding { .. }
+            | Self::Mp3NoFrames
+            | Self::Unavailable
+            | Self::Worker { .. } => ProblemClass::Internal,
+        }
+    }
+
+    fn param(&self) -> Option<&'static str> {
+        match self {
+            Self::EmptyInput | Self::InputTooLarge { .. } | Self::UnsupportedCharacter { .. } => {
+                Some("input")
+            }
+            Self::InvalidSpeed => Some("speed"),
+            Self::UnsupportedSampleRate { .. } => Some("sample_rate"),
+            Self::Mp3Encoding { .. }
+            | Self::Mp3NoFrames
+            | Self::OutputTooLong
+            | Self::Unavailable
+            | Self::Worker { .. } => None,
+        }
+    }
+}
+
+impl ProblemDetails for TurnError {
+    fn class(&self) -> ProblemClass {
+        match self {
+            Self::ElizaRuntime { .. } => ProblemClass::Internal,
+            Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => ProblemClass::RequestTooLarge,
+            Self::ElizaInput { .. }
+            | Self::MalformedToolDirective
+            | Self::MissingToolArguments
+            | Self::MissingToolName
+            | Self::InvalidToolArguments { .. }
+            | Self::ToolDirectiveForbidden
+            | Self::ToolChoiceDisallows { .. }
+            | Self::MissingOrdinaryUserTurn
+            | Self::ToolNotOffered { .. }
+            | Self::OrphanToolResult
+            | Self::MissingToolDirective
+            | Self::MismatchedToolDirective
+            | Self::MissingUserText
+            | Self::RequiredToolDirective => ProblemClass::InvalidRequest,
+        }
+    }
+
+    fn param(&self) -> Option<&'static str> {
+        match self {
+            Self::ToolDirectiveForbidden
+            | Self::ToolChoiceDisallows { .. }
+            | Self::RequiredToolDirective => Some("tool_choice"),
+            Self::ToolNotOffered { .. } => Some("tools"),
+            Self::ElizaInput { .. }
+            | Self::MalformedToolDirective
+            | Self::MissingToolArguments
+            | Self::MissingToolName
+            | Self::InvalidToolArguments { .. }
+            | Self::MissingOrdinaryUserTurn
+            | Self::OrphanToolResult
+            | Self::MissingToolDirective
+            | Self::MismatchedToolDirective
+            | Self::MissingUserText => Some("messages"),
+            Self::ElizaRuntime { .. } | Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => {
+                None
+            }
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Problem: Carries one RFC 9457 response.
 // -----------------------------------------------------------------------------
 
 /// RFC 9457 problem details with an Eliza diagnostic code.
 #[derive(Debug, Serialize, JsonSchema)]
-pub(crate) struct Problem {
+#[serde(rename_all = "snake_case")]
+pub struct Problem {
     /// Stable URN identifying the concrete diagnostic.
     #[serde(rename = "type")]
     kind: Box<str>,
@@ -108,7 +210,7 @@ pub(crate) struct Problem {
 
 impl Problem {
     /// Capture public problem facts from a typed diagnostic.
-    pub(crate) fn from_error(error: &impl ProblemDetails) -> Self {
+    pub fn from_error(error: &impl ProblemDetails) -> Self {
         // Classify public transport facts before rendering provider shapes.
         let class = error.class();
         let status = error.status();
@@ -147,32 +249,37 @@ impl Problem {
     }
 
     /// Return the provider-neutral failure category.
-    pub(crate) const fn class(&self) -> ProblemClass {
+    #[must_use]
+    pub const fn class(&self) -> ProblemClass {
         self.class
     }
 
     /// Return the HTTP status selected for this problem.
-    pub(crate) fn status(&self) -> StatusCode {
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
         StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
     }
 
     /// Return the safe provider-facing message.
-    pub(crate) fn message(&self) -> &str {
+    #[must_use]
+    pub fn message(&self) -> &str {
         self.detail.as_deref().unwrap_or(self.title)
     }
 
     /// Return the exact Miette diagnostic code.
-    pub(crate) fn code(&self) -> &str {
+    #[must_use]
+    pub fn code(&self) -> &str {
         &self.code
     }
 
     /// Return the invalid provider parameter, when applicable.
-    pub(crate) const fn param(&self) -> Option<&'static str> {
+    #[must_use]
+    pub const fn param(&self) -> Option<&'static str> {
         self.param
     }
 
     /// Attach the diagnostic identifier to response headers.
-    pub(crate) fn write_error_code(&self, headers: &mut HeaderMap) {
+    pub fn write_error_code(&self, headers: &mut HeaderMap) {
         // An invalid diagnostic code cannot safely become an HTTP header.
         let Ok(value) = HeaderValue::from_str(self.code()) else {
             return;
@@ -223,8 +330,7 @@ impl OperationOutput for Problem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::speech::errors::SpeechError;
-    use crate::types::errors::ModelError;
+    use crate::errors::ModelError;
 
     /// Verify the serialized RFC 9457 and diagnostic fields.
     ///
