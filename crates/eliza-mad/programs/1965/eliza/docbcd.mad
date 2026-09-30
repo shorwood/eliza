@@ -1,0 +1,10 @@
+            EXTERNAL FUNCTION (A,B)                                             000010
+            NORMAL MODE IS INTEGER                                              000020
+            ENTRY TO FRBCD.                                                     000030
+            W'R LNKL.(A) .E. 0, T'O NUMBER                                      000040
+            B=A                                                                 000050
+            F'N 0                                                               000060
+NUMBER      K=A*262144                                                          000070
+            B=BCDIT.(K)                                                         000080
+            F'N 0                                                               000090
+            E'N                                                                 000100

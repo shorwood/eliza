@@ -1,0 +1,9 @@
+             EXTERNAL FUNCTION (LST)                                            001130
+             NORMAL MODE IS INTEGER                                             001140
+             ENTRY TO LISTMT.                                                   001150
+             W'R CONT.(LST) .E. CONT.(LNKR.(CONT.(LST))),T'O ZERO               001160
+             TEST = 1                                                           001170
+             T'O DONE                                                           001180
+ZERO         TEST=0                                                             001190
+DONE         FUNCTION RETURN TEST                                               001200
+             END OF FUNCTION                                                    001210
