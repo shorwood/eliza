@@ -175,6 +175,24 @@ curl -s http://127.0.0.1:8787/ollama/api/chat \
   -d '{"model":"eliza-1966","stream":false,"messages":[{"role":"user","content":"I am sad."}]}'
 ```
 
+### Structured outputs
+
+Every text-generation surface can return deterministic JSON. JSON-object mode
+wraps final text as `{"response":"<final text>"}`; schema mode constructs a
+compact schema-valid witness. For example, OpenAI Chat Completions accepts:
+
+```sh
+curl -s http://127.0.0.1:8787/openai/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"eliza-1966","messages":[{"role":"user","content":"I am sad."}],"response_format":{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"},"ok":{"type":"boolean"}},"required":["answer","ok"],"additionalProperties":false}}}}'
+```
+
+The equivalent controls are `text.format` for OpenAI Responses,
+`output_config.format` for Anthropic, `generationConfig.responseFormat.text`
+for current Gemini clients, `responseMimeType` plus `responseJsonSchema` for
+legacy Gemini clients, and `format` for Ollama. Gemini's OpenAI alias uses the
+OpenAI Chat shape.
+
 ## Runtime configuration
 
 `eliza serve` is the complete application configuration surface:
@@ -188,7 +206,7 @@ curl -s http://127.0.0.1:8787/ollama/api/chat \
 | `--bearer-token` | unset | Required and nonempty when `--auth bearer` is selected |
 | `--cors` | `none` | `none` or `permissive` |
 | `--stream-delay-ms` | `0` | Delay inserted between emitted stream chunks |
-| `--max-input-chars` | `8000` | Maximum combined characters in instructions, history, and tool definitions |
+| `--max-input-chars` | `8000` | Maximum combined characters in instructions, history, tool definitions, and output schemas |
 | `--max-history-messages` | `200` | Maximum normalized transcript entries accepted in one request |
 | `--log` | `text` | `text` or `json` tracing output |
 
@@ -223,8 +241,12 @@ request failures use provider-native JSON envelopes and include a stable
 
 - Request and response envelopes are typed per provider; unknown object fields
   are tolerated, while unsupported known variants are rejected explicitly.
-- Conversation input is text-only. Multimodal content, OpenAI structured
-  output, and Ollama structured or reasoning output are not implemented.
+- Conversation input is text-only. Multimodal content and Ollama reasoning
+  output are not implemented.
+- Structured output supports primitive `type`, primitive `const` and `enum`,
+  `anyOf`, required object properties, arrays with zero or one required item,
+  root `$defs`, and local `$ref`. Other JSON Schema constraints are rejected;
+  schemas are limited to 16 semantic levels and 256 unique nodes.
 - Speech is intentionally retro, deterministic, and English/ASCII-oriented.
   It uses Flite's bundled 8 kHz diphone voice; unsupported Unicode is rejected
   and output is capped at 120 seconds.
@@ -237,11 +259,14 @@ request failures use provider-native JSON envelopes and include a stable
 - A request replays its user history through a fresh ELIZA session. State is
   not retained between HTTP requests.
 - Usage counts are deterministic approximations, not provider tokenizer output.
+  Serialized schemas count toward input usage and final serialized JSON counts
+  toward output usage.
 - Text streaming splits an already-computed deterministic response into native
   SSE or NDJSON records. Speech streaming synthesizes and encodes incrementally
   through a bounded two-worker pool; `--stream-delay-ms` paces delivery.
 - Input and history limits apply after provider contracts are lowered into the
-  shared conversation contract.
+  shared conversation contract; serialized output schemas count toward the
+  input-character limit.
 
 ## Deterministic tool fixture
 
@@ -266,7 +291,9 @@ call, then appends its tool result, receives `TOOL CALL COMPLETE`.
 
 The fixture is stateless, supports one call at a time, passes the JSON object
 through unchanged, and does not validate arguments against the supplied JSON
-Schema.
+Schema. Output formatting applies only to assistant text. Tool calls are
+unchanged, while a tool-result acknowledgement is formatted when its follow-up
+request repeats the output-format control.
 
 ## Client examples
 
