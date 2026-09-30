@@ -40,7 +40,7 @@ fn embedding_model_id() -> ModelId {
 // ModelCatalogWithEmbedding: Builds the native catalog.
 // -----------------------------------------------------------------------------
 
-/// Build the model catalog for the configured ELIZA identity.
+/// Build the model catalog for the configured chat identity.
 fn model_catalog_with_embedding(model: ModelId) -> ModelListResponse {
     let include_embedding = model.as_str() != embedding::engine::MODEL_ID;
     let mut models = vec![ModelDescriptor {
@@ -89,7 +89,10 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OllamaRejection::from_error(&error).into_response();
     }
-    Json(model_catalog_with_embedding(state.config.model.clone())).into_response()
+    Json(model_catalog_with_embedding(
+        state.config.chat_model.clone(),
+    ))
+    .into_response()
 }
 
 // -----------------------------------------------------------------------------

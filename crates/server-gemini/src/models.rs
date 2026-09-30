@@ -20,7 +20,7 @@ use crate::context::AppState;
 // Models: Lists the configured provider models.
 // -----------------------------------------------------------------------------
 
-/// List the configured model in Gemini's native envelope.
+/// List the configured chat model and fixed modality models.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Authentication failures use the provider's own error envelope.
     if let Err(error) = state
@@ -30,9 +30,9 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return GeminiRejection::from_error(&error).into_response();
     }
 
-    // Render the configured model with Gemini's fixed capability metadata.
+    // Render the configured chat model with Gemini's fixed capability metadata.
     let identity = GeminiModelIdentity {
-        name: format!("models/{}", state.config.model),
+        name: format!("models/{}", state.config.chat_model),
         version: "1966-doctor",
         display_name: "ELIZA DOCTOR",
         description: "Classic ELIZA DOCTOR script served through Gemini-compatible JSON.",
@@ -52,7 +52,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     };
 
     let mut models = vec![model];
-    if state.config.model.as_str() != speech::core::MODEL_ID {
+    if state.config.chat_model.as_str() != speech::core::MODEL_ID {
         models.push(GeminiModel {
             identity: GeminiModelIdentity {
                 name: format!("models/{}", speech::core::MODEL_ID),
@@ -67,7 +67,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
             },
         });
     }
-    if state.config.model.as_str() != embedding::engine::MODEL_ID {
+    if state.config.chat_model.as_str() != embedding::engine::MODEL_ID {
         models.push(GeminiModel {
             identity: GeminiModelIdentity {
                 name: format!("models/{}", embedding::engine::MODEL_ID),

@@ -1,4 +1,0 @@
-{
-  "args": ["serve", "--cors", "strict"],
-  "code": 2
-}

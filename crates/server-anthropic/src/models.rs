@@ -16,7 +16,7 @@ use crate::context::AppState;
 // Models: Lists the configured provider model.
 // -----------------------------------------------------------------------------
 
-/// List the configured model in Anthropic's native envelope.
+/// List the configured chat model in Anthropic's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Authentication failures use the provider's own error envelope.
     if let Err(error) = state
@@ -26,8 +26,8 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return AnthropicRejection::from_error(&error).into_response();
     }
 
-    // Render the configured model with Anthropic's fixed catalog metadata.
-    let model = state.config.model.clone();
+    // Render the configured chat model with Anthropic's fixed catalog metadata.
+    let model = state.config.chat_model.clone();
     let descriptor = ModelDescriptor {
         kind: "model",
         id: model.clone(),
