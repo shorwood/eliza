@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::extraction::ExtractionError;
 use eliza_modality_embedding as embedding;
 use schemars::JsonSchema;
@@ -241,11 +241,10 @@ async fn gemini_embeddings_embed(
     payload: Result<Json<GeminiEmbedContentRequest>, JsonRejection>,
 ) -> Response {
     // Authentication failures use Gemini's native error envelope.
-    if let Err(error) = provider_authenticate(
-        &headers,
-        &state.config,
-        ProviderAuth::ApiKey("x-goog-api-key"),
-    ) {
+    if let Err(error) = state
+        .config
+        .authenticate(&headers, ProviderAuth::ApiKey("x-goog-api-key"))
+    {
         return GeminiRejection::from_error(&error).into_response();
     }
 
@@ -293,11 +292,10 @@ async fn gemini_embeddings_batch_embed(
     payload: Result<Json<GeminiBatchEmbedContentsRequest>, JsonRejection>,
 ) -> Response {
     // Authentication failures use Gemini's native error envelope.
-    if let Err(error) = provider_authenticate(
-        &headers,
-        &state.config,
-        ProviderAuth::ApiKey("x-goog-api-key"),
-    ) {
+    if let Err(error) = state
+        .config
+        .authenticate(&headers, ProviderAuth::ApiKey("x-goog-api-key"))
+    {
         return GeminiRejection::from_error(&error).into_response();
     }
 

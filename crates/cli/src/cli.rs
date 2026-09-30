@@ -1,7 +1,6 @@
 //! CLI contract and conversion into server configuration.
 
 use std::net::{IpAddr, SocketAddr};
-use std::num::NonZeroUsize;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use eliza_http::context::{AuthMode as RouteAuthMode, BearerToken, RouteConfig};
@@ -141,27 +140,31 @@ impl ServeArgs {
     ///
     /// Returns a diagnostic when bearer authentication has no token or a
     /// request bound is zero.
+    #[expect(
+        rlib::long_method_chains,
+        reason = "the Bon builder is one declarative route configuration"
+    )]
     pub(super) fn into_server_config(self) -> Result<ServerConfig, ConfigError> {
         // Reject bearer mode before constructing unusable shared route state.
         if self.auth == AuthMode::Bearer && self.bearer_token.is_none() {
             return Err(ConfigError::MissingBearerToken);
         }
 
-        let max_input_chars = positive_limit(self.max_input_chars, RequestLimit::InputChars)?;
+        let max_input_chars = RequestLimit::InputChars.validate(self.max_input_chars)?;
         let max_history_messages =
-            positive_limit(self.max_history_messages, RequestLimit::HistoryMessages)?;
+            RequestLimit::HistoryMessages.validate(self.max_history_messages)?;
         let limits = RequestLimits::builder()
             .max_input_chars(max_input_chars)
             .max_history_messages(max_history_messages)
             .build();
 
-        let routes = RouteConfig::builder();
-        let routes = routes.model(self.model);
-        let routes = routes.auth(self.auth.into());
-        let routes = routes.bearer_token(self.bearer_token);
-        let routes = routes.stream_delay_ms(self.stream_delay_ms);
-        let routes = routes.limits(limits);
-        let routes = routes.build();
+        let routes = RouteConfig::builder()
+            .model(self.model)
+            .auth(self.auth.into())
+            .bearer_token(self.bearer_token)
+            .stream_delay_ms(self.stream_delay_ms)
+            .limits(limits)
+            .build();
 
         Ok(ServerConfig::new(
             SocketAddr::new(self.host, self.port),
@@ -170,19 +173,6 @@ impl ServeArgs {
             self.log.into(),
         ))
     }
-}
-
-// -----------------------------------------------------------------------------
-// PositiveLimit: Converts raw CLI counts into runtime invariants.
-// -----------------------------------------------------------------------------
-
-/// Convert one CLI request bound into its positive runtime representation.
-///
-/// # Errors
-///
-/// Returns a configuration diagnostic when `value` is zero.
-fn positive_limit(value: usize, limit: RequestLimit) -> Result<NonZeroUsize, ConfigError> {
-    NonZeroUsize::new(value).ok_or(ConfigError::ZeroLimit { limit })
 }
 
 // -----------------------------------------------------------------------------

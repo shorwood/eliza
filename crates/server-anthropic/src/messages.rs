@@ -7,7 +7,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::errors::EncodingError;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
@@ -272,136 +272,127 @@ fn tool_result_text(content: Option<ToolResultContent>) -> Result<String, Anthro
 }
 
 // -----------------------------------------------------------------------------
-// Events: Renders Anthropic's streaming event sequence.
+// MessageEvents: Owns Anthropic's ordered streaming event sequence.
 // -----------------------------------------------------------------------------
 
-/// Serialize and append one named Anthropic event.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when the event cannot be serialized.
-fn events_push(
-    events: &mut Vec<Event>,
-    name: &'static str,
-    event: &StreamEvent,
-) -> Result<(), EncodingError> {
-    events.push(json_event(event)?.event(name));
-    Ok(())
-}
+/// Encoded events for one Anthropic Messages response.
+#[derive(Default)]
+struct MessageEvents(
+    /// Events encoded in delivery order.
+    Vec<Event>,
+);
 
-/// Append all text chunks for one streaming response.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when a text delta cannot be serialized.
-fn events_push_text(events: &mut Vec<Event>, text: &str) -> Result<(), EncodingError> {
-    for chunk in stream_chunks(text) {
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "private helpers propagate the builder's documented encoding failure"
+)]
+impl MessageEvents {
+    /// Serialize and append one named event.
+    fn push(&mut self, name: &'static str, event: &StreamEvent) -> Result<(), EncodingError> {
+        self.0.push(json_event(event)?.event(name));
+        Ok(())
+    }
+
+    /// Append all text chunks for one streaming response.
+    fn push_text(&mut self, text: &str) -> Result<(), EncodingError> {
+        for chunk in stream_chunks(text) {
+            let event = StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: StreamDelta::TextDelta { text: chunk },
+            };
+            self.push("content_block_delta", &event)?;
+        }
+        Ok(())
+    }
+
+    /// Append the JSON delta for one tool call.
+    fn push_tool_call(&mut self, call: &chat::turn::FunctionCall) -> Result<(), EncodingError> {
         let event = StreamEvent::ContentBlockDelta {
             index: 0,
-            delta: StreamDelta::TextDelta { text: chunk },
+            delta: StreamDelta::InputJsonDelta {
+                partial_json: call.arguments.serialized(),
+            },
         };
-        events_push(events, "content_block_delta", &event)?;
+        self.push("content_block_delta", &event)
     }
-    Ok(())
-}
 
-/// Append the JSON delta for one tool call.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when the tool-call delta cannot be serialized.
-fn events_push_tool_call(
-    events: &mut Vec<Event>,
-    call: &chat::turn::FunctionCall,
-) -> Result<(), EncodingError> {
-    let event = StreamEvent::ContentBlockDelta {
-        index: 0,
-        delta: StreamDelta::InputJsonDelta {
-            partial_json: call.arguments.serialized(),
-        },
-    };
-    events_push(events, "content_block_delta", &event)
-}
-
-/// Append content deltas for one completed output and return its stop reason.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when an output delta cannot be serialized.
-fn events_push_output(
-    events: &mut Vec<Event>,
-    output: &chat::turn::Output,
-) -> Result<MessagesStopReason, EncodingError> {
-    match output {
-        chat::turn::Output::Text(text) => {
-            events_push_text(events, text)?;
-            Ok(MessagesStopReason::EndTurn)
-        }
-        chat::turn::Output::ToolCall(call) => {
-            events_push_tool_call(events, call)?;
-            Ok(MessagesStopReason::ToolUse)
+    /// Append output-specific deltas and return the terminal stop reason.
+    fn push_output(
+        &mut self,
+        output: &chat::turn::Output,
+    ) -> Result<MessagesStopReason, EncodingError> {
+        match output {
+            chat::turn::Output::Text(text) => {
+                self.push_text(text)?;
+                Ok(MessagesStopReason::EndTurn)
+            }
+            chat::turn::Output::ToolCall(call) => {
+                self.push_tool_call(call)?;
+                Ok(MessagesStopReason::ToolUse)
+            }
         }
     }
-}
 
-/// Render the complete streaming event sequence for one response.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when any stream event cannot be serialized.
-fn events_response(
-    model: &ModelId,
-    response: &chat::turn::Response,
-) -> Result<SseEvents, EncodingError> {
-    let mut events = Vec::new();
-    events_push(
-        &mut events,
-        "message_start",
-        &StreamEvent::MessageStart {
-            message: StreamMessage {
-                id: format!("msg_{}", Uuid::now_v7().simple()),
-                kind: "message",
-                role: "assistant",
-                model: model.clone(),
-                content: Vec::new(),
-                stop_reason: None,
-                stop_sequence: None,
-                usage: MessagesUsage {
-                    input_tokens: response.usage.prompt,
-                    output_tokens: 0,
+    /// Render the complete streaming sequence for one response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncodingError`] when any stream event cannot be serialized.
+    fn for_response(
+        model: &ModelId,
+        response: &chat::turn::Response,
+    ) -> Result<Self, EncodingError> {
+        let mut events = Self::default();
+        events.push(
+            "message_start",
+            &StreamEvent::MessageStart {
+                message: StreamMessage {
+                    id: format!("msg_{}", Uuid::now_v7().simple()),
+                    kind: "message",
+                    role: "assistant",
+                    model: model.clone(),
+                    content: Vec::new(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage: MessagesUsage {
+                        input_tokens: response.usage.prompt,
+                        output_tokens: 0,
+                    },
                 },
             },
-        },
-    )?;
-    events_push(
-        &mut events,
-        "content_block_start",
-        &StreamEvent::ContentBlockStart {
-            index: 0,
-            content_block: MessagesOutputBlock::empty_for(&response.output),
-        },
-    )?;
-    let stop_reason = events_push_output(&mut events, &response.output)?;
-    events_push(
-        &mut events,
-        "content_block_stop",
-        &StreamEvent::ContentBlockStop { index: 0 },
-    )?;
-    events_push(
-        &mut events,
-        "message_delta",
-        &StreamEvent::MessageDelta {
-            delta: StreamMessageDelta {
-                stop_reason,
-                stop_sequence: None,
+        )?;
+        events.push(
+            "content_block_start",
+            &StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: MessagesOutputBlock::empty_for(&response.output),
             },
-            usage: StreamOutputUsage {
-                output_tokens: response.usage.completion,
+        )?;
+        let stop_reason = events.push_output(&response.output)?;
+        events.push(
+            "content_block_stop",
+            &StreamEvent::ContentBlockStop { index: 0 },
+        )?;
+        events.push(
+            "message_delta",
+            &StreamEvent::MessageDelta {
+                delta: StreamMessageDelta {
+                    stop_reason,
+                    stop_sequence: None,
+                },
+                usage: StreamOutputUsage {
+                    output_tokens: response.usage.completion,
+                },
             },
-        },
-    )?;
-    events_push(&mut events, "message_stop", &StreamEvent::MessageStop)?;
-    Ok(SseEvents::from(events))
+        )?;
+        events.push("message_stop", &StreamEvent::MessageStop)?;
+        Ok(events)
+    }
+
+    /// Finish the provider-neutral SSE wrapper.
+    fn into_sse(self) -> SseEvents {
+        SseEvents::from(self.0)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -415,8 +406,9 @@ async fn anthropic_messages(
     payload: Result<Json<MessagesRequest>, JsonRejection>,
 ) -> Response {
     // Authentication failures use Anthropic's native error envelope.
-    if let Err(error) =
-        provider_authenticate(&headers, &state.config, ProviderAuth::ApiKey("x-api-key"))
+    if let Err(error) = state
+        .config
+        .authenticate(&headers, ProviderAuth::ApiKey("x-api-key"))
     {
         return AnthropicRejection::from_error(&error).into_response();
     }
@@ -453,8 +445,9 @@ async fn anthropic_messages(
     };
 
     if should_stream {
-        match events_response(&model, &response) {
+        match MessageEvents::for_response(&model, &response) {
             Ok(events) => events
+                .into_sse()
                 .with_delay(state.config.stream_delay_ms)
                 .into_response(),
             Err(error) => AnthropicRejection::from_error(&error).into_response(),
