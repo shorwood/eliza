@@ -1122,11 +1122,11 @@ pub(super) struct ResponsesResponseText {
     logprobs: Vec<String>,
 }
 
-impl From<&String> for ResponsesResponseText {
-    fn from(text: &String) -> Self {
+impl From<&str> for ResponsesResponseText {
+    fn from(text: &str) -> Self {
         Self {
             kind: ResponsesResponseTextKind::OutputText,
-            text: text.clone(),
+            text: text.to_owned(),
             annotations: Vec::new(),
             logprobs: Vec::new(),
         }
@@ -1172,7 +1172,7 @@ impl ResponsesResponseOutput {
     ) -> Self {
         match output {
             chat::turn::Output::Text(text) => {
-                let content = vec![ResponsesResponseText::from(text)];
+                let content = vec![ResponsesResponseText::from(text.as_str())];
                 Self::Message {
                     id: ids.item,
                     status,

@@ -50,13 +50,13 @@ impl TryFrom<ResponsesRequest> for chat::turn::Request {
             .transpose()?
             .unwrap_or_default();
 
-        let request = chat::turn::Request::builder()
-            .system_text(system)
-            .turns(turns);
-        let request = request.tools(tools).tool_choice(tool_choice);
-
-        // Attach the compiled format after all conversation data is normalized.
-        Ok(request.output_format(output_format).build())
+        Ok(chat::turn::Request::new(
+            system,
+            turns,
+            tools,
+            tool_choice,
+            output_format,
+        ))
     }
 }
 

@@ -1,4 +1,3 @@
-Error: eliza::serve::zero_limit
+error: invalid value '0' for '--max-input-chars <CHARS>': must be greater than zero
 
-  × --max-input-chars must be greater than zero
-
+For more information, try '--help'.

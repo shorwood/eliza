@@ -42,14 +42,13 @@ impl TryFrom<ChatRequest> for chat::turn::Request {
             .transpose()?
             .unwrap_or_default();
 
-        // Assemble the neutral request from lowered transcript components.
-        let request = chat::turn::Request::builder()
-            .system_text(chat.system)
-            .turns(chat.turns);
-        let request = request.tools(tools).tool_choice(tool_choice);
-
-        // Attach the compiled format after all conversation data is normalized.
-        Ok(request.output_format(output_format).build())
+        Ok(chat::turn::Request::new(
+            chat.system,
+            chat.turns,
+            tools,
+            tool_choice,
+            output_format,
+        ))
     }
 }
 

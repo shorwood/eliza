@@ -26,5 +26,5 @@ pub(super) struct SpeechState {
     /// Validated route behavior.
     pub(super) config: Arc<RouteConfig>,
     /// Bounded speech executor.
-    pub(super) service: SpeechService,
+    pub(super) speech: SpeechService,
 }

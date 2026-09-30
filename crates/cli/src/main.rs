@@ -4,7 +4,6 @@
 #![register_tool(rlib)]
 
 mod cli;
-mod errors;
 
 use clap::Parser;
 use miette::Result;
@@ -24,6 +23,6 @@ use crate::cli::{Cli, Commands};
 #[tokio::main]
 async fn main() -> Result<()> {
     let Commands::Serve(args) = Cli::parse().command;
-    args.into_server_config()?.run().await?;
+    args.into_server_config().run().await?;
     Ok(())
 }
