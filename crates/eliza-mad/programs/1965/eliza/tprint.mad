@@ -1,0 +1,34 @@
+            EXTERNAL FUNCTION (LST)                                             000010
+            NORMAL MODE IS INTEGER                                              000020
+            ENTRY TO TPRINT.                                                    000030
+            SA=SEQRDR.(LST)                                                     000040
+            LIST.(OUT)                                                          000050
+READ        NEXT=SEQLR.(SA,FA)                                                  000060
+            W'R FA .G. 0, T'O P                                                 000070
+            W'R FA .E. 0, T'O B                                                 000080
+            POINT=NEWBOT.(NEXT,OUT)                                             000100
+            W'R SA .L. 0, MRKNEG.(POINT)                                        000110
+            T'O READ                                                            000120
+B           TXTPRT.(OUT,0)                                                      000130
+            SEQLL.(SA,FA)                                                       000140
+MORE        NEXT=SEQLR.(SA,FA)                                                  000150
+            W'R TOP.(NEXT) .E. $=$                                              000160
+                TXTPRT.(NEXT,0)                                                 000170
+                T'O MORE                                                        000180
+            E'L                                                                 000190
+            W'R FA .G. 0, T'O DONE                                              000200
+            PRINT COMMENT $ $                                                   000210
+            SB=SEQRDR.(NEXT)                                                    000220
+MEHR        TERM=SEQLR.(SB,FB)                                                  000230
+            W'R FB .L.0                                                         000240
+                PRINT ON LINE FORMAT NUMBER, TERM                               000250
+                V'S NUMBER = $I3 *$                                             000260
+                T'O MEHR                                                        000270
+            E'L                                                                 000280
+            W'R FB .G. 0, T'O MORE                                              000290
+            TXTPRT.(TERM,0)                                                     000300
+            T'O MEHR                                                            000310
+P           TXTPRT.(OUT,0)                                                      000320
+DONE        IRALST.(OUT)                                                        000330
+            F'N                                                                 000340
+            E'N                                                                 000350

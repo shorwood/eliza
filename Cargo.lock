@@ -600,6 +600,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "eliza-mad"
+version = "0.1.0"
+dependencies = [
+ "mad",
+ "slip",
+ "thiserror",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
