@@ -1,17 +1,34 @@
-//! Gemini route-tree assembly.
+//! Gemini route-tree assembly and state.
+
+use std::sync::Arc;
 
 use aide::axum::ApiRouter;
-use eliza_http::context::AppState;
-use eliza_server_openai::alias::GeminiAlias;
+use eliza_http::context::RouteConfig;
+use eliza_modality_speech::service::Service as SpeechService;
 
-use super::content::Route as ContentRoute;
-use super::embeddings::GeminiEmbeddings;
-use super::models::GeminiModels;
+use super::context::AppState;
+use super::{embeddings, generate, models};
 
-/// Build the complete Gemini-compatible route tree for mounting.
-pub fn mount() -> ApiRouter<AppState> {
-    let router = GeminiModels::mount(ApiRouter::new());
-    let router = GeminiEmbeddings::mount(router);
-    let router = ContentRoute::mount(router);
-    GeminiAlias::mount(router)
+/// Configured Gemini route tree.
+pub struct Routes {
+    /// Dependencies shared by every native Gemini endpoint.
+    state: AppState,
+}
+
+impl Routes {
+    /// Capture the dependencies required by Gemini endpoints.
+    #[must_use]
+    pub fn new(config: Arc<RouteConfig>, speech: SpeechService) -> Self {
+        Self {
+            state: AppState { config, speech },
+        }
+    }
+
+    /// Build the native Gemini-compatible router.
+    pub fn into_router(self) -> ApiRouter {
+        models::router()
+            .merge(embeddings::router())
+            .merge(generate::router())
+            .with_state(self.state)
+    }
 }

@@ -6,14 +6,19 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
-use eliza_modality_embedding::engine as embedding;
-use eliza_modality_speech::core as speech;
+use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_modality_embedding as embedding;
+use eliza_modality_speech as speech;
 
 use super::errors::{GeminiFailureResponse, GeminiRejection};
 use super::types::{
     GeminiModel, GeminiModelCapabilities, GeminiModelIdentity, GeminiModelListResponse,
 };
+use crate::context::AppState;
+
+// -----------------------------------------------------------------------------
+// Models: Lists the configured provider models.
+// -----------------------------------------------------------------------------
 
 /// List the configured model in Gemini's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -48,10 +53,10 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     };
 
     let mut models = vec![model];
-    if state.config.model.as_str() != speech::MODEL_ID {
+    if state.config.model.as_str() != speech::core::MODEL_ID {
         models.push(GeminiModel {
             identity: GeminiModelIdentity {
-                name: format!("models/{}", speech::MODEL_ID),
+                name: format!("models/{}", speech::core::MODEL_ID),
                 version: "flite-kal-8khz",
                 display_name: "ELIZA Retro TTS",
                 description: "Deterministic retro speech using Flite's bundled diphone voice.",
@@ -63,10 +68,10 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
             },
         });
     }
-    if state.config.model.as_str() != embedding::EMBEDDING_MODEL_ID {
+    if state.config.model.as_str() != embedding::engine::MODEL_ID {
         models.push(GeminiModel {
             identity: GeminiModelIdentity {
-                name: format!("models/{}", embedding::EMBEDDING_MODEL_ID),
+                name: format!("models/{}", embedding::engine::MODEL_ID),
                 version: "fnv1a-v1",
                 display_name: "FNV Embed",
                 description: "Deterministic FNV-1a feature-hashed text embeddings for compatibility testing.",
@@ -74,7 +79,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
             capabilities: GeminiModelCapabilities {
                 supported_generation_methods: vec!["embedContent", "batchEmbedContents"],
                 input_token_limit: state.config.limits.max_input_chars().get(),
-                output_token_limit: usize::try_from(embedding::EMBEDDING_MAX_DIMENSIONS)
+                output_token_limit: usize::try_from(embedding::engine::MODEL_MAX_DIMENSIONS)
                     .unwrap_or(1_024),
             },
         });
@@ -84,21 +89,20 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     Json(GeminiModelListResponse { models }).into_response()
 }
 
-/// Gemini model catalog endpoint.
-pub(super) struct GeminiModels;
+// -----------------------------------------------------------------------------
+// Router: Publishes the model catalog endpoint.
+// -----------------------------------------------------------------------------
 
-impl GeminiModels {
-    /// Mount the native Gemini model catalog route.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/v1beta/models",
-            get_with(models, |operation| {
-                operation
-                    .summary("Gemini models")
-                    .tag("gemini")
-                    .response::<200, Json<GeminiModelListResponse>>()
-                    .default_response::<Json<GeminiFailureResponse>>()
-            }),
-        )
-    }
+/// Build the native Gemini model catalog route.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/v1beta/models",
+        get_with(models, |operation| {
+            operation
+                .summary("Gemini models")
+                .tag("gemini")
+                .response::<200, Json<GeminiModelListResponse>>()
+                .default_response::<Json<GeminiFailureResponse>>()
+        }),
+    )
 }

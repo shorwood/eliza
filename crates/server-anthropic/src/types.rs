@@ -1,12 +1,7 @@
 //! Anthropic wire contracts shared by the route adapters.
 //! Empty metadata on documented newtype fields avoids a `schemars` 0.9 derive collision.
-use eliza_http::lower::Lower;
 use eliza_http::model::ModelId;
-use eliza_modality_chat::json::JsonObject;
-use eliza_modality_chat::structured_output::{StructuredOutput, StructuredOutputErrorKind};
-use eliza_modality_chat::turn::{
-    CompatOutput, CompatTurnResponse, FunctionTool, TokenUsage, ToolChoice as CompatToolChoice,
-};
+use eliza_modality_chat as chat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -44,7 +39,7 @@ pub(super) enum MessageContentBlock {
         /// Requested tool name.
         name: Option<String>,
         /// Arguments supplied to the tool.
-        input: Option<JsonObject>,
+        input: Option<chat::json::JsonObject>,
     },
     /// Client-provided result from a prior tool call.
     ToolResult {
@@ -112,7 +107,7 @@ pub(super) enum ToolResultContent {
     Object(
         /// Tool-result object.
         #[schemars(title = "", description = "")]
-        JsonObject,
+        chat::json::JsonObject,
     ),
 }
 
@@ -128,7 +123,7 @@ pub(super) struct Tool {
     /// Optional human-readable tool description.
     description: Option<String>,
     /// JSON Schema describing accepted input.
-    input_schema: Option<JsonObject>,
+    input_schema: Option<chat::json::JsonObject>,
 }
 
 impl Tool {
@@ -151,13 +146,12 @@ pub(super) struct ToolList(
     Vec<Tool>,
 );
 
-impl Lower for ToolList {
-    type Canonical = Vec<FunctionTool>;
-
+impl TryFrom<ToolList> for Vec<chat::turn::FunctionTool> {
     type Error = AnthropicError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        self.0
+    fn try_from(tools: ToolList) -> Result<Self, Self::Error> {
+        tools
+            .0
             .into_iter()
             .map(|tool| {
                 let definition_chars = tool.char_count();
@@ -169,7 +163,7 @@ impl Lower for ToolList {
                 if tool.input_schema.is_none() {
                     return Err(AnthropicError::MissingToolInputSchema);
                 }
-                Ok(FunctionTool::new(name, definition_chars))
+                Ok(chat::turn::FunctionTool::new(name, definition_chars))
             })
             .collect()
     }
@@ -195,21 +189,19 @@ pub(super) enum ToolChoice {
     Unsupported,
 }
 
-impl Lower for ToolChoice {
-    type Canonical = CompatToolChoice;
-
+impl TryFrom<ToolChoice> for chat::turn::ToolChoice {
     type Error = AnthropicError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        match self {
-            Self::Auto => Ok(CompatToolChoice::Auto),
-            Self::None => Ok(CompatToolChoice::None),
-            Self::Any => Ok(CompatToolChoice::Required),
-            Self::Tool { name } => name
+    fn try_from(choice: ToolChoice) -> Result<Self, Self::Error> {
+        match choice {
+            ToolChoice::Auto => Ok(Self::Auto),
+            ToolChoice::None => Ok(Self::None),
+            ToolChoice::Any => Ok(Self::Required),
+            ToolChoice::Tool { name } => name
                 .filter(|name| !name.is_empty())
-                .map(CompatToolChoice::Named)
+                .map(Self::Named)
                 .ok_or(AnthropicError::MissingNamedToolChoice),
-            Self::Unsupported => Err(AnthropicError::UnsupportedToolChoice),
+            ToolChoice::Unsupported => Err(AnthropicError::UnsupportedToolChoice),
         }
     }
 }
@@ -225,28 +217,30 @@ pub(super) enum OutputFormat {
     /// Conform final text to a supplied JSON Schema.
     JsonSchema {
         /// JSON Schema compiled into the local deterministic witness.
-        schema: Option<JsonObject>,
+        schema: Option<chat::json::JsonObject>,
     },
     /// Any future or unknown output format.
     #[serde(other)]
     Unsupported,
 }
 
-impl Lower for OutputFormat {
-    type Canonical = StructuredOutput;
-
+impl TryFrom<OutputFormat> for chat::structured_output::StructuredOutput {
     type Error = AnthropicError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+    fn try_from(format: OutputFormat) -> Result<Self, Self::Error> {
         // Anthropic exposes only schema mode under this control.
-        let Self::JsonSchema { schema } = self else {
+        let OutputFormat::JsonSchema { schema } = format else {
             return Err(AnthropicError::UnsupportedOutputFormat);
         };
         let schema = schema.ok_or(AnthropicError::InvalidOutputFormat)?;
-        StructuredOutput::try_from(schema).map_err(|source| match source.kind() {
-            StructuredOutputErrorKind::Invalid => AnthropicError::InvalidOutputSchema { source },
-            StructuredOutputErrorKind::Unsupported => {
-                AnthropicError::UnsupportedOutputSchema { source }
+        chat::structured_output::StructuredOutput::try_from(schema).map_err(|source| {
+            match source.kind() {
+                chat::structured_output::StructuredOutputErrorKind::Invalid => {
+                    AnthropicError::InvalidOutputSchema { source }
+                }
+                chat::structured_output::StructuredOutputErrorKind::Unsupported => {
+                    AnthropicError::UnsupportedOutputSchema { source }
+                }
             }
         })
     }
@@ -259,15 +253,13 @@ pub(super) struct OutputConfig {
     format: Option<OutputFormat>,
 }
 
-impl Lower for OutputConfig {
-    type Canonical = StructuredOutput;
-
+impl TryFrom<OutputConfig> for chat::structured_output::StructuredOutput {
     type Error = AnthropicError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        Ok(self
+    fn try_from(config: OutputConfig) -> Result<Self, Self::Error> {
+        Ok(config
             .format
-            .map(OutputFormat::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default())
     }
@@ -332,31 +324,31 @@ pub(super) enum MessagesOutputBlock {
         /// Requested tool name.
         name: String,
         /// Arguments supplied to the tool.
-        input: JsonObject,
+        input: chat::json::JsonObject,
     },
 }
 
 impl MessagesOutputBlock {
     /// Build the empty block that starts streaming one canonical output.
-    pub(super) fn empty_for(output: &CompatOutput) -> Self {
+    pub(super) fn empty_for(output: &chat::turn::Output) -> Self {
         match output {
-            CompatOutput::Text(_) => Self::Text {
+            chat::turn::Output::Text(_) => Self::Text {
                 text: String::new(),
             },
-            CompatOutput::ToolCall(call) => Self::ToolUse {
+            chat::turn::Output::ToolCall(call) => Self::ToolUse {
                 id: format!("toolu_{}", Uuid::now_v7().simple()),
                 name: call.name.clone(),
-                input: JsonObject::default(),
+                input: chat::json::JsonObject::default(),
             },
         }
     }
 }
 
-impl From<&CompatOutput> for MessagesOutputBlock {
-    fn from(output: &CompatOutput) -> Self {
+impl From<&chat::turn::Output> for MessagesOutputBlock {
+    fn from(output: &chat::turn::Output) -> Self {
         match output {
-            CompatOutput::Text(text) => Self::Text { text: text.clone() },
-            CompatOutput::ToolCall(call) => Self::ToolUse {
+            chat::turn::Output::Text(text) => Self::Text { text: text.clone() },
+            chat::turn::Output::ToolCall(call) => Self::ToolUse {
                 id: format!("toolu_{}", Uuid::now_v7().simple()),
                 name: call.name.clone(),
                 input: call.arguments.clone(),
@@ -374,8 +366,8 @@ pub(super) struct MessagesUsage {
     pub(super) output_tokens: usize,
 }
 
-impl From<TokenUsage> for MessagesUsage {
-    fn from(usage: TokenUsage) -> Self {
+impl From<chat::turn::Usage> for MessagesUsage {
+    fn from(usage: chat::turn::Usage) -> Self {
         Self {
             input_tokens: usage.prompt,
             output_tokens: usage.completion,
@@ -407,10 +399,10 @@ pub(super) struct MessagesResponse {
 
 impl MessagesResponse {
     /// Attach the provider-owned model identity to one canonical result.
-    pub(super) fn from_compat(model: ModelId, response: &CompatTurnResponse) -> Self {
+    pub(super) fn from_compat(model: ModelId, response: &chat::turn::Response) -> Self {
         let stop_reason = match &response.output {
-            CompatOutput::Text(_) => MessagesStopReason::EndTurn,
-            CompatOutput::ToolCall(_) => MessagesStopReason::ToolUse,
+            chat::turn::Output::Text(_) => MessagesStopReason::EndTurn,
+            chat::turn::Output::ToolCall(_) => MessagesStopReason::ToolUse,
         };
         Self {
             id: format!("msg_{}", Uuid::now_v7().simple()),

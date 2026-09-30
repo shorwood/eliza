@@ -6,10 +6,15 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 
 use super::errors::{AnthropicFailureResponse, AnthropicRejection};
 use super::types::{ModelDescriptor, ModelListResponse};
+use crate::context::AppState;
+
+// -----------------------------------------------------------------------------
+// Models: Lists the configured provider model.
+// -----------------------------------------------------------------------------
 
 /// List the configured model in Anthropic's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -39,21 +44,20 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     Json(response).into_response()
 }
 
-/// Anthropic model-list endpoint.
-pub(super) struct AnthropicModels;
+// -----------------------------------------------------------------------------
+// Router: Publishes the model catalog endpoint.
+// -----------------------------------------------------------------------------
 
-impl AnthropicModels {
-    /// Mount the model-list route.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/v1/models",
-            get_with(models, |operation| {
-                operation
-                    .summary("Anthropic models")
-                    .tag("anthropic")
-                    .response::<200, Json<ModelListResponse>>()
-                    .default_response::<Json<AnthropicFailureResponse>>()
-            }),
-        )
-    }
+/// Build the model-list route.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/v1/models",
+        get_with(models, |operation| {
+            operation
+                .summary("Anthropic models")
+                .tag("anthropic")
+                .response::<200, Json<ModelListResponse>>()
+                .default_response::<Json<AnthropicFailureResponse>>()
+        }),
+    )
 }

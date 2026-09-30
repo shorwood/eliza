@@ -3,6 +3,7 @@
 #![feature(register_tool)]
 #![register_tool(rlib)]
 
+mod context;
 mod errors;
 mod messages;
 mod models;

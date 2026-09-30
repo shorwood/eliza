@@ -1,63 +1,30 @@
-//! Ollama chat and model catalog adapter.
+//! Ollama chat adapter.
 use aide::axum::ApiRouter;
-use aide::axum::routing::{get_with, post_with};
+use aide::axum::routing::post_with;
 use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::extraction::ExtractionError;
-use eliza_http::lower::Lower;
 use eliza_http::model::ModelId;
 use eliza_http::response::{NdjsonResponse, stream_chunks};
-use eliza_modality_chat::turn::{CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse};
-use eliza_modality_embedding::engine as embedding;
+use eliza_modality_chat as chat;
 
 use super::errors::{OllamaError, OllamaFailureResponse, OllamaRejection};
 use super::types::{
-    ChatOutputMessage, ChatRequest, ChatResponse, MessageContent, MessageRole, ModelDescriptor,
-    ModelDetails, ModelListResponse, ToolCall,
+    ChatOutputMessage, ChatRequest, ChatResponse, MessageContent, MessageRole, ToolCall,
 };
+use crate::context::AppState;
 
-/// Construct the fixed embedding model ID for provider response types.
-///
-/// # Panics
-///
-/// Panics only if the modality's built-in identifier becomes invalid.
-fn embedding_model_id() -> ModelId {
-    embedding::EMBEDDING_MODEL_ID
-        .parse()
-        .expect("the built-in embedding model id should be valid")
-}
-
-// -----------------------------------------------------------------------------
-// CreatedAt: Defines deterministic model and response timestamps.
-// -----------------------------------------------------------------------------
-
-/// Stable timestamp used by the timeless ELIZA algorithm.
-const CREATED_AT: &str = "1966-01-01T00:00:00Z";
-
-// -----------------------------------------------------------------------------
-// ChatLowering: Lowers one chat request into the neutral contract.
-// -----------------------------------------------------------------------------
-
-/// Ollama chat input awaiting provider-neutral conversion.
-struct ChatLowering(
-    /// Typed provider request.
-    ChatRequest,
-);
-
-impl Lower for ChatLowering {
-    type Canonical = CompatTurnRequest;
-
+impl TryFrom<ChatRequest> for chat::turn::Request {
     type Error = OllamaError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        let payload = self.0;
+    fn try_from(payload: ChatRequest) -> Result<Self, Self::Error> {
         let output_format = payload
             .format
-            .map(Lower::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
 
@@ -73,25 +40,25 @@ impl Lower for ChatLowering {
             let content = MessageContent::into_text(message.content);
             match message.role {
                 MessageRole::System => system.push(content),
-                MessageRole::User => turns.push(CompatTurn::User(content)),
+                MessageRole::User => turns.push(chat::turn::Turn::User(content)),
                 MessageRole::Assistant => {
                     assistant_lower(content, message.tool_calls, &mut turns)?;
                 }
-                MessageRole::Tool => turns.push(CompatTurn::ToolResult(content)),
+                MessageRole::Tool => turns.push(chat::turn::Turn::ToolResult(content)),
                 // Unknown provider roles cannot be replayed safely.
                 MessageRole::Unsupported => return Err(OllamaError::UnsupportedRole),
             }
         }
 
         // Lower tool declarations and selection policy independently.
-        let tools = payload.tools.unwrap_or_default().lower()?;
+        let tools = payload.tools.unwrap_or_default().try_into()?;
         let tool_choice = payload
             .tool_choice
-            .map(Lower::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
 
-        let request = CompatTurnRequest::builder()
+        let request = chat::turn::Request::builder()
             .system_text(system)
             .turns(turns);
         let request = request.tools(tools).tool_choice(tool_choice);
@@ -100,6 +67,13 @@ impl Lower for ChatLowering {
         Ok(request.output_format(output_format).build())
     }
 }
+
+// -----------------------------------------------------------------------------
+// CreatedAt: Defines deterministic response timestamps.
+// -----------------------------------------------------------------------------
+
+/// Stable timestamp used by the timeless ELIZA algorithm.
+const CREATED_AT: &str = "1966-01-01T00:00:00Z";
 
 // -----------------------------------------------------------------------------
 // AssistantLower: Lowers assistant text and tool calls in source order.
@@ -113,13 +87,15 @@ impl Lower for ChatLowering {
 fn assistant_lower(
     content: String,
     tool_calls: Option<Vec<ToolCall>>,
-    turns: &mut Vec<CompatTurn>,
+    turns: &mut Vec<chat::turn::Turn>,
 ) -> Result<(), OllamaError> {
     if !content.is_empty() {
-        turns.push(CompatTurn::Assistant(content));
+        turns.push(chat::turn::Turn::Assistant(content));
     }
     for call in tool_calls.unwrap_or_default() {
-        turns.push(CompatTurn::ToolCall(call.lower("messages.tool_calls")?));
+        turns.push(chat::turn::Turn::ToolCall(
+            call.lower("messages.tool_calls")?,
+        ));
     }
     Ok(())
 }
@@ -153,10 +129,10 @@ fn stream_records_text(model: &ModelId, text: &str) -> Vec<ChatResponse> {
 }
 
 /// Render all NDJSON records for one completed neutral response.
-fn stream_records(model: &ModelId, response: &CompatTurnResponse) -> Vec<ChatResponse> {
+fn stream_records(model: &ModelId, response: &chat::turn::Response) -> Vec<ChatResponse> {
     let mut records = match &response.output {
-        CompatOutput::Text(text) => stream_records_text(model, text),
-        CompatOutput::ToolCall(_) => vec![ChatResponse {
+        chat::turn::Output::Text(text) => stream_records_text(model, text),
+        chat::turn::Output::ToolCall(_) => vec![ChatResponse {
             model: model.clone(),
             created_at: CREATED_AT,
             message: ChatOutputMessage::from(&response.output),
@@ -215,7 +191,7 @@ async fn chat(
     // Capture transport policy before lowering consumes the request body.
     let model = payload.model.clone();
     let should_stream = payload.should_stream.unwrap_or(true);
-    let request = match ChatLowering(payload).lower() {
+    let request: chat::turn::Request = match payload.try_into() {
         Ok(request) => request,
         // Provider validation failures use Ollama's native envelope.
         Err(error) => {
@@ -232,7 +208,7 @@ async fn chat(
         Ok(response) => response,
         // Shared execution failures still render as Ollama errors.
         Err(error) => {
-            return OllamaRejection::from_error(&error).into_response();
+            return OllamaRejection::from(&error).into_response();
         }
     };
 
@@ -250,86 +226,19 @@ async fn chat(
 }
 
 // -----------------------------------------------------------------------------
-// Tags: Renders Ollama's configured model catalog.
+// Router: Publishes the native chat endpoint.
 // -----------------------------------------------------------------------------
 
-/// Build the model catalog for the configured ELIZA identity.
-fn tags_response_for_eliza(model: ModelId) -> ModelListResponse {
-    let include_embedding = model.as_str() != embedding::EMBEDDING_MODEL_ID;
-    let mut models = vec![ModelDescriptor {
-        name: model.clone(),
-        model,
-        modified_at: CREATED_AT,
-        size: 0,
-        digest: "eliza-1966",
-        details: ModelDetails {
-            parent_model: "",
-            format: "eliza",
-            family: "eliza",
-            families: vec!["eliza"],
-            parameter_size: "DOCTOR",
-            quantization_level: "none",
-        },
-    }];
-    if include_embedding {
-        let embedding_model = embedding_model_id();
-        models.push(ModelDescriptor {
-            name: embedding_model.clone(),
-            model: embedding_model,
-            modified_at: CREATED_AT,
-            size: 0,
-            digest: embedding::EMBEDDING_MODEL_ID,
-            details: ModelDetails {
-                parent_model: "",
-                format: "eliza",
-                family: "eliza-embed",
-                families: vec!["eliza-embed"],
-                parameter_size: "1024D",
-                quantization_level: "none",
-            },
-        });
-    }
-    ModelListResponse { models }
-}
-
-/// List the configured model in Ollama's native envelope.
-async fn tags(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    // Authentication failures use Ollama's native error envelope.
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-        return OllamaRejection::from_error(&error).into_response();
-    }
-    Json(tags_response_for_eliza(state.config.model.clone())).into_response()
-}
-
-// -----------------------------------------------------------------------------
-// Ollama: Mounts native chat and model-list endpoints.
-// -----------------------------------------------------------------------------
-
-/// Ollama chat and model-list endpoints.
-pub(super) struct Ollama;
-
-impl Ollama {
-    /// Mount the Ollama API surface.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        let router = router.api_route(
-            "/api/tags",
-            get_with(tags, |operation| {
-                operation
-                    .summary("Ollama models")
-                    .tag("ollama")
-                    .response::<200, Json<ModelListResponse>>()
-                    .default_response::<Json<OllamaFailureResponse>>()
-            }),
-        );
-        router.api_route(
-            "/api/chat",
-            post_with(chat, |operation| {
-                operation
-                    .summary("Ollama chat")
-                    .tag("ollama")
-                    .response::<200, Json<ChatResponse>>()
-                    .default_response::<Json<OllamaFailureResponse>>()
-            }),
-        )
-    }
+/// Build the native Ollama chat endpoint.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/api/chat",
+        post_with(chat, |operation| {
+            operation
+                .summary("Ollama chat")
+                .tag("ollama")
+                .response::<200, Json<ChatResponse>>()
+                .default_response::<Json<OllamaFailureResponse>>()
+        }),
+    )
 }

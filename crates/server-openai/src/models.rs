@@ -6,13 +6,18 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::model::ModelId;
-use eliza_modality_embedding::engine as embedding;
-use eliza_modality_speech::core as speech;
+use eliza_modality_embedding as embedding;
+use eliza_modality_speech as speech;
 
 use super::errors::{OpenAiFailureResponse, OpenAiRejection};
 use super::types::{ModelDescriptor, ModelListResponse};
+use crate::context::AppState;
+
+// -----------------------------------------------------------------------------
+// ModelId: Converts built-in identifiers into transport values.
+// -----------------------------------------------------------------------------
 
 /// Convert one built-in modality identifier into its transport representation.
 ///
@@ -24,6 +29,10 @@ fn model_id(value: &'static str) -> ModelId {
         .parse()
         .expect("built-in modality model ids should be valid")
 }
+
+// -----------------------------------------------------------------------------
+// Models: Lists the configured provider models.
+// -----------------------------------------------------------------------------
 
 /// List the configured model in `OpenAI`'s native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -42,9 +51,9 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
     // Include the fixed speech capability unless it is already configured.
     let mut data = vec![descriptor];
-    if state.config.model.as_str() != speech::MODEL_ID {
+    if state.config.model.as_str() != speech::core::MODEL_ID {
         data.push(ModelDescriptor {
-            id: model_id(speech::MODEL_ID),
+            id: model_id(speech::core::MODEL_ID),
             object: "model",
             created: 0,
             owned_by: "eliza",
@@ -52,9 +61,9 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 
     // Include the fixed embedding capability unless it is already configured.
-    if state.config.model.as_str() != embedding::EMBEDDING_MODEL_ID {
+    if state.config.model.as_str() != embedding::engine::MODEL_ID {
         data.push(ModelDescriptor {
-            id: model_id(embedding::EMBEDDING_MODEL_ID),
+            id: model_id(embedding::engine::MODEL_ID),
             object: "model",
             created: 0,
             owned_by: "eliza",
@@ -69,21 +78,20 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     Json(response).into_response()
 }
 
-/// `OpenAI` model catalog endpoint.
-pub(super) struct OpenAiModels;
+// -----------------------------------------------------------------------------
+// Router: Publishes the model catalog endpoint.
+// -----------------------------------------------------------------------------
 
-impl OpenAiModels {
-    /// Mount the `OpenAI` model catalog route.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/v1/models",
-            get_with(models, |operation| {
-                operation
-                    .summary("OpenAI models")
-                    .tag("openai")
-                    .response::<200, Json<ModelListResponse>>()
-                    .default_response::<Json<OpenAiFailureResponse>>()
-            }),
-        )
-    }
+/// Build the `OpenAI` model catalog route.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/v1/models",
+        get_with(models, |operation| {
+            operation
+                .summary("OpenAI models")
+                .tag("openai")
+                .response::<200, Json<ModelListResponse>>()
+                .default_response::<Json<OpenAiFailureResponse>>()
+        }),
+    )
 }

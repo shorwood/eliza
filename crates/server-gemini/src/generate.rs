@@ -9,12 +9,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::extraction::ExtractionError;
-use eliza_http::lower::Lower;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks};
-use eliza_modality_chat::turn::{CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse};
+use eliza_modality_chat as chat;
+use eliza_modality_speech as speech;
 use uuid::Uuid;
 
 use super::errors::{GeminiError, GeminiFailureResponse, GeminiRejection};
@@ -24,6 +24,7 @@ use super::types::{
     GenerateContentRequest, GenerateContentResponse, GenerateFinishReason, GenerateFunctionCall,
     GenerateOutputContent, GenerateOutputPart, GenerateQuery, GenerateStreamFormat,
 };
+use crate::context::AppState;
 
 // -----------------------------------------------------------------------------
 // GeminiAction: Parses the model and operation encoded in Gemini's path.
@@ -83,28 +84,14 @@ impl FromStr for GeminiAction {
     }
 }
 
-// -----------------------------------------------------------------------------
-// GeminiLowering: Converts native Gemini input into one canonical request.
-// -----------------------------------------------------------------------------
-
-/// Generate-content input awaiting provider-neutral conversion.
-struct GeminiLowering(
-    /// Typed Gemini request body.
-    GenerateContentRequest,
-);
-
-impl Lower for GeminiLowering {
-    type Canonical = CompatTurnRequest;
-
+impl TryFrom<GenerateContentRequest> for chat::turn::Request {
     type Error = GeminiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        let payload = self.0;
-
+    fn try_from(payload: GenerateContentRequest) -> Result<Self, Self::Error> {
         // Compile generation formatting before consuming transcript controls.
         let output_format = payload
             .generation_config
-            .map(Lower::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
 
@@ -124,15 +111,15 @@ impl Lower for GeminiLowering {
         }
 
         // Lower tool declarations and selection policy independently.
-        let tools = payload.tools.unwrap_or_default().lower()?;
+        let tools = payload.tools.unwrap_or_default().try_into()?;
         let tool_choice = payload
             .tool_config
-            .map(Lower::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
 
         // Assemble the neutral request after all provider content is lowered.
-        let request = CompatTurnRequest::builder()
+        let request = chat::turn::Request::builder()
             .system_text(system)
             .turns(turns)
             .tools(tools);
@@ -144,7 +131,7 @@ impl Lower for GeminiLowering {
 }
 
 // -----------------------------------------------------------------------------
-// Content: Dispatches content according to its typed role.
+// ContentLower: Dispatches content according to its typed role.
 // -----------------------------------------------------------------------------
 
 /// Lower one Gemini content object according to its role.
@@ -152,7 +139,7 @@ impl Lower for GeminiLowering {
 /// # Errors
 ///
 /// Returns [`GeminiError`] for an unsupported role or invalid role-specific part.
-fn content_lower(content: Content, turns: &mut Vec<CompatTurn>) -> Result<(), GeminiError> {
+fn content_lower(content: Content, turns: &mut Vec<chat::turn::Turn>) -> Result<(), GeminiError> {
     let parts = content.parts.unwrap_or_default();
     match content.role.unwrap_or(ContentRole::User) {
         ContentRole::User | ContentRole::Function => user_parts_lower(parts, turns),
@@ -166,12 +153,12 @@ fn content_lower(content: Content, turns: &mut Vec<CompatTurn>) -> Result<(), Ge
 // -----------------------------------------------------------------------------
 
 /// Flush accumulated user text before a function-response boundary.
-fn user_text_flush(text: &mut Vec<String>, turns: &mut Vec<CompatTurn>) {
+fn user_text_flush(text: &mut Vec<String>, turns: &mut Vec<chat::turn::Turn>) {
     // Empty buffers do not represent a conversation turn.
     if text.is_empty() {
         return;
     }
-    turns.push(CompatTurn::User(std::mem::take(text).join("\n")));
+    turns.push(chat::turn::Turn::User(std::mem::take(text).join("\n")));
 }
 
 /// Lower one required function response into replayable text.
@@ -196,7 +183,7 @@ fn user_function_response_text(
 /// incomplete function response.
 fn user_parts_lower(
     parts: Vec<ContentPart>,
-    turns: &mut Vec<CompatTurn>,
+    turns: &mut Vec<chat::turn::Turn>,
 ) -> Result<(), GeminiError> {
     // Gemini content must contain at least one typed part.
     if parts.is_empty() {
@@ -209,7 +196,7 @@ fn user_parts_lower(
             ContentPart::FunctionResponse { function_response } => {
                 user_text_flush(&mut text, turns);
                 let response = user_function_response_text(function_response.response)?;
-                turns.push(CompatTurn::ToolResult(response));
+                turns.push(chat::turn::Turn::ToolResult(response));
             }
             // User content cannot originate model function calls.
             ContentPart::FunctionCall { .. } | ContentPart::Unsupported { .. } => {
@@ -233,13 +220,13 @@ fn user_parts_lower(
 /// has an unsupported shape.
 fn model_parts_lower(
     parts: Vec<ContentPart>,
-    turns: &mut Vec<CompatTurn>,
+    turns: &mut Vec<chat::turn::Turn>,
 ) -> Result<(), GeminiError> {
     for part in parts {
         match part {
-            ContentPart::Text { text, .. } => turns.push(CompatTurn::Assistant(text)),
+            ContentPart::Text { text, .. } => turns.push(chat::turn::Turn::Assistant(text)),
             ContentPart::FunctionCall { function_call } => {
-                turns.push(function_call.lower()?);
+                turns.push(function_call.try_into()?);
             }
             // Model content cannot contain client function responses.
             ContentPart::FunctionResponse { .. } | ContentPart::Unsupported { .. } => {
@@ -283,7 +270,7 @@ fn text_parts(parts: Vec<ContentPart>, param: &'static str) -> Result<String, Ge
 /// Render incremental text records followed by Gemini's terminal record.
 fn stream_records_text(
     model: &ModelId,
-    response: &CompatTurnResponse,
+    response: &chat::turn::Response,
     text: &str,
 ) -> Vec<GenerateContentResponse> {
     let mut records = stream_chunks(text)
@@ -319,10 +306,13 @@ fn stream_records_text(
 }
 
 /// Render all streaming records for one completed neutral response.
-fn stream_records(model: &ModelId, response: &CompatTurnResponse) -> Vec<GenerateContentResponse> {
+fn stream_records(
+    model: &ModelId,
+    response: &chat::turn::Response,
+) -> Vec<GenerateContentResponse> {
     match &response.output {
-        CompatOutput::Text(text) => stream_records_text(model, response, text),
-        CompatOutput::ToolCall(call) => vec![GenerateContentResponse {
+        chat::turn::Output::Text(text) => stream_records_text(model, response, text),
+        chat::turn::Output::ToolCall(call) => vec![GenerateContentResponse {
             candidates: vec![GenerateCandidate {
                 content: GenerateOutputContent {
                     role: "model",
@@ -356,7 +346,7 @@ struct GenerateTransport {
     /// Provider-visible model parsed from the request path.
     model: ModelId,
     /// Completed neutral result.
-    response: CompatTurnResponse,
+    response: chat::turn::Response,
     /// Optional delay between SSE events.
     delay_ms: u64,
 }
@@ -366,7 +356,7 @@ impl GenerateTransport {
     fn new(
         action: GeminiAction,
         format: Option<GenerateStreamFormat>,
-        response: CompatTurnResponse,
+        response: chat::turn::Response,
         delay_ms: u64,
     ) -> Self {
         Self {
@@ -486,13 +476,13 @@ async fn generate(
     }
 
     // The dedicated speech model does not silently fall back to text.
-    if action.model.as_str() == eliza_modality_speech::core::MODEL_ID {
+    if action.model.as_str() == speech::core::MODEL_ID {
         return GeminiRejection::from_error(&GeminiError::SpeechModelAudioOnly).into_response();
     }
 
     // Lower and execute the provider request under shared resource limits.
     // Render provider validation failures with Gemini's native envelope.
-    let request = match GeminiLowering(payload).lower() {
+    let request: chat::turn::Request = match payload.try_into() {
         Ok(request) => request,
         // Invalid provider input cannot proceed to neutral execution.
         Err(error) => {
@@ -509,7 +499,7 @@ async fn generate(
         Ok(response) => response,
         // Shared execution failures still render as Gemini errors.
         Err(error) => {
-            return GeminiRejection::from_error(&error).into_response();
+            return GeminiRejection::from(&error).into_response();
         }
     };
 
@@ -519,24 +509,19 @@ async fn generate(
 }
 
 // -----------------------------------------------------------------------------
-// Route: Mounts native Gemini generation operations.
+// Router: Publishes native Gemini generation endpoints.
 // -----------------------------------------------------------------------------
 
-/// Native Gemini generation route.
-pub(super) struct Route;
-
-impl Route {
-    /// Mount unary and streaming model actions.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/v1beta/models/{model_action}",
-            post_with(generate, |operation| {
-                operation
-                    .summary("Gemini content")
-                    .tag("gemini")
-                    .response::<200, Json<GenerateContentResponse>>()
-                    .default_response::<Json<GeminiFailureResponse>>()
-            }),
-        )
-    }
+/// Build unary and streaming model actions.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/v1beta/models/{model_action}",
+        post_with(generate, |operation| {
+            operation
+                .summary("Gemini content")
+                .tag("gemini")
+                .response::<200, Json<GenerateContentResponse>>()
+                .default_response::<Json<GeminiFailureResponse>>()
+        }),
+    )
 }
