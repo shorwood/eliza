@@ -12,6 +12,7 @@ use super::errors::{GeminiFailureResponse, GeminiRejection};
 use super::types::{
     GeminiModel, GeminiModelCapabilities, GeminiModelIdentity, GeminiModelListResponse,
 };
+use crate::embedding;
 use crate::speech::core as speech;
 
 /// List the configured model in Gemini's native envelope.
@@ -59,6 +60,22 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 supported_generation_methods: vec!["generateContent", "streamGenerateContent"],
                 input_token_limit: state.config.limits.max_input_chars().get(),
                 output_token_limit: 6_000,
+            },
+        });
+    }
+    if state.config.model.as_str() != embedding::EMBEDDING_MODEL_ID {
+        models.push(GeminiModel {
+            identity: GeminiModelIdentity {
+                name: format!("models/{}", embedding::EMBEDDING_MODEL_ID),
+                version: "fnv1a-v1",
+                display_name: "FNV Embed",
+                description: "Deterministic FNV-1a feature-hashed text embeddings for compatibility testing.",
+            },
+            capabilities: GeminiModelCapabilities {
+                supported_generation_methods: vec!["embedContent", "batchEmbedContents"],
+                input_token_limit: state.config.limits.max_input_chars().get(),
+                output_token_limit: usize::try_from(embedding::EMBEDDING_MAX_DIMENSIONS)
+                    .unwrap_or(1_024),
             },
         });
     }

@@ -17,6 +17,18 @@ use crate::types::errors::EncodingError;
 /// Failure detected while lowering an `OpenAI` request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OpenAiError {
+    /// An embedding request selected an unsupported output encoding.
+    #[error("embedding encoding_format must be `float`")]
+    #[diagnostic(code(eliza::openai::unsupported_embedding_encoding))]
+    UnsupportedEmbeddingEncoding,
+    /// An embedding request supplied token identifiers instead of text.
+    #[error("embedding token-id input is not supported")]
+    #[diagnostic(code(eliza::openai::embedding_token_input_unsupported))]
+    EmbeddingTokenInputUnsupported,
+    /// An embedding request used an input shape outside the text subset.
+    #[error("embedding input must be a string or an array of strings")]
+    #[diagnostic(code(eliza::openai::unsupported_embedding_input))]
+    UnsupportedEmbeddingInput,
     /// Encoded function arguments were not a JSON object.
     #[error("invalid function arguments: {source}")]
     #[diagnostic(code(eliza::openai::invalid_function_arguments))]
@@ -141,7 +153,10 @@ pub(super) enum OpenAiError {
 impl ProblemDetails for OpenAiError {
     fn class(&self) -> ProblemClass {
         match self {
-            Self::UnsupportedToolCallKind { .. }
+            Self::UnsupportedEmbeddingEncoding
+            | Self::EmbeddingTokenInputUnsupported
+            | Self::UnsupportedEmbeddingInput
+            | Self::UnsupportedToolCallKind { .. }
             | Self::UnsupportedToolDefinition
             | Self::UnsupportedNamedToolChoice
             | Self::StructuredOutputUnsupported { .. }
@@ -158,6 +173,8 @@ impl ProblemDetails for OpenAiError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::UnsupportedEmbeddingEncoding => Some("encoding_format"),
+            Self::EmbeddingTokenInputUnsupported | Self::UnsupportedEmbeddingInput => Some("input"),
             Self::InvalidFunctionArguments { param, .. }
             | Self::UnsupportedToolCallKind { param }
             | Self::MissingToolCallFunction { param }
