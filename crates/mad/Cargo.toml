@@ -1,0 +1,12 @@
+[package]
+name = "mad"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror = "2.0.18"
+
+[lints]
+workspace = true
