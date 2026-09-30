@@ -273,7 +273,8 @@ stack with Ctrl-C. Open WebUI stores its state in the
 `eliza-open-webui-data` Docker volume; set `ELIZA_OPEN_WEBUI_PORT` to change
 the host port. All three services share a private Compose network; only the
 WebUI is exposed to the host. This example raises ELIZA's input limit to
-65,536 characters to accommodate Open WebUI's request metadata. Non-Linux
+65,536 characters to accommodate Open WebUI's request metadata and paces
+streamed chunks at 50 ms so incremental rendering remains visible. Non-Linux
 hosts need the Linux Nix builder described under Docker image installation
 above.
 
