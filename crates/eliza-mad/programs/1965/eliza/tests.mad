@@ -1,0 +1,33 @@
+            EXTERNAL FUNCTION(CAND,S)                                           000010
+            NORMAL MODE IS INTEGER                                              000020
+            DIMENSION FIRST(5),SECOND(5)                                        000030
+            ENTRY TO TESTS.                                                     000040
+            STORE=S                                                             000050
+            READER=SEQRDR.(CAND)                                                000060
+            T'H ONE, FOR I=0,1, I .G. 100                                       000070
+            FIRST(I)=SEQLR.(READER,FR)                                          000080
+ONE         W'R READER .G. 0, T'O ENDONE                                        000090
+ENDONE      SEQLL.(S,F)                                                         000100
+            T'H TWO, FOR J=0,1, J .G. 100                                       000110
+            SECOND(J)=SEQLR.(S,F)                                               000120
+TWO         W'R S .G. 0, T'O ENDTWO                                             000130
+ENDTWO      W'R I .NE. J, F'N 0                                                 000140
+            T'H LOOK, FOR K=0,1, K.G. J                                         000150
+LOOK        W'R FIRST(K) .NE. SECOND(K), F'N 0                                  000170
+            EQL=SEQLR.(READER,FR)                                               000180
+            W'R EQL .NE. $=$                                                    000190
+            SEQLL.(READER,FR)                                                   000200
+            F'N READER                                                          000210
+            O'E                                                                 000220
+            POINT=LNKL.(STORE)                                                  000230
+            T'H DELETE , FOR K=0,1, K .G. J                                     000240
+            REMOVE.(LSPNTR.(STORE))                                             000250
+DELETE      SEQLR.(STORE,F)                                                     000260
+INSRT       NEW=SEQLR.(READER,FR)                                               000270
+            POINT=NEWTOP.(NEW,POINT)                                            000280
+            MRKNEG.(POINT)                                                      000290
+            W'R READER .L. 0, T'O INSRT                                         000300
+            MRKPOS.(POINT)                                                      000310
+            F'N READER                                                          000320
+            E'L                                                                 000330
+            E'N                                                                 000340

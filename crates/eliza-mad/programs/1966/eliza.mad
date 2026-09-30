@@ -1,0 +1,81 @@
+           R ------------------------------------------------------------------
+           R 1966 ELIZA RECONSTRUCTION
+           R
+           R This driver keeps the algorithm described in the CACM paper in
+           R MAD. Rust supplies the MAD machine and the SLIP operations called
+           R below. The 1965 programs remain unchanged in ../1965/.
+           R ------------------------------------------------------------------
+            NORMAL MODE IS INTEGER
+            GREET=GREET.()
+            PRINT FORMAT TEXT,GREET
+            LIMIT=1
+           R ------------------------------------------------------------------
+           R READ A TURN AND BUILD THE KEYWORD STACK
+           R ------------------------------------------------------------------
+START       READ FORMAT TEXT,INPUT
+            LIMIT=LIMIT+1
+            W'R LIMIT .G. 4,LIMIT=1
+            WORDS=TOKEN.(INPUT)
+            KEYS=NEWLST.()
+            TOPRANK=0
+            I=1
+SCAN        W'R I .G. LENGTH.(WORDS),T'O SCANDON
+            WORD=GET.(WORDS,I)
+            W'R DELIM.(WORD) .E. 0,T'O NOTDEL
+            W'R EMPTY.(KEYS) .E. 0,T'O HAVEKEY
+            DROPTO.(WORDS,I)
+            I=1
+            T'O SCAN
+HAVEKEY     TRUNC.(WORDS,I)
+            T'O SCANDON
+NOTDEL      RULE=RULE.(WORD)
+            W'R RULE .E. 0,T'O NEXT
+            SUB=SUBST.(RULE)
+            SET.(WORDS,I,SUB)
+            W'R HASTRN.(RULE) .E. 0,T'O NEXT
+            RANK=PREC.(RULE)
+            W'R RANK .G. TOPRANK,T'O HIGH
+            PUSHB.(KEYS,WORD)
+            T'O NEXT
+HIGH        PUSHF.(KEYS,WORD)
+            TOPRANK=RANK
+NEXT        I=I+1
+            T'O SCAN
+           R ------------------------------------------------------------------
+           R RECALL MEMORY OR APPLY KEYWORD TRANSFORMATIONS
+           R ------------------------------------------------------------------
+SCANDON     W'R EMPTY.(KEYS) .E. 0,T'O TRYKEY
+            W'R LIMIT .NE. 4,T'O USENONE
+            W'R MEMHAS.() .E. 0,T'O USENONE
+            RESULT=MEMPOP.()
+            T'O OUTPUT
+TRYKEY      KEY=POPF.(KEYS)
+APPLYKEY    MEMMAKE.(KEY,WORDS)
+            ACTION=APPLY.(KEY,WORDS)
+            W'R ACTION .E. 1,T'O COMPLETE
+            W'R ACTION .E. 3,T'O LINK
+            W'R ACTION .E. 2,T'O NEWKEY
+            T'O NOMACH(LIMIT)
+LINK        KEY=TARGET.()
+            T'O APPLYKEY
+NEWKEY      W'R EMPTY.(KEYS) .E. 0,T'O USENONE
+            T'O TRYKEY
+USENONE     KEY=NONE.()
+            ACTION=APPLY.(KEY,WORDS)
+            W'R ACTION .E. 1,T'O COMPLETE
+            T'O NOMACH(LIMIT)
+COMPLETE    RESULT=RESULT.()
+OUTPUT      PRINT FORMAT TEXT,RESULT
+            T'O START
+           R ------------------------------------------------------------------
+           R HISTORICAL SCRIPT-ERROR RESPONSES SELECTED BY LIMIT
+           R ------------------------------------------------------------------
+NOMACH(1)   PRINT COMMENT $PLEASE CONTINUE$
+            T'O START
+NOMACH(2)   PRINT COMMENT $HMMM$
+            T'O START
+NOMACH(3)   PRINT COMMENT $GO ON , PLEASE$
+            T'O START
+NOMACH(4)   PRINT COMMENT $I SEE$
+            T'O START
+            E'M

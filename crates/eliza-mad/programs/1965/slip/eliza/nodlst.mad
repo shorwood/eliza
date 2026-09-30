@@ -1,0 +1,9 @@
+             EXTERNAL FUNCTION(LST)                                             008410
+             NORMAL MODE IS INTEGER                                             008420
+             ENTRY TO NODLST.                                                   008430
+             IT=LSTNAM.(LST)                                                    008440
+             W'R IT .E. 0, T'O DONE                                             008450
+             IRALST.(IT)                                                        008460
+             SETIND.(-1,0,-1,LST+1)                                             008470
+DONE         F'N IT                                                             008480
+             E'N                                                                008490
