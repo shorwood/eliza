@@ -7,7 +7,7 @@ use serde::Serialize;
 use super::errors::TurnError;
 use super::json::JsonObject;
 use super::model::ModelId;
-use crate::eliza::engine::{ElizaSession, doctor_script};
+use crate::eliza::{doctor, input_record};
 
 // -----------------------------------------------------------------------------
 // ToolCompleteText: Defines the deterministic tool-result acknowledgement.
@@ -277,7 +277,7 @@ impl CompatTurnRequest {
     ///
     /// Returns a rejection when the history has no ordinary user message.
     fn replay_eliza(&self) -> Result<String, TurnError> {
-        let mut session = ElizaSession::from(doctor_script());
+        let mut session = doctor()?.session()?;
         let mut output = None;
         for turn in &self.turns {
             let CompatTurn::User(text) = turn else {
@@ -286,7 +286,7 @@ impl CompatTurnRequest {
             if text.starts_with("@tool") {
                 continue;
             }
-            output = Some(session.respond(text).output);
+            output = Some(session.respond(&input_record(text))?);
         }
         output.ok_or(TurnError::MissingOrdinaryUserTurn)
     }

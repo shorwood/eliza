@@ -584,6 +584,7 @@ dependencies = [
  "bon",
  "clap",
  "derive_more",
+ "eliza-mad",
  "flite-rs",
  "futures-util",
  "miette",
