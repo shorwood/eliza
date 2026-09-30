@@ -10,7 +10,7 @@ cleanup() {
     docker compose --file "$compose_file" down --remove-orphans
 }
 
-image=$(nix build --no-link --print-out-paths "$repository_dir#dockerImage")
+image=$(nix build --impure --no-link --print-out-paths --file "$repository_dir/nix/live-image.nix")
 docker load --input "$image"
 
 trap cleanup EXIT
