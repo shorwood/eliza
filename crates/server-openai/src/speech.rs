@@ -14,7 +14,7 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::errors::EncodingError;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
@@ -416,7 +416,7 @@ async fn handle(
     payload: Result<Json<SpeechPayload>, JsonRejection>,
 ) -> Response {
     // Authentication failures take precedence over request-body details.
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OpenAiRejection::from_error(&error).into_response();
     }
 
