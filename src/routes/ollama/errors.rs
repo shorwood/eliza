@@ -15,6 +15,10 @@ use crate::problem::{Problem, ProblemClass, ProblemDetails};
 /// Failure detected while lowering an Ollama request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OllamaError {
+    /// An embedding request used an input shape outside the text subset.
+    #[error("embedding input must be a string or an array of strings")]
+    #[diagnostic(code(eliza::ollama::unsupported_embedding_input))]
+    UnsupportedEmbeddingInput,
     /// The request selected an unsupported structured-output shape.
     #[error("structured {kind} output is not supported")]
     #[diagnostic(code(eliza::ollama::structured_output_unsupported))]
@@ -76,7 +80,8 @@ pub(super) enum OllamaError {
 impl ProblemDetails for OllamaError {
     fn class(&self) -> ProblemClass {
         match self {
-            Self::StructuredOutputUnsupported { .. }
+            Self::UnsupportedEmbeddingInput
+            | Self::StructuredOutputUnsupported { .. }
             | Self::ReasoningUnsupported
             | Self::UnsupportedRole
             | Self::UnsupportedToolCallKind { .. }
@@ -87,6 +92,7 @@ impl ProblemDetails for OllamaError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::UnsupportedEmbeddingInput => Some("input"),
             Self::StructuredOutputUnsupported { .. } => Some("format"),
             Self::ReasoningUnsupported => Some("think"),
             Self::UnsupportedRole => Some("messages.role"),
