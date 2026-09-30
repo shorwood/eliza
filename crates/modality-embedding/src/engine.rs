@@ -5,36 +5,31 @@ use std::num::NonZeroUsize;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::problem::{ProblemClass, ProblemDetails};
-use crate::types::model::ModelId;
-
 // -----------------------------------------------------------------------------
 // Embedding: Defines provider-neutral values and fixed model metadata.
 // -----------------------------------------------------------------------------
 
 /// One text value and requested vector size.
 #[derive(Debug)]
-pub(crate) struct EmbeddingInput {
+pub struct EmbeddingInput {
     /// Text to embed.
-    pub(crate) text: String,
+    pub text: String,
     /// Number of output vector elements.
-    pub(crate) dimensions: i64,
+    pub dimensions: i64,
 }
 
 /// Provider-neutral successful embedding result.
 #[derive(Debug, PartialEq)]
-pub(crate) struct EmbeddingResponse {
-    /// Fixed model that produced the vectors.
-    pub(crate) model: ModelId,
+pub struct EmbeddingResponse {
     /// Vectors in request order.
-    pub(crate) embeddings: Vec<Vec<f32>>,
+    pub embeddings: Vec<Vec<f32>>,
     /// Approximate whitespace-delimited input tokens.
-    pub(crate) prompt_tokens: usize,
+    pub prompt_tokens: usize,
 }
 
 /// Typed failures raised by provider-neutral embedding handling.
 #[derive(Debug, Diagnostic, Error)]
-pub(crate) enum EmbeddingError {
+pub enum EmbeddingError {
     /// A provider requested a model other than the fixed embedding model.
     #[error("embeddings require model `fnv-embed`")]
     #[diagnostic(code(eliza::embedding::model_required))]
@@ -72,48 +67,14 @@ pub(crate) enum EmbeddingError {
     },
 }
 
-impl ProblemDetails for EmbeddingError {
-    fn class(&self) -> ProblemClass {
-        match self {
-            Self::InputTooLarge { .. } => ProblemClass::RequestTooLarge,
-            Self::ModelRequired
-            | Self::EmptyBatch
-            | Self::BlankInput { .. }
-            | Self::InvalidDimensions { .. } => ProblemClass::InvalidRequest,
-        }
-    }
-
-    fn param(&self) -> Option<&'static str> {
-        match self {
-            Self::ModelRequired => Some("model"),
-            Self::InvalidDimensions { .. } => Some("dimensions"),
-            Self::EmptyBatch | Self::BlankInput { .. } | Self::InputTooLarge { .. } => {
-                Some("input")
-            }
-        }
-    }
-}
-
 /// Provider-visible identifier for the feature-hashing model.
-pub(crate) const EMBEDDING_MODEL_ID: &str = "fnv-embed";
+pub const EMBEDDING_MODEL_ID: &str = "fnv-embed";
 
 /// Vector size used when a provider request omits dimensions.
-pub(crate) const EMBEDDING_DEFAULT_DIMENSIONS: i64 = 256;
+pub const EMBEDDING_DEFAULT_DIMENSIONS: i64 = 256;
 
 /// Largest vector size accepted by the bounded fixture.
-pub(crate) const EMBEDDING_MAX_DIMENSIONS: i64 = 1_024;
-
-/// Construct the fixed embedding model ID without exposing unchecked strings.
-///
-/// # Panics
-///
-/// Panics only if the source constant is changed to an empty identifier.
-#[must_use]
-pub(crate) fn embedding_model_id() -> ModelId {
-    EMBEDDING_MODEL_ID
-        .parse()
-        .expect("the built-in embedding model id is nonempty")
-}
+pub const EMBEDDING_MAX_DIMENSIONS: i64 = 1_024;
 
 // -----------------------------------------------------------------------------
 // EmbeddingFeature: Normalizes and hashes lexical features into unit vectors.
@@ -170,7 +131,8 @@ fn embedding_feature_add(vector: &mut [f32], parts: &[&[u8]]) {
 
 /// Scale a nonzero vector to unit length.
 fn embedding_feature_normalize(vector: &mut [f32]) {
-    let magnitude = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let squared = vector.iter().map(|value| value * value);
+    let magnitude = squared.sum::<f32>().sqrt();
 
     // A zero vector is already normalized and cannot be scaled.
     if magnitude == 0.0 {
@@ -210,11 +172,9 @@ fn embedding_feature_vector(words: &[String], dimensions: usize) -> Vec<f32> {
 
 /// Provider-neutral embedding request.
 #[derive(Debug)]
-pub(crate) struct EmbeddingRequest {
-    /// Model requested by the provider client.
-    pub(crate) model: ModelId,
+pub struct EmbeddingRequest {
     /// Ordered text inputs.
-    pub(crate) inputs: Vec<EmbeddingInput>,
+    pub inputs: Vec<EmbeddingInput>,
 }
 
 impl EmbeddingRequest {
@@ -224,12 +184,13 @@ impl EmbeddingRequest {
     ///
     /// Returns a typed rejection for the wrong model, empty or oversized input,
     /// blank normalized text, or dimensions outside `1..=1024`.
-    pub(crate) fn complete(
+    pub fn complete(
         self,
+        model: &str,
         max_input_chars: NonZeroUsize,
     ) -> Result<EmbeddingResponse, EmbeddingError> {
         // This fixture implements one fixed embedding model.
-        if self.model.as_str() != EMBEDDING_MODEL_ID {
+        if model != EMBEDDING_MODEL_ID {
             return Err(EmbeddingError::ModelRequired);
         }
 
@@ -266,10 +227,8 @@ impl EmbeddingRequest {
             .count();
 
         // Hash each normalized input without disturbing batch order.
-        let embeddings = self
-            .inputs
-            .iter()
-            .enumerate()
+        let indexed_inputs = self.inputs.iter().enumerate();
+        let embeddings = indexed_inputs
             .map(|(index, input)| {
                 let words = embedding_feature_normalize_words(&input.text);
 
@@ -287,7 +246,6 @@ impl EmbeddingRequest {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(EmbeddingResponse {
-            model: self.model,
             embeddings,
             prompt_tokens,
         })
@@ -299,13 +257,16 @@ impl EmbeddingRequest {
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(
+    clippy::missing_panics_doc,
+    reason = "test assertions are the intended panic contract"
+)]
 mod tests {
     use super::*;
 
     /// Build a request containing one text value.
     fn it_should_fixture_request(text: &str, dimensions: i64) -> EmbeddingRequest {
         EmbeddingRequest {
-            model: embedding_model_id(),
             inputs: vec![EmbeddingInput {
                 text: text.to_owned(),
                 dimensions,
@@ -315,10 +276,8 @@ mod tests {
 
     /// Compute the cosine similarity of equal-length vectors.
     fn it_should_fixture_cosine(left: &[f32], right: &[f32]) -> f32 {
-        left.iter()
-            .zip(right)
-            .map(|(left, right)| left * right)
-            .sum()
+        let products = left.iter().zip(right).map(|(left, right)| left * right);
+        products.sum()
     }
 
     #[test]
@@ -341,18 +300,15 @@ mod tests {
     #[test]
     fn it_should_return_repeatable_unit_vectors() {
         let first = it_should_fixture_request("retro cats dream", EMBEDDING_DEFAULT_DIMENSIONS)
-            .complete(NonZeroUsize::MAX)
+            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
             .unwrap();
         let second = it_should_fixture_request("retro cats dream", EMBEDDING_DEFAULT_DIMENSIONS)
-            .complete(NonZeroUsize::MAX)
+            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
             .unwrap();
 
         assert_eq!(first, second);
-        let magnitude = first.embeddings[0]
-            .iter()
-            .map(|value| value * value)
-            .sum::<f32>()
-            .sqrt();
+        let squared = first.embeddings[0].iter().map(|value| value * value);
+        let magnitude = squared.sum::<f32>().sqrt();
         assert!((magnitude - 1.0).abs() < f32::EPSILON.sqrt());
     }
 
@@ -360,7 +316,7 @@ mod tests {
     fn it_should_rank_shared_words_above_unrelated_text() {
         let related = ["retro cats dream", "retro cats sleep", "quantum engine"].map(|text| {
             it_should_fixture_request(text, EMBEDDING_DEFAULT_DIMENSIONS)
-                .complete(NonZeroUsize::MAX)
+                .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
                 .unwrap()
                 .embeddings
                 .remove(0)
@@ -375,7 +331,6 @@ mod tests {
     #[test]
     fn it_should_preserve_batch_order_and_per_item_dimensions() {
         let response = EmbeddingRequest {
-            model: embedding_model_id(),
             inputs: vec![
                 EmbeddingInput {
                     text: "first text".to_owned(),
@@ -387,7 +342,7 @@ mod tests {
                 },
             ],
         }
-        .complete(NonZeroUsize::MAX)
+        .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
         .unwrap();
 
         assert_eq!(response.embeddings[0].len(), 1);
@@ -397,22 +352,19 @@ mod tests {
 
     #[test]
     fn it_should_reject_invalid_input_and_dimensions() {
-        let empty = EmbeddingRequest {
-            model: embedding_model_id(),
-            inputs: Vec::new(),
-        }
-        .complete(NonZeroUsize::MAX)
-        .unwrap_err();
+        let empty = EmbeddingRequest { inputs: Vec::new() }
+            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
+            .unwrap_err();
         assert!(matches!(empty, EmbeddingError::EmptyBatch));
 
         let blank = it_should_fixture_request(" ... ", EMBEDDING_DEFAULT_DIMENSIONS)
-            .complete(NonZeroUsize::MAX)
+            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
             .unwrap_err();
         assert!(matches!(blank, EmbeddingError::BlankInput { index: 0 }));
 
         for dimensions in [0, EMBEDDING_MAX_DIMENSIONS + 1] {
             let error = it_should_fixture_request("text", dimensions)
-                .complete(NonZeroUsize::MAX)
+                .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
                 .unwrap_err();
             assert!(matches!(error, EmbeddingError::InvalidDimensions { .. }));
         }
@@ -421,7 +373,7 @@ mod tests {
     #[test]
     fn it_should_enforce_the_combined_character_limit() {
         let error = it_should_fixture_request("four", EMBEDDING_DEFAULT_DIMENSIONS)
-            .complete(NonZeroUsize::new(3).unwrap())
+            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::new(3).unwrap())
             .unwrap_err();
 
         assert!(matches!(

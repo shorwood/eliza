@@ -16,7 +16,7 @@ static DOCTOR: OnceLock<Doctor> = OnceLock::new();
 /// # Errors
 ///
 /// Returns a source, link, or script error when a bundled artifact is invalid.
-pub(crate) fn doctor() -> Result<&'static Doctor, Error> {
+pub(super) fn doctor() -> Result<&'static Doctor, Error> {
     // Reuse the compiled program after the first successful validation.
     if let Some(doctor) = DOCTOR.get() {
         return Ok(doctor);
@@ -36,7 +36,7 @@ const INPUT_RECORD_COLUMNS: usize = 72;
 
 /// Adapt provider text to one uppercase historical terminal record.
 #[must_use]
-pub(crate) fn input_record(input: &str) -> String {
+pub(super) fn input_record(input: &str) -> String {
     let normalized = input
         .chars()
         .map(|character| match character {
@@ -47,13 +47,9 @@ pub(crate) fn input_record(input: &str) -> String {
         })
         .collect::<String>();
 
-    normalized
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(INPUT_RECORD_COLUMNS)
-        .collect()
+    let words = normalized.split_whitespace().collect::<Vec<_>>();
+    let single_spaced = words.join(" ");
+    single_spaced.chars().take(INPUT_RECORD_COLUMNS).collect()
 }
 
 // -----------------------------------------------------------------------------
