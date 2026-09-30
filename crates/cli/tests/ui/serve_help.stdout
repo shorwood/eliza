@@ -45,7 +45,7 @@ Options:
           [default: 0]
 
       --max-input-chars <MAX_INPUT_CHARS>
-          Reject requests whose text content exceeds this character count
+          Reject requests whose combined input content exceeds this character count
           
           [default: 8000]
 

@@ -1,16 +1,15 @@
-//! CLI contract for the standalone binary.
-//!
-//! `clap` is the only runtime configuration surface. The parsed `ServeArgs`
-//! lower into `ServerConfig`; there are no Nano config files, hidden env-only
-//! switches, or route-surface toggles.
+//! CLI contract and conversion into server configuration.
 
-use std::net::IpAddr;
-use std::str::FromStr;
+use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroUsize;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use eliza_http::context::{AuthMode as RouteAuthMode, BearerToken, RouteConfig};
+use eliza_http::model::ModelId;
+use eliza_http::response::RequestLimits;
+use eliza_server::serve::{CorsMode as ServerCorsMode, LogFormat as ServerLogFormat, ServerConfig};
 
-use crate::errors::AppError;
-use crate::types::model::ModelId;
+use crate::errors::{ConfigError, RequestLimit};
 
 // -----------------------------------------------------------------------------
 // AuthMode: Controls provider endpoint authentication.
@@ -23,6 +22,15 @@ pub(super) enum AuthMode {
     None,
     /// Require each provider's native bearer or API-key header.
     Bearer,
+}
+
+impl From<AuthMode> for RouteAuthMode {
+    fn from(mode: AuthMode) -> Self {
+        match mode {
+            AuthMode::None => Self::None,
+            AuthMode::Bearer => Self::Bearer,
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -38,6 +46,15 @@ pub(super) enum CorsMode {
     Permissive,
 }
 
+impl From<CorsMode> for ServerCorsMode {
+    fn from(mode: CorsMode) -> Self {
+        match mode {
+            CorsMode::None => Self::None,
+            CorsMode::Permissive => Self::Permissive,
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // LogFormat: Controls tracing event rendering.
 // -----------------------------------------------------------------------------
@@ -51,69 +68,12 @@ pub(super) enum LogFormat {
     Json,
 }
 
-// -----------------------------------------------------------------------------
-// BearerToken: Semantic CLI value that validates once and redacts debug output.
-// -----------------------------------------------------------------------------
-
-/// Shared bearer/API-key token used when bearer auth is enabled.
-///
-/// ```
-/// use eliza::cli::BearerToken;
-///
-/// let token: BearerToken = "secret".parse().unwrap();
-/// assert_eq!(token.as_str(), "secret");
-/// assert_eq!(format!("{token:?}"), "BearerToken(<redacted>)");
-/// ```
-#[derive(Clone, Eq, PartialEq)]
-pub(super) struct BearerToken(
-    /// Validated nonempty secret value.
-    String,
-);
-
-impl BearerToken {
-    /// Return the raw token value for constant-time-equivalent header comparison.
-    ///
-    /// ```
-    /// use eliza::cli::BearerToken;
-    ///
-    /// let token: BearerToken = "local-dev".parse().unwrap();
-    /// assert_eq!(token.as_str(), "local-dev");
-    /// ```
-    #[must_use]
-    pub(super) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for BearerToken {
-    type Error = AppError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.is_empty() {
-            Err(AppError::EmptyBearerToken)
-        } else {
-            Ok(Self(value))
+impl From<LogFormat> for ServerLogFormat {
+    fn from(format: LogFormat) -> Self {
+        match format {
+            LogFormat::Text => Self::Text,
+            LogFormat::Json => Self::Json,
         }
-    }
-}
-
-impl FromStr for BearerToken {
-    type Err = AppError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        value.to_owned().try_into()
-    }
-}
-
-impl AsRef<str> for BearerToken {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl std::fmt::Debug for BearerToken {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("BearerToken(<redacted>)")
     }
 }
 
@@ -135,43 +95,94 @@ Provider paths:
 pub(super) struct ServeArgs {
     /// Bind address.
     #[arg(long, default_value = "127.0.0.1")]
-    pub(super) host: IpAddr,
+    host: IpAddr,
 
     /// Bind port.
     #[arg(long, default_value = "8787")]
-    pub(super) port: u16,
+    port: u16,
 
     /// Provider-visible model id.
     #[arg(long, default_value = "eliza-1966")]
-    pub(super) model: ModelId,
+    model: ModelId,
 
     /// Authentication mode for provider endpoints.
     #[arg(long, value_enum, default_value = "none")]
-    pub(super) auth: AuthMode,
+    auth: AuthMode,
 
     /// Required token when --auth bearer is used.
     #[arg(long)]
-    pub(super) bearer_token: Option<BearerToken>,
+    bearer_token: Option<BearerToken>,
 
     /// CORS behavior.
     #[arg(long, value_enum, default_value = "none")]
-    pub(super) cors: CorsMode,
+    cors: CorsMode,
 
     /// Optional delay between streaming chunks.
     #[arg(long, default_value = "0")]
-    pub(super) stream_delay_ms: u64,
+    stream_delay_ms: u64,
 
-    /// Reject requests whose text content exceeds this character count.
+    /// Reject requests whose combined input content exceeds this character count.
     #[arg(long, default_value = "8000")]
-    pub(super) max_input_chars: usize,
+    max_input_chars: usize,
 
     /// Bound replay work by limiting the number of user turns accepted.
     #[arg(long, default_value = "200")]
-    pub(super) max_history_messages: usize,
+    max_history_messages: usize,
 
     /// Log rendering mode.
     #[arg(long, value_enum, default_value = "text")]
-    pub(super) log: LogFormat,
+    log: LogFormat,
+}
+
+impl ServeArgs {
+    /// Validate cross-option invariants and lower into runtime configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic when bearer authentication has no token or a
+    /// request bound is zero.
+    pub(super) fn into_server_config(self) -> Result<ServerConfig, ConfigError> {
+        // Reject bearer mode before constructing unusable shared route state.
+        if self.auth == AuthMode::Bearer && self.bearer_token.is_none() {
+            return Err(ConfigError::MissingBearerToken);
+        }
+
+        let max_input_chars = positive_limit(self.max_input_chars, RequestLimit::InputChars)?;
+        let max_history_messages =
+            positive_limit(self.max_history_messages, RequestLimit::HistoryMessages)?;
+        let limits = RequestLimits::builder()
+            .max_input_chars(max_input_chars)
+            .max_history_messages(max_history_messages)
+            .build();
+
+        let routes = RouteConfig::builder();
+        let routes = routes.model(self.model);
+        let routes = routes.auth(self.auth.into());
+        let routes = routes.bearer_token(self.bearer_token);
+        let routes = routes.stream_delay_ms(self.stream_delay_ms);
+        let routes = routes.limits(limits);
+        let routes = routes.build();
+
+        Ok(ServerConfig::new(
+            SocketAddr::new(self.host, self.port),
+            routes,
+            self.cors.into(),
+            self.log.into(),
+        ))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// PositiveLimit: Converts raw CLI counts into runtime invariants.
+// -----------------------------------------------------------------------------
+
+/// Convert one CLI request bound into its positive runtime representation.
+///
+/// # Errors
+///
+/// Returns a configuration diagnostic when `value` is zero.
+fn positive_limit(value: usize, limit: RequestLimit) -> Result<NonZeroUsize, ConfigError> {
+    NonZeroUsize::new(value).ok_or(ConfigError::ZeroLimit { limit })
 }
 
 // -----------------------------------------------------------------------------
@@ -193,14 +204,6 @@ pub(super) enum Commands {
 // -----------------------------------------------------------------------------
 
 /// Top-level ELIZA CLI.
-///
-/// ```
-/// use clap::Parser;
-/// use eliza::cli::{Cli, Commands};
-///
-/// let cli = Cli::parse_from(["eliza", "serve", "--port", "8787"]);
-/// assert!(matches!(cli.command, Commands::Serve(_)));
-/// ```
 #[derive(Debug, Parser)]
 #[command(name = "eliza")]
 #[command(

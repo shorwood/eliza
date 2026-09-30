@@ -1,2 +1,2 @@
-tests/ui/*.stderr whitespace=-trailing-space
-tests/ui/*.stdout whitespace=-trailing-space
+crates/cli/tests/ui/*.stderr whitespace=-trailing-space
+crates/cli/tests/ui/*.stdout whitespace=-trailing-space
