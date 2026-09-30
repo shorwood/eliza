@@ -3,15 +3,13 @@
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::problem::{ProblemClass, ProblemDetails};
-
 // -----------------------------------------------------------------------------
 // SpeechError: Classifies provider-neutral speech failures.
 // -----------------------------------------------------------------------------
 
 /// Typed failures raised by provider-neutral speech handling.
 #[derive(Debug, Diagnostic, Error)]
-pub(crate) enum SpeechError {
+pub enum SpeechError {
     /// No pronounceable input was provided.
     #[error("speech input must not be empty")]
     #[diagnostic(code(eliza::speech::empty_input))]
@@ -38,12 +36,11 @@ pub(crate) enum SpeechError {
     OutputTooLong,
 
     /// The MP3 codec rejected PCM input or failed while draining output.
-    #[error("failed to encode speech audio: {source}")]
+    #[error("failed to encode speech audio: {detail}")]
     #[diagnostic(code(eliza::speech::mp3_encoding))]
     Mp3Encoding {
-        /// Concrete codec failure.
-        #[source]
-        source: rusty_mp3::Error,
+        /// Stable owned codec failure detail.
+        detail: String,
     },
 
     /// The MP3 codec completed without producing an audio frame.
@@ -73,42 +70,10 @@ pub(crate) enum SpeechError {
     Unavailable,
 
     /// Tokio could not run the blocking synthesis task.
-    #[error("speech worker failed: {source}")]
+    #[error("speech worker failed: {detail}")]
     #[diagnostic(code(eliza::speech::worker))]
     Worker {
-        /// Blocking task failure.
-        #[source]
-        source: tokio::task::JoinError,
+        /// Stable owned blocking-task failure detail.
+        detail: String,
     },
-}
-
-impl ProblemDetails for SpeechError {
-    fn class(&self) -> ProblemClass {
-        match self {
-            Self::InputTooLarge { .. } | Self::OutputTooLong => ProblemClass::RequestTooLarge,
-            Self::EmptyInput
-            | Self::InvalidSpeed
-            | Self::UnsupportedCharacter { .. }
-            | Self::UnsupportedSampleRate { .. } => ProblemClass::InvalidRequest,
-            Self::Mp3Encoding { .. }
-            | Self::Mp3NoFrames
-            | Self::Unavailable
-            | Self::Worker { .. } => ProblemClass::Internal,
-        }
-    }
-
-    fn param(&self) -> Option<&'static str> {
-        match self {
-            Self::EmptyInput | Self::InputTooLarge { .. } | Self::UnsupportedCharacter { .. } => {
-                Some("input")
-            }
-            Self::InvalidSpeed => Some("speed"),
-            Self::UnsupportedSampleRate { .. } => Some("sample_rate"),
-            Self::Mp3Encoding { .. }
-            | Self::Mp3NoFrames
-            | Self::OutputTooLong
-            | Self::Unavailable
-            | Self::Worker { .. } => None,
-        }
-    }
 }
