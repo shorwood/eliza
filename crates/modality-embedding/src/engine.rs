@@ -6,35 +6,30 @@ use miette::Diagnostic;
 use thiserror::Error;
 
 // -----------------------------------------------------------------------------
-// Embedding: Defines provider-neutral values and fixed model metadata.
+// Error: Classifies failures without transport semantics.
 // -----------------------------------------------------------------------------
 
-/// One text value and requested vector size.
-#[derive(Debug)]
-pub struct EmbeddingInput {
-    /// Text to embed.
-    pub text: String,
-    /// Number of output vector elements.
-    pub dimensions: i64,
+/// Broad failure category exposed to provider adapters.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ErrorKind {
+    /// Provider input cannot be embedded.
+    InvalidInput,
+    /// Provider input exceeds a configured bound.
+    Limit,
 }
 
-/// Provider-neutral successful embedding result.
-#[derive(Debug, PartialEq)]
-pub struct EmbeddingResponse {
-    /// Vectors in request order.
-    pub embeddings: Vec<Vec<f32>>,
-    /// Approximate whitespace-delimited input tokens.
-    pub prompt_tokens: usize,
+/// Provider-neutral request field associated with a failure.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ErrorField {
+    /// Text input or batch contents.
+    Input,
+    /// Requested vector dimensions.
+    Dimensions,
 }
 
 /// Typed failures raised by provider-neutral embedding handling.
 #[derive(Debug, Diagnostic, Error)]
-pub enum EmbeddingError {
-    /// A provider requested a model other than the fixed embedding model.
-    #[error("embeddings require model `fnv-embed`")]
-    #[diagnostic(code(eliza::embedding::model_required))]
-    ModelRequired,
-
+pub enum Error {
     /// A batch contained no text inputs.
     #[error("embedding input batch must not be empty")]
     #[diagnostic(code(eliza::embedding::empty_batch))]
@@ -67,14 +62,68 @@ pub enum EmbeddingError {
     },
 }
 
+impl Error {
+    /// Classify the failure without imposing HTTP or provider semantics.
+    #[must_use]
+    pub const fn kind(&self) -> ErrorKind {
+        match self {
+            Self::InputTooLarge { .. } => ErrorKind::Limit,
+            Self::EmptyBatch | Self::BlankInput { .. } | Self::InvalidDimensions { .. } => {
+                ErrorKind::InvalidInput
+            }
+        }
+    }
+
+    /// Identify the provider-neutral request field associated with this failure.
+    #[must_use]
+    pub const fn field(&self) -> ErrorField {
+        match self {
+            Self::InvalidDimensions { .. } => ErrorField::Dimensions,
+            Self::EmptyBatch | Self::BlankInput { .. } | Self::InputTooLarge { .. } => {
+                ErrorField::Input
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Input: Defines one provider-neutral embedding input.
+// -----------------------------------------------------------------------------
+
+/// One text value and requested vector size.
+#[derive(Debug)]
+pub struct Input {
+    /// Text to embed.
+    pub text: String,
+    /// Number of output vector elements.
+    pub dimensions: i64,
+}
+
+// -----------------------------------------------------------------------------
+// Response: Returns ordered vectors and usage.
+// -----------------------------------------------------------------------------
+
+/// Provider-neutral successful embedding result.
+#[derive(Debug, PartialEq)]
+pub struct Response {
+    /// Vectors in request order.
+    pub embeddings: Vec<Vec<f32>>,
+    /// Approximate whitespace-delimited input tokens.
+    pub prompt_tokens: usize,
+}
+
+// -----------------------------------------------------------------------------
+// Model: Publishes fixed embedding model metadata.
+// -----------------------------------------------------------------------------
+
 /// Provider-visible identifier for the feature-hashing model.
-pub const EMBEDDING_MODEL_ID: &str = "fnv-embed";
+pub const MODEL_ID: &str = "fnv-embed";
 
 /// Vector size used when a provider request omits dimensions.
-pub const EMBEDDING_DEFAULT_DIMENSIONS: i64 = 256;
+pub const MODEL_DEFAULT_DIMENSIONS: i64 = 256;
 
 /// Largest vector size accepted by the bounded fixture.
-pub const EMBEDDING_MAX_DIMENSIONS: i64 = 1_024;
+pub const MODEL_MAX_DIMENSIONS: i64 = 1_024;
 
 // -----------------------------------------------------------------------------
 // EmbeddingFeature: Normalizes and hashes lexical features into unit vectors.
@@ -167,41 +216,32 @@ fn embedding_feature_vector(words: &[String], dimensions: usize) -> Vec<f32> {
 }
 
 // -----------------------------------------------------------------------------
-// EmbeddingRequest: Validates bounded batches and produces ordered vectors.
+// Request: Validates bounded batches and produces ordered vectors.
 // -----------------------------------------------------------------------------
 
 /// Provider-neutral embedding request.
 #[derive(Debug)]
-pub struct EmbeddingRequest {
+pub struct Request {
     /// Ordered text inputs.
-    pub inputs: Vec<EmbeddingInput>,
+    pub inputs: Vec<Input>,
 }
 
-impl EmbeddingRequest {
+impl Request {
     /// Validate and embed every input under the configured character bound.
     ///
     /// # Errors
     ///
     /// Returns a typed rejection for the wrong model, empty or oversized input,
     /// blank normalized text, or dimensions outside `1..=1024`.
-    pub fn complete(
-        self,
-        model: &str,
-        max_input_chars: NonZeroUsize,
-    ) -> Result<EmbeddingResponse, EmbeddingError> {
-        // This fixture implements one fixed embedding model.
-        if model != EMBEDDING_MODEL_ID {
-            return Err(EmbeddingError::ModelRequired);
-        }
-
+    pub fn complete(self, max_input_chars: NonZeroUsize) -> Result<Response, Error> {
         // A successful response must contain at least one vector.
         if self.inputs.is_empty() {
-            return Err(EmbeddingError::EmptyBatch);
+            return Err(Error::EmptyBatch);
         }
         for input in &self.inputs {
             // Bounds keep allocations predictable across every adapter.
-            if !(1..=EMBEDDING_MAX_DIMENSIONS).contains(&input.dimensions) {
-                return Err(EmbeddingError::InvalidDimensions {
+            if !(1..=MODEL_MAX_DIMENSIONS).contains(&input.dimensions) {
+                return Err(Error::InvalidDimensions {
                     actual: input.dimensions,
                 });
             }
@@ -213,7 +253,7 @@ impl EmbeddingRequest {
 
         // Provider batches share the server's aggregate input bound.
         if input_chars > max_input_chars.get() {
-            return Err(EmbeddingError::InputTooLarge {
+            return Err(Error::InputTooLarge {
                 actual: input_chars,
                 limit: max_input_chars.get(),
             });
@@ -234,18 +274,17 @@ impl EmbeddingRequest {
 
                 // Punctuation-only input carries no lexical signal.
                 if words.is_empty() {
-                    return Err(EmbeddingError::BlankInput { index });
+                    return Err(Error::BlankInput { index });
                 }
-                let dimensions = usize::try_from(input.dimensions).map_err(|_| {
-                    EmbeddingError::InvalidDimensions {
+                let dimensions =
+                    usize::try_from(input.dimensions).map_err(|_| Error::InvalidDimensions {
                         actual: input.dimensions,
-                    }
-                })?;
+                    })?;
                 Ok(embedding_feature_vector(&words, dimensions))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(EmbeddingResponse {
+        Ok(Response {
             embeddings,
             prompt_tokens,
         })
@@ -265,9 +304,9 @@ mod tests {
     use super::*;
 
     /// Build a request containing one text value.
-    fn it_should_fixture_request(text: &str, dimensions: i64) -> EmbeddingRequest {
-        EmbeddingRequest {
-            inputs: vec![EmbeddingInput {
+    fn it_should_fixture_request(text: &str, dimensions: i64) -> Request {
+        Request {
+            inputs: vec![Input {
                 text: text.to_owned(),
                 dimensions,
             }],
@@ -299,11 +338,11 @@ mod tests {
 
     #[test]
     fn it_should_return_repeatable_unit_vectors() {
-        let first = it_should_fixture_request("retro cats dream", EMBEDDING_DEFAULT_DIMENSIONS)
-            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
+        let first = it_should_fixture_request("retro cats dream", MODEL_DEFAULT_DIMENSIONS)
+            .complete(NonZeroUsize::MAX)
             .unwrap();
-        let second = it_should_fixture_request("retro cats dream", EMBEDDING_DEFAULT_DIMENSIONS)
-            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
+        let second = it_should_fixture_request("retro cats dream", MODEL_DEFAULT_DIMENSIONS)
+            .complete(NonZeroUsize::MAX)
             .unwrap();
 
         assert_eq!(first, second);
@@ -315,8 +354,8 @@ mod tests {
     #[test]
     fn it_should_rank_shared_words_above_unrelated_text() {
         let related = ["retro cats dream", "retro cats sleep", "quantum engine"].map(|text| {
-            it_should_fixture_request(text, EMBEDDING_DEFAULT_DIMENSIONS)
-                .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
+            it_should_fixture_request(text, MODEL_DEFAULT_DIMENSIONS)
+                .complete(NonZeroUsize::MAX)
                 .unwrap()
                 .embeddings
                 .remove(0)
@@ -330,19 +369,19 @@ mod tests {
 
     #[test]
     fn it_should_preserve_batch_order_and_per_item_dimensions() {
-        let response = EmbeddingRequest {
+        let response = Request {
             inputs: vec![
-                EmbeddingInput {
+                Input {
                     text: "first text".to_owned(),
                     dimensions: 1,
                 },
-                EmbeddingInput {
+                Input {
                     text: "second text".to_owned(),
-                    dimensions: EMBEDDING_MAX_DIMENSIONS,
+                    dimensions: MODEL_MAX_DIMENSIONS,
                 },
             ],
         }
-        .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
+        .complete(NonZeroUsize::MAX)
         .unwrap();
 
         assert_eq!(response.embeddings[0].len(), 1);
@@ -352,33 +391,33 @@ mod tests {
 
     #[test]
     fn it_should_reject_invalid_input_and_dimensions() {
-        let empty = EmbeddingRequest { inputs: Vec::new() }
-            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
+        let empty = Request { inputs: Vec::new() }
+            .complete(NonZeroUsize::MAX)
             .unwrap_err();
-        assert!(matches!(empty, EmbeddingError::EmptyBatch));
+        assert!(matches!(empty, Error::EmptyBatch));
 
-        let blank = it_should_fixture_request(" ... ", EMBEDDING_DEFAULT_DIMENSIONS)
-            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
+        let blank = it_should_fixture_request(" ... ", MODEL_DEFAULT_DIMENSIONS)
+            .complete(NonZeroUsize::MAX)
             .unwrap_err();
-        assert!(matches!(blank, EmbeddingError::BlankInput { index: 0 }));
+        assert!(matches!(blank, Error::BlankInput { index: 0 }));
 
-        for dimensions in [0, EMBEDDING_MAX_DIMENSIONS + 1] {
+        for dimensions in [0, MODEL_MAX_DIMENSIONS + 1] {
             let error = it_should_fixture_request("text", dimensions)
-                .complete(EMBEDDING_MODEL_ID, NonZeroUsize::MAX)
+                .complete(NonZeroUsize::MAX)
                 .unwrap_err();
-            assert!(matches!(error, EmbeddingError::InvalidDimensions { .. }));
+            assert!(matches!(error, Error::InvalidDimensions { .. }));
         }
     }
 
     #[test]
     fn it_should_enforce_the_combined_character_limit() {
-        let error = it_should_fixture_request("four", EMBEDDING_DEFAULT_DIMENSIONS)
-            .complete(EMBEDDING_MODEL_ID, NonZeroUsize::new(3).unwrap())
+        let error = it_should_fixture_request("four", MODEL_DEFAULT_DIMENSIONS)
+            .complete(NonZeroUsize::new(3).unwrap())
             .unwrap_err();
 
         assert!(matches!(
             error,
-            EmbeddingError::InputTooLarge {
+            Error::InputTooLarge {
                 actual: 4,
                 limit: 3
             }

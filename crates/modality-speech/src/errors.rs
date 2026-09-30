@@ -4,12 +4,34 @@ use miette::Diagnostic;
 use thiserror::Error;
 
 // -----------------------------------------------------------------------------
-// SpeechError: Classifies provider-neutral speech failures.
+// Error: Classifies failures without transport semantics.
 // -----------------------------------------------------------------------------
+
+/// Broad failure category exposed to provider adapters.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ErrorKind {
+    /// Provider input cannot be synthesized.
+    InvalidInput,
+    /// Provider input or output exceeds a configured bound.
+    Limit,
+    /// Synthesis or encoding failed unexpectedly.
+    Internal,
+}
+
+/// Provider-neutral request field associated with a failure.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ErrorField {
+    /// Text submitted for synthesis.
+    Input,
+    /// Requested sample rate.
+    SampleRate,
+    /// Requested speaking speed.
+    Speed,
+}
 
 /// Typed failures raised by provider-neutral speech handling.
 #[derive(Debug, Diagnostic, Error)]
-pub enum SpeechError {
+pub enum Error {
     /// No pronounceable input was provided.
     #[error("speech input must not be empty")]
     #[diagnostic(code(eliza::speech::empty_input))]
@@ -76,4 +98,39 @@ pub enum SpeechError {
         /// Stable owned blocking-task failure detail.
         detail: String,
     },
+}
+
+impl Error {
+    /// Classify the failure without imposing HTTP or provider semantics.
+    #[must_use]
+    pub const fn kind(&self) -> ErrorKind {
+        match self {
+            Self::InputTooLarge { .. } | Self::OutputTooLong => ErrorKind::Limit,
+            Self::EmptyInput
+            | Self::InvalidSpeed
+            | Self::UnsupportedCharacter { .. }
+            | Self::UnsupportedSampleRate { .. } => ErrorKind::InvalidInput,
+            Self::Mp3Encoding { .. }
+            | Self::Mp3NoFrames
+            | Self::Unavailable
+            | Self::Worker { .. } => ErrorKind::Internal,
+        }
+    }
+
+    /// Identify the provider-neutral request field associated with this failure.
+    #[must_use]
+    pub const fn field(&self) -> Option<ErrorField> {
+        match self {
+            Self::EmptyInput | Self::InputTooLarge { .. } | Self::UnsupportedCharacter { .. } => {
+                Some(ErrorField::Input)
+            }
+            Self::InvalidSpeed => Some(ErrorField::Speed),
+            Self::UnsupportedSampleRate { .. } => Some(ErrorField::SampleRate),
+            Self::Mp3Encoding { .. }
+            | Self::Mp3NoFrames
+            | Self::OutputTooLong
+            | Self::Unavailable
+            | Self::Worker { .. } => None,
+        }
+    }
 }

@@ -4,9 +4,35 @@ use eliza_mad::engine::{Error as ElizaError, ErrorKind as ElizaErrorKind};
 use miette::Diagnostic;
 use thiserror::Error;
 
+// -----------------------------------------------------------------------------
+// Error: Classifies failures without transport semantics.
+// -----------------------------------------------------------------------------
+
+/// Broad failure category exposed to provider adapters.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ErrorKind {
+    /// Provider input cannot be executed.
+    InvalidInput,
+    /// Provider input exceeds a configured bound.
+    Limit,
+    /// The deterministic engine failed unexpectedly.
+    Internal,
+}
+
+/// Provider-neutral request field associated with a failure.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ErrorField {
+    /// Conversation input or history.
+    Input,
+    /// Offered tool declarations.
+    Tools,
+    /// Tool-selection policy.
+    ToolChoice,
+}
+
 /// Conversation validation or execution failure.
 #[derive(Debug, Diagnostic, Error)]
-pub enum TurnError {
+pub enum Error {
     /// Provider text cannot be represented by the historical input contract.
     #[error("invalid ELIZA input: {detail}")]
     #[diagnostic(code(eliza::turn::invalid_eliza_input))]
@@ -118,7 +144,56 @@ pub enum TurnError {
     RequiredToolDirective,
 }
 
-impl From<ElizaError> for TurnError {
+impl Error {
+    /// Classify the failure without imposing HTTP or provider semantics.
+    #[must_use]
+    pub const fn kind(&self) -> ErrorKind {
+        match self {
+            Self::ElizaRuntime { .. } => ErrorKind::Internal,
+            Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => ErrorKind::Limit,
+            Self::ElizaInput { .. }
+            | Self::MalformedToolDirective
+            | Self::MissingToolArguments
+            | Self::MissingToolName
+            | Self::InvalidToolArguments { .. }
+            | Self::ToolDirectiveForbidden
+            | Self::ToolChoiceDisallows { .. }
+            | Self::MissingOrdinaryUserTurn
+            | Self::ToolNotOffered { .. }
+            | Self::OrphanToolResult
+            | Self::MissingToolDirective
+            | Self::MismatchedToolDirective
+            | Self::MissingUserText
+            | Self::RequiredToolDirective => ErrorKind::InvalidInput,
+        }
+    }
+
+    /// Identify the provider-neutral request field associated with this failure.
+    #[must_use]
+    pub const fn field(&self) -> Option<ErrorField> {
+        match self {
+            Self::ToolDirectiveForbidden
+            | Self::ToolChoiceDisallows { .. }
+            | Self::RequiredToolDirective => Some(ErrorField::ToolChoice),
+            Self::ToolNotOffered { .. } => Some(ErrorField::Tools),
+            Self::ElizaInput { .. }
+            | Self::MalformedToolDirective
+            | Self::MissingToolArguments
+            | Self::MissingToolName
+            | Self::InvalidToolArguments { .. }
+            | Self::MissingOrdinaryUserTurn
+            | Self::OrphanToolResult
+            | Self::MissingToolDirective
+            | Self::MismatchedToolDirective
+            | Self::MissingUserText => Some(ErrorField::Input),
+            Self::ElizaRuntime { .. } | Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => {
+                None
+            }
+        }
+    }
+}
+
+impl From<ElizaError> for Error {
     fn from(source: ElizaError) -> Self {
         let is_input = source.kind() == ElizaErrorKind::Input;
         let detail = source.to_string();

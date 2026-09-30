@@ -3,9 +3,10 @@
 #![feature(register_tool)]
 #![register_tool(rlib)]
 
-mod content;
+mod context;
 mod embeddings;
 mod errors;
+mod generate;
 mod models;
 pub mod router;
 mod speech;

@@ -7,15 +7,12 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::errors::EncodingError;
 use eliza_http::extraction::ExtractionError;
-use eliza_http::lower::Lower;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks, unix_timestamp};
-use eliza_modality_chat::turn::{
-    CompatOutput, CompatTurn, CompatTurnRequest, CompatTurnResponse, FunctionCall,
-};
+use eliza_modality_chat as chat;
 use uuid::Uuid;
 
 use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
@@ -25,40 +22,28 @@ use super::types::{
     ChatStreamChoice, ChatStreamChunk, ChatStreamDelta, ChatStreamFunctionDelta,
     ChatStreamToolCallDelta, ChatToolCall, ToolFunctionKind,
 };
+use crate::context::AppState;
 
-// -----------------------------------------------------------------------------
-// ChatLowering: Lowers one chat request into the neutral contract.
-// -----------------------------------------------------------------------------
-
-/// Chat Completions input awaiting provider-neutral conversion.
-struct ChatLowering(
-    /// Typed provider request.
-    ChatRequest,
-);
-
-impl Lower for ChatLowering {
-    type Canonical = CompatTurnRequest;
-
+impl TryFrom<ChatRequest> for chat::turn::Request {
     type Error = OpenAiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        let payload = self.0;
+    fn try_from(payload: ChatRequest) -> Result<Self, Self::Error> {
         let output_format = payload
             .response_format
-            .map(Lower::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
 
         let chat = ChatTranscript(payload.messages).lower()?;
-        let tools = payload.tools.unwrap_or_default().lower()?;
+        let tools = payload.tools.unwrap_or_default().try_into()?;
         let tool_choice = payload
             .tool_choice
-            .map(Lower::lower)
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
 
         // Assemble the neutral request from lowered transcript components.
-        let request = CompatTurnRequest::builder()
+        let request = chat::turn::Request::builder()
             .system_text(chat.system)
             .turns(chat.turns);
         let request = request.tools(tools).tool_choice(tool_choice);
@@ -77,7 +62,7 @@ struct ChatTranscriptOutput {
     /// Instructions separated from replayable turns.
     system: Vec<String>,
     /// Ordered user, assistant, and tool turns.
-    turns: Vec<CompatTurn>,
+    turns: Vec<chat::turn::Turn>,
 }
 
 /// Ordered chat messages awaiting provider-neutral lowering.
@@ -122,16 +107,18 @@ impl ChatTranscript {
 fn lower_assistant_message(
     content: Option<ChatContent>,
     tool_calls: Vec<ChatToolCall>,
-    turns: &mut Vec<CompatTurn>,
+    turns: &mut Vec<chat::turn::Turn>,
 ) -> Result<(), OpenAiError> {
     if let Some(content) = content {
-        turns.push(CompatTurn::Assistant(text_content(
+        turns.push(chat::turn::Turn::Assistant(text_content(
             content,
             "messages.content",
         )?));
     }
     for call in tool_calls {
-        turns.push(CompatTurn::ToolCall(call.lower("messages.tool_calls")?));
+        turns.push(chat::turn::Turn::ToolCall(
+            call.lower("messages.tool_calls")?,
+        ));
     }
     Ok(())
 }
@@ -147,7 +134,7 @@ fn lower_message(
     content: Option<ChatContent>,
     tool_calls: Vec<ChatToolCall>,
     system: &mut Vec<String>,
-    turns: &mut Vec<CompatTurn>,
+    turns: &mut Vec<chat::turn::Turn>,
 ) -> Result<(), OpenAiError> {
     match role {
         ChatRequestRole::System | ChatRequestRole::Developer => {
@@ -157,12 +144,15 @@ fn lower_message(
         }
         ChatRequestRole::User => {
             let content = content.ok_or(OpenAiError::MissingUserContent)?;
-            turns.push(CompatTurn::User(text_content(content, "messages.content")?));
+            turns.push(chat::turn::Turn::User(text_content(
+                content,
+                "messages.content",
+            )?));
         }
         ChatRequestRole::Assistant => lower_assistant_message(content, tool_calls, turns)?,
         ChatRequestRole::Tool => {
             let content = content.ok_or(OpenAiError::MissingToolResultContent)?;
-            turns.push(CompatTurn::ToolResult(text_tool_result(content)?));
+            turns.push(chat::turn::Turn::ToolResult(text_tool_result(content)?));
         }
         // Unknown provider roles cannot be replayed safely.
         ChatRequestRole::Unsupported => return Err(OpenAiError::UnsupportedMessageRole),
@@ -329,7 +319,7 @@ fn stream_push_text(
 fn stream_push_tool(
     events: &mut Vec<Event>,
     context: &StreamContext<'_>,
-    call: &FunctionCall,
+    call: &chat::turn::FunctionCall,
 ) -> Result<(), EncodingError> {
     stream_push_chunk(
         events,
@@ -383,7 +373,7 @@ fn stream_push_tool(
 /// Returns [`EncodingError`] when any response chunk cannot be serialized.
 fn stream_render(
     model: &ModelId,
-    response: &CompatTurnResponse,
+    response: &chat::turn::Response,
     usage_stream: UsageStream,
 ) -> Result<SseEvents, EncodingError> {
     let context = StreamContext {
@@ -403,8 +393,8 @@ fn stream_render(
         None,
     )?;
     match &response.output {
-        CompatOutput::Text(text) => stream_push_text(&mut events, &context, text)?,
-        CompatOutput::ToolCall(call) => stream_push_tool(&mut events, &context, call)?,
+        chat::turn::Output::Text(text) => stream_push_text(&mut events, &context, text)?,
+        chat::turn::Output::ToolCall(call) => stream_push_tool(&mut events, &context, call)?,
     }
     if matches!(usage_stream, UsageStream::Include) {
         events.push(json_event(&ChatStreamChunk {
@@ -421,85 +411,80 @@ fn stream_render(
 }
 
 // -----------------------------------------------------------------------------
-// OpenAiChatCompletions: Handles and mounts the endpoint.
+// Handle: Executes one Chat Completions request.
 // -----------------------------------------------------------------------------
 
-/// `OpenAI` Chat Completions endpoint.
-pub(crate) struct OpenAiChatCompletions;
+/// Handle one OpenAI-compatible Chat Completions request.
+pub(crate) async fn handle(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: Result<Json<ChatRequest>, JsonRejection>,
+) -> Response {
+    // Authentication failures use OpenAI's native error envelope.
+    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+        return OpenAiRejection::from_error(&error).into_response();
+    }
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        // Extraction failures retain their typed diagnostic code.
+        Err(error) => {
+            return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
+        }
+    };
 
-impl OpenAiChatCompletions {
-    /// Handle one OpenAI-compatible Chat Completions request.
-    #[expect(
-        clippy::unused_async,
-        reason = "Axum handlers must return a future even when their work is synchronous"
-    )]
-    pub(crate) async fn handle(
-        State(state): State<AppState>,
-        headers: HeaderMap,
-        payload: Result<Json<ChatRequest>, JsonRejection>,
-    ) -> Response {
-        // Authentication failures use OpenAI's native error envelope.
-        if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    // Capture transport options before lowering consumes the request body.
+    let model = payload.model.clone();
+    let should_stream = payload.should_stream.unwrap_or(false);
+    let usage_stream = UsageStream::for_options(payload.stream_options);
+
+    // Lower and execute the provider request under shared resource limits.
+    let request: chat::turn::Request = match payload.try_into() {
+        Ok(request) => request,
+        // Provider validation failures use OpenAI's native envelope.
+        Err(error) => {
             return OpenAiRejection::from_error(&error).into_response();
         }
-        let Json(payload) = match payload {
-            Ok(payload) => payload,
-            // Extraction failures retain their typed diagnostic code.
-            Err(error) => {
-                return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
-            }
-        };
+    };
 
-        // Capture transport options before lowering consumes the request body.
-        let model = payload.model.clone();
-        let should_stream = payload.should_stream.unwrap_or(false);
-        let usage_stream = UsageStream::for_options(payload.stream_options);
-
-        // Lower and execute the provider request under shared resource limits.
-        let request = match ChatLowering(payload).lower() {
-            Ok(request) => request,
-            // Provider validation failures use OpenAI's native envelope.
-            Err(error) => {
-                return OpenAiRejection::from_error(&error).into_response();
-            }
-        };
-
-        // Apply shared resource bounds to the lowered request.
-        // Complete one neutral turn before rendering OpenAI output.
-        let response = match request.complete(
-            state.config.limits.max_input_chars(),
-            state.config.limits.max_history_messages(),
-        ) {
-            Ok(response) => response,
-            // Shared execution failures still render as OpenAI errors.
-            Err(error) => {
-                return OpenAiRejection::from_error(&error).into_response();
-            }
-        };
-
-        if should_stream {
-            match stream_render(&model, &response, usage_stream) {
-                Ok(events) => events
-                    .with_delay(state.config.stream_delay_ms)
-                    .into_response(),
-                Err(error) => OpenAiRejection::from_error(&error).into_response(),
-            }
-        } else {
-            Json(ChatResponse::from_compat(model, response)).into_response()
+    // Apply shared resource bounds to the lowered request.
+    // Complete one neutral turn before rendering OpenAI output.
+    let response = match request.complete(
+        state.config.limits.max_input_chars(),
+        state.config.limits.max_history_messages(),
+    ) {
+        Ok(response) => response,
+        // Shared execution failures still render as OpenAI errors.
+        Err(error) => {
+            return OpenAiRejection::chat(&error, "messages").into_response();
         }
-    }
+    };
 
-    /// Mount the `OpenAI` Chat Completions route.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/v1/chat/completions",
-            post_with(Self::handle, |operation| {
-                operation
-                    .summary("OpenAI chat completion")
-                    .tag("openai")
-                    .response::<200, Json<ChatResponse>>()
-                    .default_response::<Json<OpenAiFailureResponse>>()
-            }),
-        )
+    if should_stream {
+        match stream_render(&model, &response, usage_stream) {
+            Ok(events) => events
+                .with_delay(state.config.stream_delay_ms)
+                .into_response(),
+            Err(error) => OpenAiRejection::from_error(&error).into_response(),
+        }
+    } else {
+        Json(ChatResponse::from_compat(model, response)).into_response()
     }
+}
+
+// -----------------------------------------------------------------------------
+// Router: Publishes the Chat Completions endpoint.
+// -----------------------------------------------------------------------------
+
+/// Build the `OpenAI` Chat Completions route.
+pub(super) fn router() -> ApiRouter<AppState> {
+    ApiRouter::new().api_route(
+        "/v1/chat/completions",
+        post_with(handle, |operation| {
+            operation
+                .summary("OpenAI chat completion")
+                .tag("openai")
+                .response::<200, Json<ChatResponse>>()
+                .default_response::<Json<OpenAiFailureResponse>>()
+        }),
+    )
 }

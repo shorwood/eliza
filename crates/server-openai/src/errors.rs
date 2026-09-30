@@ -3,8 +3,9 @@ use axum::Json;
 use axum::response::{IntoResponse, Response};
 use eliza_http::errors::EncodingError;
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
-use eliza_modality_chat::structured_output::StructuredOutputError;
-use eliza_modality_speech::errors::SpeechError;
+use eliza_modality_chat as chat;
+use eliza_modality_embedding as embedding;
+use eliza_modality_speech as speech;
 use miette::Diagnostic;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -17,6 +18,10 @@ use thiserror::Error;
 /// Failure detected while lowering an `OpenAI` request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OpenAiError {
+    /// An embedding request selected a model other than the fixed fixture.
+    #[error("embeddings require model `fnv-embed`")]
+    #[diagnostic(code(eliza::embedding::model_required))]
+    EmbeddingModelRequired,
     /// An embedding request selected an unsupported output encoding.
     #[error("embedding encoding_format must be `float`")]
     #[diagnostic(code(eliza::openai::unsupported_embedding_encoding))]
@@ -107,7 +112,7 @@ pub(super) enum OpenAiError {
         param: &'static str,
         /// Shared compiler failure with an RFC 6901 path.
         #[source]
-        source: StructuredOutputError,
+        source: chat::structured_output::StructuredOutputError,
     },
     /// The requested schema uses unsupported JSON Schema behavior.
     #[error("unsupported response schema: {source}")]
@@ -117,7 +122,7 @@ pub(super) enum OpenAiError {
         param: &'static str,
         /// Shared compiler failure with an RFC 6901 path.
         #[source]
-        source: StructuredOutputError,
+        source: chat::structured_output::StructuredOutputError,
     },
     /// A user message omitted its content.
     #[error("user message content is required")]
@@ -203,6 +208,7 @@ impl ProblemDetails for OpenAiError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::EmbeddingModelRequired | Self::SpeechModelRequired => Some("model"),
             Self::UnsupportedEmbeddingEncoding => Some("encoding_format"),
             Self::EmbeddingTokenInputUnsupported | Self::UnsupportedEmbeddingInput => Some("input"),
             Self::InvalidFunctionArguments { param, .. }
@@ -227,7 +233,6 @@ impl ProblemDetails for OpenAiError {
             Self::MissingFunctionCallArguments => Some("input.arguments"),
             Self::MissingFunctionOutput => Some("input.output"),
             Self::UnsupportedInputItem => Some("input.type"),
-            Self::SpeechModelRequired => Some("model"),
             Self::EmptyVoice => Some("voice"),
             Self::UnsupportedSpeechFormat => Some("response_format"),
             Self::UnsupportedSpeechStreamFormat => Some("stream_format"),
@@ -252,7 +257,7 @@ pub(super) enum OpenAiSpeechStreamError {
     #[error(transparent)]
     Speech(
         /// Provider-neutral speech failure.
-        SpeechError,
+        speech::errors::Error,
     ),
 }
 
@@ -327,9 +332,56 @@ pub(super) struct OpenAiRejection(
 );
 
 impl OpenAiRejection {
+    /// Capture a chat diagnostic with the calling endpoint's input field.
+    pub(super) fn chat(error: &chat::errors::Error, input: &'static str) -> Self {
+        let class = match error.kind() {
+            chat::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            chat::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            chat::errors::ErrorKind::Internal => ProblemClass::Internal,
+        };
+        let param = match error.field() {
+            Some(chat::errors::ErrorField::Input) => Some(input),
+            Some(chat::errors::ErrorField::Tools) => Some("tools"),
+            Some(chat::errors::ErrorField::ToolChoice) => Some("tool_choice"),
+            None => None,
+        };
+        Self(Problem::from_diagnostic(error, class, param))
+    }
+
     /// Capture a typed diagnostic for `OpenAI` rendering.
     pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
         Self(Problem::from_error(error))
+    }
+}
+
+impl From<&embedding::engine::Error> for OpenAiRejection {
+    fn from(error: &embedding::engine::Error) -> Self {
+        let class = match error.kind() {
+            embedding::engine::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            embedding::engine::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+        };
+        let param = match error.field() {
+            embedding::engine::ErrorField::Input => Some("input"),
+            embedding::engine::ErrorField::Dimensions => Some("dimensions"),
+        };
+        Self(Problem::from_diagnostic(error, class, param))
+    }
+}
+
+impl From<&speech::errors::Error> for OpenAiRejection {
+    fn from(error: &speech::errors::Error) -> Self {
+        let class = match error.kind() {
+            speech::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            speech::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            speech::errors::ErrorKind::Internal => ProblemClass::Internal,
+        };
+        let param = match error.field() {
+            Some(speech::errors::ErrorField::Input) => Some("input"),
+            Some(speech::errors::ErrorField::SampleRate) => Some("response_format"),
+            Some(speech::errors::ErrorField::Speed) => Some("speed"),
+            None => None,
+        };
+        Self(Problem::from_diagnostic(error, class, param))
     }
 }
 
