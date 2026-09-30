@@ -3,7 +3,7 @@ name: eliza-open-webui
 services:
   eliza:
     image: eliza:0.1.0
-    command: ["serve", "--host", "0.0.0.0", "--stream-delay-ms", "50", "--max-input-chars", "65536"]
+    command: ["serve", "--bind", "0.0.0.0:8787", "--stream-delay-ms", "50", "--max-input-chars", "65536"]
     init: true
     pull_policy: never
 

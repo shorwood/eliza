@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--api-key", ""],
+  "code": 2
+}

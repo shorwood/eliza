@@ -1,3 +1,0 @@
-error: invalid value '' for '--bearer-token <BEARER_TOKEN>': bearer token must not be empty
-
-For more information, try '--help'.
