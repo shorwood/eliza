@@ -51,3 +51,17 @@ jsonpath "$.components.schemas.GeminiEmbedContentRequest" isObject
 jsonpath "$.components.schemas.GeminiBatchEmbedContentsRequest" isObject
 jsonpath "$.components.schemas.OllamaEmbeddingRequest" isObject
 jsonpath "$.components.schemas.OllamaEmbeddingResponse" isObject
+jsonpath "$.components.schemas.ChatRequest.properties.response_format" isObject
+jsonpath "$.components.schemas.ResponsesRequest.properties.text" isObject
+jsonpath "$.components.schemas.MessagesRequest.properties.output_config" isObject
+jsonpath "$.components.schemas.GenerateConfig.properties.responseFormat" isObject
+jsonpath "$.components.schemas.GenerateConfig.properties.responseMimeType" isObject
+jsonpath "$.components.schemas.GenerateConfig.properties.responseJsonSchema" isObject
+jsonpath "$.components.schemas.ResponseFormat.properties.text" isObject
+jsonpath "$.components.schemas.ChatRequest2.properties.format" isObject
+jsonpath "$.components.schemas.ChatRequestResponseFormat" isObject
+jsonpath "$.components.schemas.ResponsesRequestTextFormat" isObject
+jsonpath "$.components.schemas.OutputConfig" isObject
+jsonpath "$.components.schemas.OutputFormat" isObject
+jsonpath "$.components.schemas.TextResponseFormat" isObject
+jsonpath "$.components.schemas.OutputFormat2" isObject
