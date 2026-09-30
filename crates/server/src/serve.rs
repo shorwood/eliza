@@ -1,0 +1,189 @@
+//! Server configuration, listener, CORS, and tracing.
+
+use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroUsize;
+
+use axum::Router;
+use eliza_http::context::{AuthMode, RouteConfig};
+use eliza_http::model::ModelId;
+use eliza_http::response::RequestLimits;
+use miette::Diagnostic;
+use thiserror::Error;
+use tokio::net::TcpListener;
+use tower_http::cors::CorsLayer;
+use tracing_subscriber::EnvFilter;
+
+use crate::routes::Routes;
+
+// -----------------------------------------------------------------------------
+// CorsMode: Controls browser cross-origin access.
+// -----------------------------------------------------------------------------
+
+/// CORS policy installed around the complete HTTP surface.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum CorsMode {
+    /// Do not install a CORS layer.
+    None,
+    /// Permit requests from any browser origin.
+    Permissive,
+}
+
+// -----------------------------------------------------------------------------
+// LogFormat: Controls tracing event rendering.
+// -----------------------------------------------------------------------------
+
+/// Tracing event rendering mode.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LogFormat {
+    /// Human-readable tracing output.
+    Text,
+    /// Structured JSON tracing output.
+    Json,
+}
+
+// -----------------------------------------------------------------------------
+// ServerError: Reports listener and serving failures.
+// -----------------------------------------------------------------------------
+
+/// Internal server startup and runtime failure vocabulary.
+#[derive(Debug, Diagnostic, Error)]
+enum ServerErrorKind {
+    /// The configured TCP listener address could not be bound.
+    #[error("failed to bind {addr}: {source}")]
+    #[diagnostic(code(eliza::serve::bind))]
+    Bind {
+        /// Address the server attempted to bind.
+        addr: SocketAddr,
+        /// Operating-system error returned by the listener.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Axum stopped because its serving loop failed.
+    #[error("server error: {0}")]
+    #[diagnostic(code(eliza::serve::runtime))]
+    Serve(
+        /// Runtime I/O failure returned by Axum.
+        #[source]
+        std::io::Error,
+    ),
+}
+
+/// Opaque server startup or runtime failure.
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[diagnostic(transparent)]
+pub struct ServerError(
+    /// Private diagnostic retaining the operating-system source chain.
+    #[diagnostic_source]
+    ServerErrorKind,
+);
+
+// -----------------------------------------------------------------------------
+// ServerConfig: Owns validated route and process behavior.
+// -----------------------------------------------------------------------------
+
+/// Runtime configuration for one ELIZA HTTP server process.
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    /// Validated listener address.
+    address: SocketAddr,
+    /// Behavior shared by all provider routes.
+    routes: RouteConfig,
+    /// CORS policy for browser clients.
+    cors: CorsMode,
+    /// Log rendering mode.
+    log: LogFormat,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        let limits = RequestLimits::builder()
+            .max_input_chars(
+                NonZeroUsize::new(8000).expect("default max input chars should be nonzero"),
+            )
+            .max_history_messages(
+                NonZeroUsize::new(200).expect("default max history messages should be nonzero"),
+            )
+            .build();
+        let routes = RouteConfig::builder();
+        let routes = routes.model(ModelId::default());
+        let routes = routes.auth(AuthMode::None);
+        let routes = routes.bearer_token(None);
+        let routes = routes.stream_delay_ms(0);
+        let routes = routes.limits(limits);
+        let routes = routes.build();
+        Self {
+            address: SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 8787),
+            routes,
+            cors: CorsMode::None,
+            log: LogFormat::Text,
+        }
+    }
+}
+
+impl ServerConfig {
+    /// Construct a server from validated route and process configuration.
+    #[must_use]
+    pub const fn new(
+        address: SocketAddr,
+        routes: RouteConfig,
+        cors: CorsMode,
+        log: LogFormat,
+    ) -> Self {
+        Self {
+            address,
+            routes,
+            cors,
+            log,
+        }
+    }
+
+    /// Build the complete provider-compatible router.
+    fn into_router(self) -> Router {
+        let router = Routes::build(self.routes);
+        match self.cors {
+            CorsMode::None => router,
+            CorsMode::Permissive => router.layer(CorsLayer::permissive()),
+        }
+    }
+
+    /// Serve HTTP requests until the listener exits or fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic when the listener cannot bind or Axum fails.
+    pub async fn run(self) -> Result<(), ServerError> {
+        init_tracing(self.log);
+        let listener = TcpListener::bind(self.address).await.map_err(|source| {
+            ServerError(ServerErrorKind::Bind {
+                addr: self.address,
+                source,
+            })
+        })?;
+        tracing::info!(address = %self.address, "serving ELIZA compatibility server");
+        axum::serve(listener, self.into_router())
+            .await
+            .map_err(|source| ServerError(ServerErrorKind::Serve(source)))?;
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// InitTracing: Installs process-wide tracing.
+// -----------------------------------------------------------------------------
+
+/// Install the requested tracing formatter once for the process.
+fn init_tracing(format: LogFormat) {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let result = match format {
+        LogFormat::Text => tracing_subscriber::fmt().with_env_filter(filter).try_init(),
+        LogFormat::Json => tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .try_init(),
+    };
+    match result {
+        Ok(()) | Err(_) => {}
+    }
+}
