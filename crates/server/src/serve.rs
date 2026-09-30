@@ -4,7 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
 
 use axum::Router;
-use eliza_http::context::{AuthMode, RouteConfig};
+use eliza_http::context::RouteConfig;
 use eliza_http::model::ModelId;
 use eliza_http::response::RequestLimits;
 use miette::Diagnostic;
@@ -105,9 +105,8 @@ impl Default for ServerConfig {
             )
             .build();
         let routes = RouteConfig::builder();
-        let routes = routes.model(ModelId::default());
-        let routes = routes.auth(AuthMode::None);
-        let routes = routes.bearer_token(None);
+        let routes = routes.chat_model(ModelId::default());
+        let routes = routes.api_key(None);
         let routes = routes.stream_delay_ms(0);
         let routes = routes.limits(limits);
         let routes = routes.build();

@@ -34,16 +34,16 @@ fn model_id(value: &'static str) -> ModelId {
 // Models: Lists the configured provider models.
 // -----------------------------------------------------------------------------
 
-/// List the configured model in `OpenAI`'s native envelope.
+/// List the configured chat model and fixed modality models.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Authentication failures use the provider's own error envelope.
     if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OpenAiRejection::from_error(&error).into_response();
     }
 
-    // Render the configured model with OpenAI's fixed catalog metadata.
+    // Render the configured chat model with OpenAI's fixed catalog metadata.
     let descriptor = ModelDescriptor {
-        id: state.config.model.clone(),
+        id: state.config.chat_model.clone(),
         object: "model",
         created: 0,
         owned_by: "eliza",
@@ -51,7 +51,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
     // Include the fixed speech capability unless it is already configured.
     let mut data = vec![descriptor];
-    if state.config.model.as_str() != speech::core::MODEL_ID {
+    if state.config.chat_model.as_str() != speech::core::MODEL_ID {
         data.push(ModelDescriptor {
             id: model_id(speech::core::MODEL_ID),
             object: "model",
@@ -61,7 +61,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 
     // Include the fixed embedding capability unless it is already configured.
-    if state.config.model.as_str() != embedding::engine::MODEL_ID {
+    if state.config.chat_model.as_str() != embedding::engine::MODEL_ID {
         data.push(ModelDescriptor {
             id: model_id(embedding::engine::MODEL_ID),
             object: "model",
