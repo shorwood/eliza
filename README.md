@@ -76,16 +76,17 @@ Every provider route is namespaced. Unprefixed routes such as `/v1/models` and
 | Surface | Routes | Successful response transport |
 | --- | --- | --- |
 | System | `GET /healthz` | JSON |
-| OpenAI | `GET /openai/v1/models`<br>`POST /openai/v1/chat/completions`<br>`POST /openai/v1/responses`<br>`POST /openai/v1/audio/speech` | JSON, binary audio, or SSE |
-| Gemini OpenAI alias | `POST /gemini/v1beta/openai/chat/completions` | OpenAI JSON or SSE |
+| OpenAI | `GET /openai/v1/models`<br>`POST /openai/v1/chat/completions`<br>`POST /openai/v1/responses`<br>`POST /openai/v1/audio/speech`<br>`POST /openai/v1/embeddings` | JSON, binary audio, or SSE |
+| Gemini OpenAI alias | `POST /gemini/v1beta/openai/chat/completions`<br>`POST /gemini/v1beta/openai/embeddings` | OpenAI JSON or SSE |
 | Anthropic | `GET /anthropic/v1/models`<br>`POST /anthropic/v1/messages` | JSON; SSE when `stream: true` |
-| Gemini | `GET /gemini/v1beta/models`<br>`POST /gemini/v1beta/models/{model}:generateContent`<br>`POST /gemini/v1beta/models/{model}:streamGenerateContent` | JSON; the stream action returns a JSON array, or SSE with `?alt=sse` |
-| Ollama | `GET /ollama/api/tags`<br>`POST /ollama/api/chat` | NDJSON by default; JSON when `stream: false` |
+| Gemini | `GET /gemini/v1beta/models`<br>`POST /gemini/v1beta/models/{model}:generateContent`<br>`POST /gemini/v1beta/models/{model}:streamGenerateContent`<br>`POST /gemini/v1beta/models/fnv-embed:embedContent`<br>`POST /gemini/v1beta/models/fnv-embed:batchEmbedContents` | JSON; the stream action returns a JSON array, or SSE with `?alt=sse` |
+| Ollama | `GET /ollama/api/tags`<br>`POST /ollama/api/chat`<br>`POST /ollama/api/embed` | NDJSON by default for chat streaming; otherwise JSON |
 | Documentation | `GET /docs`<br>`GET /openapi.json` | HTML and JSON |
 
 OpenAI and Gemini model lists advertise the model selected by `--model`, which
-defaults to `eliza-1966`, plus the fixed `flite` speech model. The
-other provider catalogs continue to advertise only the configured chat model.
+defaults to `eliza-1966`, plus the fixed `flite` speech model and
+`fnv-embed` embedding model. Ollama advertises the configured chat
+model and embedding model; Anthropic advertises only the chat model.
 
 ## Request examples
 
@@ -120,6 +121,20 @@ curl -s http://127.0.0.1:8787/openai/v1/audio/speech \
 The endpoint supports MP3, WAV, and signed 16-bit little-endian PCM. Set
 `"stream_format":"sse"` for base64 `speech.audio.delta` events followed by a
 `speech.audio.done` event.
+
+### Embeddings
+
+```sh
+curl -s http://127.0.0.1:8787/openai/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"fnv-embed","input":["Hello world","Hello there"],"dimensions":256}'
+```
+
+The Gemini OpenAI alias accepts the same request at
+`/gemini/v1beta/openai/embeddings`. Native Gemini clients can use
+`models/fnv-embed:embedContent` or `:batchEmbedContents`; Ollama
+clients can use `/ollama/api/embed`. All surfaces use 256 dimensions by
+default and accept values from 1 through 1024.
 
 ### Anthropic Messages
 
@@ -212,6 +227,9 @@ request failures use provider-native JSON envelopes and include a stable
 - Speech is intentionally retro, deterministic, and English/ASCII-oriented.
   It uses Flite's bundled 8 kHz diphone voice; unsupported Unicode is rejected
   and output is capped at 120 seconds.
+- Embeddings are deterministic, local feature hashes rather than learned model
+  output. They make no upstream calls, support only floating-point vectors,
+  and are intended for compatibility tests and lightweight similarity checks.
 - Arbitrary voice names select stable pitch profiles. Style prose only
   recognizes `whisper`, `calm`/`soft`, `excited`/`cheerful`, `high`,
   `low`/`deep`, `fast`/`quick`, and `slow`; other words are ignored.

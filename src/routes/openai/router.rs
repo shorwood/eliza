@@ -3,6 +3,7 @@
 use aide::axum::ApiRouter;
 
 use super::chat_completions::OpenAiChatCompletions;
+use super::embeddings::OpenAiEmbeddings;
 use super::models::OpenAiModels;
 use super::responses::OpenAiResponses;
 use super::speech::OpenAiSpeech;
@@ -12,6 +13,7 @@ use crate::routes::context::AppState;
 pub(crate) fn mount() -> ApiRouter<AppState> {
     let router = OpenAiModels::mount(ApiRouter::new());
     let router = OpenAiChatCompletions::mount(router);
+    let router = OpenAiEmbeddings::mount(router);
     let router = OpenAiResponses::mount(router);
     OpenAiSpeech::mount(router)
 }
