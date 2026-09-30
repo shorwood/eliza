@@ -14,7 +14,7 @@ use super::{audio, synth};
 // -----------------------------------------------------------------------------
 
 /// One message produced by an incremental speech job.
-pub(crate) enum SpeechStreamItem {
+pub enum SpeechStreamItem {
     /// Encoded audio ready for immediate delivery.
     Chunk(
         /// Provider-ready bytes.
@@ -33,13 +33,13 @@ pub(crate) enum SpeechStreamItem {
 }
 
 /// Incremental encoded audio and its fixed response metadata.
-pub(crate) struct SpeechStream {
+pub struct SpeechStream {
     /// Provider-safe MIME type.
-    pub(crate) media_type: String,
+    pub media_type: String,
     /// Samples per second in the uncompressed signal.
-    pub(crate) sample_rate: u32,
+    pub sample_rate: u32,
     /// Bounded receiver that applies backpressure to synthesis.
-    pub(crate) items: mpsc::Receiver<SpeechStreamItem>,
+    pub items: mpsc::Receiver<SpeechStreamItem>,
 }
 
 /// Maximum rendered duration accepted by the compatibility fixture.
@@ -53,7 +53,7 @@ const SPEECH_STREAM_BUFFER: usize = 4;
 
 /// CPU-bounded facade around deterministic synthesis and encoding.
 #[derive(Debug, Clone)]
-pub(crate) struct SpeechService {
+pub struct SpeechService {
     /// Fixed permits keep memory use independent of host CPU count.
     permits: Arc<Semaphore>,
 }
@@ -111,7 +111,7 @@ impl SpeechService {
     /// # Errors
     ///
     /// Returns a typed request, worker, synthesis, or encoding failure.
-    pub(crate) async fn render(
+    pub async fn render(
         &self,
         request: SpeechRequest,
         format: AudioFormat,
@@ -137,7 +137,9 @@ impl SpeechService {
             })
         })
         .await
-        .map_err(|source| SpeechError::Worker { source })?
+        .map_err(|source| SpeechError::Worker {
+            detail: source.to_string(),
+        })?
     }
 
     /// Start incremental synthesis and encoding on a bounded worker.
@@ -145,7 +147,7 @@ impl SpeechService {
     /// # Errors
     ///
     /// Returns request validation or worker-pool failures before response delivery begins.
-    pub(crate) async fn stream(
+    pub async fn stream(
         &self,
         request: SpeechRequest,
         format: AudioFormat,
@@ -170,7 +172,10 @@ impl SpeechService {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => Self::report_failure(&panic_sender, error).await,
                 Err(source) => {
-                    Self::report_failure(&panic_sender, SpeechError::Worker { source }).await;
+                    let error = SpeechError::Worker {
+                        detail: source.to_string(),
+                    };
+                    Self::report_failure(&panic_sender, error).await;
                 }
             }
         });
@@ -189,7 +194,7 @@ impl SpeechService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::speech::core::SpeechSegment;
+    use crate::core::SpeechSegment;
 
     /// Streaming PCM arrives in multiple chunks and terminates with an exact count.
     ///
@@ -199,7 +204,8 @@ mod tests {
     #[tokio::test]
     async fn streams_pcm_with_bounded_worker_count() {
         let service = SpeechService::default();
-        assert_eq!(service.permits.available_permits(), SPEECH_WORKERS);
+        let available_permits = service.permits.available_permits();
+        assert_eq!(available_permits, SPEECH_WORKERS);
         let request = SpeechRequest {
             segments: vec![SpeechSegment {
                 text: "Hello from a genuinely progressive speech stream.".to_owned(),
@@ -233,6 +239,7 @@ mod tests {
         assert!(chunks > 1);
         assert_eq!(byte_count, sample_count * size_of::<i16>());
         assert!(stream.items.recv().await.is_none());
-        assert_eq!(service.permits.available_permits(), SPEECH_WORKERS);
+        let available_permits = service.permits.available_permits();
+        assert_eq!(available_permits, SPEECH_WORKERS);
     }
 }
