@@ -1,13 +1,7 @@
 //! Gemini wire contracts shared by its route adapters.
 //! Empty metadata on documented newtype fields avoids a `schemars` 0.9 derive collision.
-use eliza_http::lower::Lower;
 use eliza_http::model::ModelId;
-use eliza_modality_chat::json::JsonObject;
-use eliza_modality_chat::structured_output::{StructuredOutput, StructuredOutputErrorKind};
-use eliza_modality_chat::turn::{
-    CompatOutput, CompatTurn, CompatTurnResponse, FunctionCall, FunctionTool, TokenUsage,
-    ToolChoice as CompatToolChoice,
-};
+use eliza_modality_chat as chat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,22 +33,20 @@ pub(super) struct ContentFunctionCall {
     /// Function name requested by the model.
     name: Option<String>,
     /// Arguments supplied to the function.
-    args: Option<JsonObject>,
+    args: Option<chat::json::JsonObject>,
 }
 
-impl Lower for ContentFunctionCall {
-    type Canonical = CompatTurn;
-
+impl TryFrom<ContentFunctionCall> for chat::turn::Turn {
     type Error = GeminiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        let name = self
+    fn try_from(call: ContentFunctionCall) -> Result<Self, Self::Error> {
+        let name = call
             .name
             .filter(|name| !name.is_empty())
             .ok_or(GeminiError::MissingFunctionCallName)?;
-        Ok(CompatTurn::ToolCall(FunctionCall {
+        Ok(chat::turn::Turn::ToolCall(chat::turn::FunctionCall {
             name,
-            arguments: self.args.unwrap_or_default(),
+            arguments: call.args.unwrap_or_default(),
         }))
     }
 }
@@ -73,7 +65,7 @@ pub(super) enum ContentFunctionResponseValue {
     Object(
         /// Function-result object.
         #[schemars(title = "", description = "")]
-        JsonObject,
+        chat::json::JsonObject,
     ),
 }
 
@@ -119,7 +111,7 @@ pub(super) enum ContentPart {
     Unsupported {
         /// Unrecognized fields retained only to classify the part.
         #[serde(flatten)]
-        _ignored: JsonObject,
+        _ignored: chat::json::JsonObject,
     },
 }
 
@@ -144,7 +136,7 @@ pub(super) struct ToolFunctionDeclaration {
     /// Optional human-readable function description.
     description: Option<String>,
     /// JSON Schema describing accepted parameters.
-    parameters: Option<JsonObject>,
+    parameters: Option<chat::json::JsonObject>,
 }
 
 impl ToolFunctionDeclaration {
@@ -175,14 +167,12 @@ pub(super) struct ToolGroupList(
     Vec<ToolGroup>,
 );
 
-impl Lower for ToolGroupList {
-    type Canonical = Vec<FunctionTool>;
-
+impl TryFrom<ToolGroupList> for Vec<chat::turn::FunctionTool> {
     type Error = GeminiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
+    fn try_from(groups: ToolGroupList) -> Result<Self, Self::Error> {
         let mut functions = Vec::new();
-        for group in self.0 {
+        for group in groups.0 {
             let declarations = group
                 .function_declarations
                 .ok_or(GeminiError::MissingFunctionDeclarations)?;
@@ -192,7 +182,7 @@ impl Lower for ToolGroupList {
                     .name
                     .filter(|name| !name.is_empty())
                     .ok_or(GeminiError::MissingFunctionName)?;
-                functions.push(FunctionTool::new(name, definition_chars));
+                functions.push(chat::turn::FunctionTool::new(name, definition_chars));
             }
         }
         Ok(functions)
@@ -232,18 +222,18 @@ impl ToolFunctionCallingConfig {
     /// # Errors
     ///
     /// Returns [`GeminiError`] for an unsupported calling mode.
-    fn lower(self, param: &'static str) -> Result<CompatToolChoice, GeminiError> {
+    fn lower(self, param: &'static str) -> Result<chat::turn::ToolChoice, GeminiError> {
         match self.mode.unwrap_or(ToolFunctionCallingMode::Auto) {
             ToolFunctionCallingMode::Auto | ToolFunctionCallingMode::Validated => {
-                Ok(CompatToolChoice::Auto)
+                Ok(chat::turn::ToolChoice::Auto)
             }
-            ToolFunctionCallingMode::None => Ok(CompatToolChoice::None),
+            ToolFunctionCallingMode::None => Ok(chat::turn::ToolChoice::None),
             ToolFunctionCallingMode::Any => {
                 let names = self.allowed_function_names.unwrap_or_default();
                 Ok(match names.as_slice() {
-                    [] => CompatToolChoice::Required,
-                    [name] => CompatToolChoice::Named(name.clone()),
-                    _ => CompatToolChoice::Allowed(names),
+                    [] => chat::turn::ToolChoice::Required,
+                    [name] => chat::turn::ToolChoice::Named(name.clone()),
+                    _ => chat::turn::ToolChoice::Allowed(names),
                 })
             }
             ToolFunctionCallingMode::Unsupported => {
@@ -261,15 +251,13 @@ pub(super) struct ToolConfig {
     function_calling_config: Option<ToolFunctionCallingConfig>,
 }
 
-impl Lower for ToolConfig {
-    type Canonical = CompatToolChoice;
-
+impl TryFrom<ToolConfig> for chat::turn::ToolChoice {
     type Error = GeminiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        match self.function_calling_config {
+    fn try_from(config: ToolConfig) -> Result<Self, Self::Error> {
+        match config.function_calling_config {
             Some(config) => config.lower("toolConfig"),
-            None => Ok(CompatToolChoice::Auto),
+            None => Ok(Self::Auto),
         }
     }
 }
@@ -438,7 +426,7 @@ pub(super) struct GenerateFunctionCall {
     /// Requested function name.
     pub(super) name: String,
     /// Arguments supplied to the function.
-    pub(super) args: JsonObject,
+    pub(super) args: chat::json::JsonObject,
 }
 
 /// Base64-encoded binary data emitted by Gemini generation.
@@ -503,19 +491,19 @@ pub(super) struct GenerateCandidate {
 )]
 pub(super) struct GenerateUsage {
     /// Estimated tokens consumed by request input.
-    prompt_token_count: usize,
+    pub(super) prompt_token_count: usize,
     /// Estimated tokens emitted by candidates.
-    candidates_token_count: usize,
+    pub(super) candidates_token_count: usize,
     /// Combined input and candidate token count.
-    total_token_count: usize,
+    pub(super) total_token_count: usize,
 }
 
-impl From<TokenUsage> for GenerateUsage {
-    fn from(usage: TokenUsage) -> Self {
+impl From<chat::turn::Usage> for GenerateUsage {
+    fn from(usage: chat::turn::Usage) -> Self {
         Self {
             prompt_token_count: usage.prompt,
             candidates_token_count: usage.completion,
-            total_token_count: usage.total,
+            total_token_count: usage.prompt + usage.completion,
         }
     }
 }
@@ -535,10 +523,10 @@ pub(super) struct GenerateContentResponse {
 
 impl GenerateContentResponse {
     /// Attach the provider-owned model identity to one canonical result.
-    pub(super) fn from_compat(model: ModelId, response: CompatTurnResponse) -> Self {
+    pub(super) fn from_compat(model: ModelId, response: chat::turn::Response) -> Self {
         let part = match response.output {
-            CompatOutput::Text(text) => GenerateOutputPart::Text { text },
-            CompatOutput::ToolCall(call) => GenerateOutputPart::FunctionCall {
+            chat::turn::Output::Text(text) => GenerateOutputPart::Text { text },
+            chat::turn::Output::ToolCall(call) => GenerateOutputPart::FunctionCall {
                 function_call: GenerateFunctionCall {
                     id: format!("call_{}", Uuid::now_v7().simple()),
                     name: call.name,
@@ -577,13 +565,17 @@ const LEGACY_TEXT_FORMAT_PARAM: &str = "generationConfig.responseMimeType";
 ///
 /// Returns the provider-specific form of a shared schema compiler error.
 fn compile_text_schema(
-    schema: JsonObject,
+    schema: chat::json::JsonObject,
     param: &'static str,
-) -> Result<StructuredOutput, GeminiError> {
-    StructuredOutput::try_from(schema).map_err(|source| match source.kind() {
-        StructuredOutputErrorKind::Invalid => GeminiError::InvalidResponseSchema { param, source },
-        StructuredOutputErrorKind::Unsupported => {
-            GeminiError::UnsupportedResponseSchema { param, source }
+) -> Result<chat::structured_output::StructuredOutput, GeminiError> {
+    chat::structured_output::StructuredOutput::try_from(schema).map_err(|source| {
+        match source.kind() {
+            chat::structured_output::StructuredOutputErrorKind::Invalid => {
+                GeminiError::InvalidResponseSchema { param, source }
+            }
+            chat::structured_output::StructuredOutputErrorKind::Unsupported => {
+                GeminiError::UnsupportedResponseSchema { param, source }
+            }
         }
     })
 }
@@ -595,7 +587,7 @@ pub(super) struct TextResponseFormat {
     /// Requested response MIME type.
     mime_type: Option<TextResponseMimeType>,
     /// Optional JSON Schema for `APPLICATION_JSON` output.
-    schema: Option<JsonObject>,
+    schema: Option<chat::json::JsonObject>,
 }
 
 impl TextResponseFormat {
@@ -604,11 +596,13 @@ impl TextResponseFormat {
     /// # Errors
     ///
     /// Returns a typed Gemini error for an unknown MIME type or invalid schema.
-    fn compile(self) -> Result<StructuredOutput, GeminiError> {
+    fn compile(self) -> Result<chat::structured_output::StructuredOutput, GeminiError> {
         match (self.mime_type, self.schema) {
-            (None | Some(TextResponseMimeType::TextPlain), None) => Ok(StructuredOutput::default()),
+            (None | Some(TextResponseMimeType::TextPlain), None) => {
+                Ok(chat::structured_output::StructuredOutput::default())
+            }
             (Some(TextResponseMimeType::ApplicationJson), None) => {
-                Ok(StructuredOutput::json_object())
+                Ok(chat::structured_output::StructuredOutput::json_object())
             }
             (Some(TextResponseMimeType::ApplicationJson), Some(schema)) => {
                 compile_text_schema(schema, CURRENT_TEXT_FORMAT_PARAM)
@@ -649,6 +643,33 @@ pub(super) struct ResponseFormat {
 // GenerateConfig: Compiles request-wide generation controls.
 // -----------------------------------------------------------------------------
 
+/// Gemini generation controls used by text and speech requests.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GenerateConfig {
+    /// Requested response modalities.
+    pub(super) response_modalities: Option<Vec<SpeechResponseModality>>,
+    /// Requested response wire format.
+    pub(super) response_format: Option<ResponseFormat>,
+    /// Legacy text response MIME type.
+    response_mime_type: Option<LegacyTextResponseMimeType>,
+    /// Legacy JSON Schema paired with `responseMimeType`.
+    response_json_schema: Option<chat::json::JsonObject>,
+    /// Voice and speaker controls for audio output.
+    pub(super) speech_config: Option<SpeechConfig>,
+}
+
+impl GenerateConfig {
+    /// Report whether an audio request contains any text-format controls.
+    pub(super) fn has_text_format_controls(&self) -> bool {
+        self.response_format
+            .as_ref()
+            .is_some_and(|format| format.text.is_some())
+            || self.response_mime_type.is_some()
+            || self.response_json_schema.is_some()
+    }
+}
+
 /// Lower Gemini's legacy MIME-type and JSON-Schema controls.
 ///
 /// # Errors
@@ -656,14 +677,14 @@ pub(super) struct ResponseFormat {
 /// Returns a typed Gemini error for incompatible legacy values or schemas.
 fn lower_legacy_text_format(
     mime_type: Option<LegacyTextResponseMimeType>,
-    schema: Option<JsonObject>,
-) -> Result<StructuredOutput, GeminiError> {
+    schema: Option<chat::json::JsonObject>,
+) -> Result<chat::structured_output::StructuredOutput, GeminiError> {
     match (mime_type, schema) {
         (None | Some(LegacyTextResponseMimeType::TextPlain), None) => {
-            Ok(StructuredOutput::default())
+            Ok(chat::structured_output::StructuredOutput::default())
         }
         (Some(LegacyTextResponseMimeType::ApplicationJson), None) => {
-            Ok(StructuredOutput::json_object())
+            Ok(chat::structured_output::StructuredOutput::json_object())
         }
         (Some(LegacyTextResponseMimeType::ApplicationJson), Some(schema)) => {
             compile_text_schema(schema, "generationConfig.responseJsonSchema")
@@ -686,41 +707,13 @@ fn lower_legacy_text_format(
     }
 }
 
-/// Gemini generation controls used by text and speech requests.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct GenerateConfig {
-    /// Requested response modalities.
-    pub(super) response_modalities: Option<Vec<SpeechResponseModality>>,
-    /// Requested response wire format.
-    pub(super) response_format: Option<ResponseFormat>,
-    /// Legacy text response MIME type.
-    response_mime_type: Option<LegacyTextResponseMimeType>,
-    /// Legacy JSON Schema paired with `responseMimeType`.
-    response_json_schema: Option<JsonObject>,
-    /// Voice and speaker controls for audio output.
-    pub(super) speech_config: Option<SpeechConfig>,
-}
-
-impl GenerateConfig {
-    /// Report whether an audio request contains any text-format controls.
-    pub(super) fn has_text_format_controls(&self) -> bool {
-        self.response_format
-            .as_ref()
-            .is_some_and(|format| format.text.is_some())
-            || self.response_mime_type.is_some()
-            || self.response_json_schema.is_some()
-    }
-}
-
-impl Lower for GenerateConfig {
-    type Canonical = StructuredOutput;
-
+impl TryFrom<GenerateConfig> for chat::structured_output::StructuredOutput {
     type Error = GeminiError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        let has_current = self.response_format.is_some();
-        let has_legacy = self.response_mime_type.is_some() || self.response_json_schema.is_some();
+    fn try_from(config: GenerateConfig) -> Result<Self, Self::Error> {
+        let has_current = config.response_format.is_some();
+        let has_legacy =
+            config.response_mime_type.is_some() || config.response_json_schema.is_some();
 
         // Current and deprecated controls describe one mutually exclusive format.
         if has_current && has_legacy {
@@ -728,10 +721,10 @@ impl Lower for GenerateConfig {
         }
 
         // A current text block owns formatting whenever it is present.
-        if let Some(text) = self.response_format.and_then(|format| format.text) {
+        if let Some(text) = config.response_format.and_then(|format| format.text) {
             return text.compile();
         }
-        lower_legacy_text_format(self.response_mime_type, self.response_json_schema)
+        lower_legacy_text_format(config.response_mime_type, config.response_json_schema)
     }
 }
 

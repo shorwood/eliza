@@ -9,6 +9,7 @@ publish = false
 aide = { version = "0.15.1", features = ["axum", "scalar"] }
 axum = "0.8.9"
 eliza-http = { path = "../http" }
+eliza-modality-speech = { path = "../modality-speech" }
 eliza-server-anthropic = { path = "../server-anthropic" }
 eliza-server-gemini = { path = "../server-gemini" }
 eliza-server-ollama = { path = "../server-ollama" }

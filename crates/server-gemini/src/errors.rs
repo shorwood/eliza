@@ -3,8 +3,9 @@ use axum::Json;
 use axum::response::{IntoResponse, Response};
 use eliza_http::errors::EncodingError;
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
-use eliza_modality_chat::structured_output::StructuredOutputError;
-use eliza_modality_speech::errors::SpeechError;
+use eliza_modality_chat as chat;
+use eliza_modality_embedding as embedding;
+use eliza_modality_speech as speech;
 use miette::Diagnostic;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -67,7 +68,7 @@ pub(super) enum GeminiError {
         param: &'static str,
         /// Shared compiler failure with an RFC 6901 path.
         #[source]
-        source: StructuredOutputError,
+        source: chat::structured_output::StructuredOutputError,
     },
     /// A tool group omitted its function declarations.
     #[error("only client function declarations are supported")]
@@ -152,7 +153,7 @@ pub(super) enum GeminiError {
         param: &'static str,
         /// Shared compiler failure with an RFC 6901 path.
         #[source]
-        source: StructuredOutputError,
+        source: chat::structured_output::StructuredOutputError,
     },
     /// Audio generation included text-output formatting controls.
     #[error("text response formats are not valid for AUDIO responses")]
@@ -281,7 +282,7 @@ pub(super) enum GeminiSpeechStreamError {
     #[error(transparent)]
     Speech(
         /// Provider-neutral speech failure.
-        SpeechError,
+        speech::errors::Error,
     ),
 }
 
@@ -356,6 +357,56 @@ impl GeminiRejection {
     /// Capture a typed diagnostic for Gemini rendering.
     pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
         Self(Problem::from_error(error))
+    }
+}
+
+impl From<&chat::errors::Error> for GeminiRejection {
+    fn from(error: &chat::errors::Error) -> Self {
+        let class = match error.kind() {
+            chat::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            chat::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            chat::errors::ErrorKind::Internal => ProblemClass::Internal,
+        };
+        let param = match error.field() {
+            Some(chat::errors::ErrorField::Input) => Some("contents"),
+            Some(chat::errors::ErrorField::Tools) => Some("tools"),
+            Some(chat::errors::ErrorField::ToolChoice) => Some("toolConfig"),
+            None => None,
+        };
+        Self(Problem::from_diagnostic(error, class, param))
+    }
+}
+
+impl From<&embedding::engine::Error> for GeminiRejection {
+    fn from(error: &embedding::engine::Error) -> Self {
+        let class = match error.kind() {
+            embedding::engine::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            embedding::engine::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+        };
+        let param = match error.field() {
+            embedding::engine::ErrorField::Input => Some("content.parts"),
+            embedding::engine::ErrorField::Dimensions => Some("outputDimensionality"),
+        };
+        Self(Problem::from_diagnostic(error, class, param))
+    }
+}
+
+impl From<&speech::errors::Error> for GeminiRejection {
+    fn from(error: &speech::errors::Error) -> Self {
+        let class = match error.kind() {
+            speech::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            speech::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            speech::errors::ErrorKind::Internal => ProblemClass::Internal,
+        };
+        let param = match error.field() {
+            Some(speech::errors::ErrorField::Input) => Some("contents.parts"),
+            Some(speech::errors::ErrorField::SampleRate) => {
+                Some("generationConfig.responseFormat.audio.mimeType")
+            }
+            Some(speech::errors::ErrorField::Speed) => Some("generationConfig.speechConfig"),
+            None => None,
+        };
+        Self(Problem::from_diagnostic(error, class, param))
     }
 }
 

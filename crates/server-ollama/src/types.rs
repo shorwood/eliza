@@ -1,12 +1,7 @@
 //! Ollama wire contracts shared by its route adapters.
 //! Empty metadata on documented newtype fields avoids a `schemars` 0.9 derive collision.
-use eliza_http::lower::Lower;
 use eliza_http::model::ModelId;
-use eliza_modality_chat::json::JsonObject;
-use eliza_modality_chat::structured_output::{StructuredOutput, StructuredOutputErrorKind};
-use eliza_modality_chat::turn::{
-    CompatOutput, CompatTurnResponse, FunctionCall, FunctionTool, ToolChoice as CompatToolChoice,
-};
+use eliza_modality_chat as chat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +42,7 @@ pub(super) enum MessageContent {
     Object(
         /// Structured message value.
         #[schemars(title = "", description = "")]
-        JsonObject,
+        chat::json::JsonObject,
     ),
 }
 
@@ -83,7 +78,7 @@ pub(super) struct ToolCalledFunction {
     /// Function name requested by the model.
     name: Option<String>,
     /// Arguments supplied to the function.
-    arguments: Option<JsonObject>,
+    arguments: Option<chat::json::JsonObject>,
 }
 
 impl ToolCalledFunction {
@@ -92,14 +87,14 @@ impl ToolCalledFunction {
     /// # Errors
     ///
     /// Returns [`OllamaError`] when the function name is absent or empty.
-    fn lower(self, param: &'static str) -> Result<FunctionCall, OllamaError> {
+    fn lower(self, param: &'static str) -> Result<chat::turn::FunctionCall, OllamaError> {
         let name = self
             .name
             .filter(|name| !name.is_empty())
             .ok_or(OllamaError::MissingToolCallName { param })?;
 
         // Missing arguments mean an empty object in Ollama's request shape.
-        Ok(FunctionCall {
+        Ok(chat::turn::FunctionCall {
             name,
             arguments: self.arguments.unwrap_or_default(),
         })
@@ -122,7 +117,10 @@ impl ToolCall {
     /// # Errors
     ///
     /// Returns [`OllamaError`] for a non-function call or a missing function.
-    pub(super) fn lower(self, param: &'static str) -> Result<FunctionCall, OllamaError> {
+    pub(super) fn lower(
+        self,
+        param: &'static str,
+    ) -> Result<chat::turn::FunctionCall, OllamaError> {
         // Reject extension calls before reading function-only fields.
         if matches!(self.kind, ToolFunctionKind::Unsupported) {
             return Err(OllamaError::UnsupportedToolCallKind { param });
@@ -142,7 +140,7 @@ pub(super) struct ToolFunctionDefinition {
     /// Optional human-readable function description.
     description: Option<String>,
     /// JSON Schema describing accepted parameters.
-    parameters: Option<JsonObject>,
+    parameters: Option<chat::json::JsonObject>,
 }
 
 impl ToolFunctionDefinition {
@@ -175,13 +173,12 @@ pub(super) struct ToolList(
     Vec<Tool>,
 );
 
-impl Lower for ToolList {
-    type Canonical = Vec<FunctionTool>;
-
+impl TryFrom<ToolList> for Vec<chat::turn::FunctionTool> {
     type Error = OllamaError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        self.0
+    fn try_from(tools: ToolList) -> Result<Self, Self::Error> {
+        tools
+            .0
             .into_iter()
             .map(|tool| {
                 // A function list cannot normalize provider extension tools.
@@ -194,7 +191,7 @@ impl Lower for ToolList {
                     .name
                     .filter(|name| !name.is_empty())
                     .ok_or(OllamaError::MissingFunctionName)?;
-                Ok(FunctionTool::new(name, definition_chars))
+                Ok(chat::turn::FunctionTool::new(name, definition_chars))
             })
             .collect()
     }
@@ -247,22 +244,22 @@ pub(super) enum ToolChoice {
     ),
 }
 
-impl Lower for ToolChoice {
-    type Canonical = CompatToolChoice;
-
+impl TryFrom<ToolChoice> for chat::turn::ToolChoice {
     type Error = OllamaError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        match self {
-            Self::Mode(ToolChoiceMode::Auto) => Ok(CompatToolChoice::Auto),
-            Self::Mode(ToolChoiceMode::None) => Ok(CompatToolChoice::None),
-            Self::Mode(ToolChoiceMode::Required) => Ok(CompatToolChoice::Required),
-            Self::Mode(ToolChoiceMode::Unsupported) => Err(OllamaError::UnsupportedToolChoiceMode),
-            Self::Named(choice) => choice
+    fn try_from(choice: ToolChoice) -> Result<Self, Self::Error> {
+        match choice {
+            ToolChoice::Mode(ToolChoiceMode::Auto) => Ok(Self::Auto),
+            ToolChoice::Mode(ToolChoiceMode::None) => Ok(Self::None),
+            ToolChoice::Mode(ToolChoiceMode::Required) => Ok(Self::Required),
+            ToolChoice::Mode(ToolChoiceMode::Unsupported) => {
+                Err(OllamaError::UnsupportedToolChoiceMode)
+            }
+            ToolChoice::Named(choice) => choice
                 .function
                 .name
                 .filter(|name| !name.is_empty())
-                .map(CompatToolChoice::Named)
+                .map(Self::Named)
                 .ok_or(OllamaError::MissingNamedToolChoice),
         }
     }
@@ -283,18 +280,6 @@ pub(super) enum OutputFormatName {
     Unsupported,
 }
 
-/// Compile an Ollama schema and retain its invalid-versus-unsupported class.
-///
-/// # Errors
-///
-/// Returns the provider-specific form of a shared schema compiler error.
-fn compile_output_schema(schema: JsonObject) -> Result<StructuredOutput, OllamaError> {
-    StructuredOutput::try_from(schema).map_err(|source| match source.kind() {
-        StructuredOutputErrorKind::Invalid => OllamaError::InvalidResponseSchema { source },
-        StructuredOutputErrorKind::Unsupported => OllamaError::UnsupportedResponseSchema { source },
-    })
-}
-
 /// Named or schema-driven structured-output request.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
@@ -309,22 +294,40 @@ pub(super) enum OutputFormat {
     Schema(
         /// Requested output schema.
         #[schemars(title = "", description = "")]
-        JsonObject,
+        chat::json::JsonObject,
     ),
 }
 
-impl Lower for OutputFormat {
-    type Canonical = StructuredOutput;
+/// Compile an Ollama schema and retain its invalid-versus-unsupported class.
+///
+/// # Errors
+///
+/// Returns the provider-specific form of a shared schema compiler error.
+fn compile_output_schema(
+    schema: chat::json::JsonObject,
+) -> Result<chat::structured_output::StructuredOutput, OllamaError> {
+    chat::structured_output::StructuredOutput::try_from(schema).map_err(|source| {
+        match source.kind() {
+            chat::structured_output::StructuredOutputErrorKind::Invalid => {
+                OllamaError::InvalidResponseSchema { source }
+            }
+            chat::structured_output::StructuredOutputErrorKind::Unsupported => {
+                OllamaError::UnsupportedResponseSchema { source }
+            }
+        }
+    })
+}
 
+impl TryFrom<OutputFormat> for chat::structured_output::StructuredOutput {
     type Error = OllamaError;
 
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        match self {
-            Self::Name(OutputFormatName::Json) => Ok(StructuredOutput::json_object()),
-            Self::Name(OutputFormatName::Unsupported) => {
+    fn try_from(format: OutputFormat) -> Result<Self, Self::Error> {
+        match format {
+            OutputFormat::Name(OutputFormatName::Json) => Ok(Self::json_object()),
+            OutputFormat::Name(OutputFormatName::Unsupported) => {
                 Err(OllamaError::UnsupportedResponseFormat)
             }
-            Self::Schema(schema) => compile_output_schema(schema),
+            OutputFormat::Schema(schema) => compile_output_schema(schema),
         }
     }
 }
@@ -370,7 +373,7 @@ pub(super) struct ChatOutputFunction {
     /// Requested function name.
     name: String,
     /// Arguments supplied to the function.
-    arguments: JsonObject,
+    arguments: chat::json::JsonObject,
 }
 
 /// Tool call emitted by an Ollama assistant message.
@@ -395,21 +398,21 @@ pub(super) struct ChatOutputMessage {
     pub(super) tool_calls: Vec<ChatOutputToolCall>,
 }
 
-impl From<&CompatOutput> for ChatOutputMessage {
-    fn from(output: &CompatOutput) -> Self {
+impl From<&chat::turn::Output> for ChatOutputMessage {
+    fn from(output: &chat::turn::Output) -> Self {
         match output {
-            CompatOutput::Text(text) => Self {
+            chat::turn::Output::Text(text) => Self {
                 role: "assistant",
                 content: text.clone(),
                 tool_calls: Vec::new(),
             },
-            CompatOutput::ToolCall(call) => call.into(),
+            chat::turn::Output::ToolCall(call) => call.into(),
         }
     }
 }
 
-impl From<&FunctionCall> for ChatOutputMessage {
-    fn from(call: &FunctionCall) -> Self {
+impl From<&chat::turn::FunctionCall> for ChatOutputMessage {
+    fn from(call: &chat::turn::FunctionCall) -> Self {
         let function = ChatOutputFunction {
             name: call.name.clone(),
             arguments: call.arguments.clone(),
@@ -463,7 +466,7 @@ pub(super) struct ChatResponse {
 
 impl ChatResponse {
     /// Attach the provider-owned model identity to one canonical result.
-    pub(super) fn from_compat(model: ModelId, response: &CompatTurnResponse) -> Self {
+    pub(super) fn from_compat(model: ModelId, response: &chat::turn::Response) -> Self {
         Self {
             model,
             created_at: "1966-01-01T00:00:00Z",

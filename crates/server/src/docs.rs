@@ -5,7 +5,6 @@ use aide::openapi::{Info, License, OpenApi};
 use aide::scalar::Scalar;
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-use eliza_http::context::AppState;
 
 // -----------------------------------------------------------------------------
 // OpenapiJson: Serves the generated specification.
@@ -43,20 +42,22 @@ fn document() -> OpenApi {
 }
 
 // -----------------------------------------------------------------------------
-// Docs: Mounts specification and viewer routes.
+// ApiDocs: Finalizes and mounts generated documentation.
 // -----------------------------------------------------------------------------
 
-/// Generated `OpenAPI` and Scalar documentation endpoints.
-pub(super) struct Docs;
+/// Finalization behavior for the complete documented API router.
+pub(super) trait ApiDocs {
+    /// Generate the specification and mount its JSON and Scalar viewers.
+    fn finish_docs(self) -> Router;
+}
 
-impl Docs {
-    /// Finish API generation and mount the generated document viewers.
-    pub(super) fn finish(router: ApiRouter<AppState>) -> Router<AppState> {
+impl ApiDocs for ApiRouter {
+    fn finish_docs(self) -> Router {
         let mut api = document();
         let docs = Scalar::new("/openapi.json")
             .with_title("ELIZA API")
             .axum_route();
-        let router = router
+        let router = self
             .route("/openapi.json", get(openapi_json))
             .route("/docs", docs);
         router.finish_api(&mut api).layer(Extension(api))

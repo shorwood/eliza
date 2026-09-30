@@ -1,11 +1,8 @@
 //! Provider-neutral conversation execution.
 use std::num::NonZeroUsize;
 
-use schemars::JsonSchema;
-use serde::Serialize;
-
 use crate::eliza::{doctor, input_record};
-use crate::errors::TurnError;
+use crate::errors::Error;
 use crate::json::JsonObject;
 use crate::structured_output::StructuredOutput;
 
@@ -65,7 +62,7 @@ impl FunctionCall {
     ///
     /// Returns a rejection when a message begins with `@tool` but does not
     /// contain a function name followed by a JSON object.
-    fn parse_directive(text: &str) -> Result<Option<Self>, TurnError> {
+    fn parse_directive(text: &str) -> Result<Option<Self>, Error> {
         // Ordinary user text does not opt into the deterministic tool fixture.
         if !text.starts_with("@tool") {
             return Ok(None);
@@ -73,17 +70,17 @@ impl FunctionCall {
 
         // The directive marker must be followed by call content.
         let Some(rest) = text.strip_prefix("@tool ") else {
-            return Err(TurnError::MalformedToolDirective);
+            return Err(Error::MalformedToolDirective);
         };
 
         // A call must separate its function name from JSON arguments.
         let Some((name, arguments)) = rest.split_once(char::is_whitespace) else {
-            return Err(TurnError::MissingToolArguments);
+            return Err(Error::MissingToolArguments);
         };
 
         // Empty names cannot identify an offered function.
         if name.is_empty() {
-            return Err(TurnError::MissingToolName);
+            return Err(Error::MissingToolName);
         }
         let arguments = Self::parse_arguments(arguments.trim_start())?;
         Ok(Some(Self {
@@ -97,8 +94,8 @@ impl FunctionCall {
     /// # Errors
     ///
     /// Returns a typed rejection when the argument text is not a JSON object.
-    fn parse_arguments(arguments: &str) -> Result<JsonObject, TurnError> {
-        serde_json::from_str(arguments).map_err(|source| TurnError::InvalidToolArguments {
+    fn parse_arguments(arguments: &str) -> Result<JsonObject, Error> {
+        serde_json::from_str(arguments).map_err(|source| Error::InvalidToolArguments {
             detail: source.to_string(),
         })
     }
@@ -147,13 +144,13 @@ impl ToolChoice {
     ///
     /// Returns a rejection when tool calls are disabled or the selected name
     /// is outside the client's named allowlist.
-    fn validate_call(&self, name: &str) -> Result<(), TurnError> {
+    fn validate_call(&self, name: &str) -> Result<(), Error> {
         match self {
             Self::Auto | Self::Required => Ok(()),
-            Self::None => Err(TurnError::ToolDirectiveForbidden),
+            Self::None => Err(Error::ToolDirectiveForbidden),
             Self::Named(expected) if expected == name => Ok(()),
             Self::Allowed(names) if names.iter().any(|allowed| allowed == name) => Ok(()),
-            Self::Named(_) | Self::Allowed(_) => Err(TurnError::ToolChoiceDisallows {
+            Self::Named(_) | Self::Allowed(_) => Err(Error::ToolChoiceDisallows {
                 name: name.to_owned(),
             }),
         }
@@ -161,12 +158,12 @@ impl ToolChoice {
 }
 
 // -----------------------------------------------------------------------------
-// CompatTurn: Represents normalized conversation history.
+// Turn: Represents normalized conversation history.
 // -----------------------------------------------------------------------------
 
 /// One provider message lowered into conversation history.
 #[derive(Debug, Clone)]
-pub enum CompatTurn {
+pub enum Turn {
     /// Text replayed through the ELIZA engine.
     User(
         /// User-authored text.
@@ -189,7 +186,7 @@ pub enum CompatTurn {
     ),
 }
 
-impl CompatTurn {
+impl Turn {
     /// Count the provider-visible content represented by this history turn.
     fn char_count(&self) -> usize {
         match self {
@@ -218,16 +215,16 @@ struct PositionedInput<'turn> {
     /// Index used to validate a tool result.
     index: usize,
     /// Latest user input or tool result.
-    turn: &'turn CompatTurn,
+    turn: &'turn Turn,
 }
 
 // -----------------------------------------------------------------------------
-// CompatOutput: Represents one provider-neutral successful result.
+// Output: Represents one provider-neutral successful result.
 // -----------------------------------------------------------------------------
 
 /// Provider-neutral successful output.
 #[derive(Debug, Clone, PartialEq)]
-pub enum CompatOutput {
+pub enum Output {
     /// Ordinary assistant text.
     Text(
         /// ELIZA response text.
@@ -241,16 +238,16 @@ pub enum CompatOutput {
 }
 
 // -----------------------------------------------------------------------------
-// CompatTurnRequest: Validates and executes normalized provider input.
+// Request: Validates and executes normalized provider input.
 // -----------------------------------------------------------------------------
 
 /// One provider-neutral request.
 #[derive(Debug, bon::Builder)]
-pub struct CompatTurnRequest {
+pub struct Request {
     /// System instructions retained for limits and token accounting.
     system_text: Vec<String>,
     /// Provider transcript normalized into execution order.
-    turns: Vec<CompatTurn>,
+    turns: Vec<Turn>,
     /// Client function definitions available for a fixture call.
     tools: Vec<FunctionTool>,
     /// Client policy governing function selection.
@@ -260,7 +257,7 @@ pub struct CompatTurnRequest {
     output_format: StructuredOutput,
 }
 
-impl CompatTurnRequest {
+impl Request {
     /// Approximate token usage by counting whitespace-delimited words.
     fn approximate_tokens<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
         texts.flat_map(str::split_whitespace).count()
@@ -270,10 +267,8 @@ impl CompatTurnRequest {
     fn prompt_tokens(&self) -> usize {
         let mut texts = self.system_text.clone();
         texts.extend(self.turns.iter().map(|turn| match turn {
-            CompatTurn::User(text) | CompatTurn::Assistant(text) | CompatTurn::ToolResult(text) => {
-                text.clone()
-            }
-            CompatTurn::ToolCall(call) => format!("{} {}", call.name, call.arguments.serialized()),
+            Turn::User(text) | Turn::Assistant(text) | Turn::ToolResult(text) => text.clone(),
+            Turn::ToolCall(call) => format!("{} {}", call.name, call.arguments.serialized()),
         }));
         let definition_chars = self
             .tools
@@ -290,11 +285,11 @@ impl CompatTurnRequest {
     /// # Errors
     ///
     /// Returns a rejection when the history has no ordinary user message.
-    fn replay_eliza(&self) -> Result<String, TurnError> {
+    fn replay_eliza(&self) -> Result<String, Error> {
         let mut session = doctor()?.session()?;
         let mut output = None;
         for turn in &self.turns {
-            let CompatTurn::User(text) = turn else {
+            let Turn::User(text) = turn else {
                 continue;
             };
             if text.starts_with("@tool") {
@@ -302,7 +297,7 @@ impl CompatTurnRequest {
             }
             output = Some(session.respond(&input_record(text))?);
         }
-        output.ok_or(TurnError::MissingOrdinaryUserTurn)
+        output.ok_or(Error::MissingOrdinaryUserTurn)
     }
 
     /// Count all provider-visible request content for size enforcement.
@@ -312,7 +307,7 @@ impl CompatTurnRequest {
             .iter()
             .map(|text| text.chars().count())
             .sum::<usize>();
-        let turns = self.turns.iter().map(CompatTurn::char_count).sum::<usize>();
+        let turns = self.turns.iter().map(Turn::char_count).sum::<usize>();
         let tools = self
             .tools
             .iter()
@@ -330,10 +325,10 @@ impl CompatTurnRequest {
         &self,
         max_input_chars: NonZeroUsize,
         max_history_messages: NonZeroUsize,
-    ) -> Result<(), TurnError> {
+    ) -> Result<(), Error> {
         // Reject histories that exceed the configured replay-work bound.
         if self.turns.len() > max_history_messages.get() {
-            return Err(TurnError::TooManyTurns {
+            return Err(Error::TooManyTurns {
                 actual: self.turns.len(),
                 limit: max_history_messages.get(),
             });
@@ -344,7 +339,7 @@ impl CompatTurnRequest {
 
         // Reject serialized input beyond the configured character bound.
         if input_chars > max_input_chars.get() {
-            return Err(TurnError::InputTooLarge {
+            return Err(Error::InputTooLarge {
                 actual: input_chars,
                 limit: max_input_chars.get(),
             });
@@ -357,10 +352,10 @@ impl CompatTurnRequest {
     /// # Errors
     ///
     /// Returns a rejection for an unknown or disallowed function name.
-    fn validate_tool_call(&self, call: &FunctionCall) -> Result<(), TurnError> {
+    fn validate_tool_call(&self, call: &FunctionCall) -> Result<(), Error> {
         // A directive cannot select a function absent from the request.
         if !self.tools.iter().any(|tool| tool.name == call.name) {
-            return Err(TurnError::ToolNotOffered {
+            return Err(Error::ToolNotOffered {
                 name: call.name.clone(),
             });
         }
@@ -372,8 +367,8 @@ impl CompatTurnRequest {
         let turns = &self.turns[..result_index];
         let indexed = turns.iter().enumerate();
         indexed.rev().find_map(|(index, turn)| match turn {
-            CompatTurn::ToolCall(call) => Some(PositionedToolCall { index, call }),
-            CompatTurn::User(_) | CompatTurn::Assistant(_) | CompatTurn::ToolResult(_) => None,
+            Turn::ToolCall(call) => Some(PositionedToolCall { index, call }),
+            Turn::User(_) | Turn::Assistant(_) | Turn::ToolResult(_) => None,
         })
     }
 
@@ -383,29 +378,29 @@ impl CompatTurnRequest {
     ///
     /// Returns a rejection when the history lacks a matching directive and
     /// provider-native call before the result.
-    fn validate_tool_result(&self, result_index: usize) -> Result<(), TurnError> {
+    fn validate_tool_result(&self, result_index: usize) -> Result<(), Error> {
         // Every result must follow a provider-visible function call.
         let Some(positioned_call) = self.preceding_tool_call(result_index) else {
-            return Err(TurnError::OrphanToolResult);
+            return Err(Error::OrphanToolResult);
         };
         let prior_turns = &self.turns[..positioned_call.index];
 
         // The call must itself follow a user-authored fixture directive.
         let Some(marker) = prior_turns.iter().rev().find_map(|turn| match turn {
-            CompatTurn::User(text) => Some(text),
-            CompatTurn::Assistant(_) | CompatTurn::ToolCall(_) | CompatTurn::ToolResult(_) => None,
+            Turn::User(text) => Some(text),
+            Turn::Assistant(_) | Turn::ToolCall(_) | Turn::ToolResult(_) => None,
         }) else {
-            return Err(TurnError::MissingToolDirective);
+            return Err(Error::MissingToolDirective);
         };
 
         // The marker must parse as a complete function directive.
         let Some(expected) = FunctionCall::parse_directive(marker)? else {
-            return Err(TurnError::MissingToolDirective);
+            return Err(Error::MissingToolDirective);
         };
 
         // Provider history must preserve the exact requested call.
         if expected != *positioned_call.call {
-            return Err(TurnError::MismatchedToolDirective);
+            return Err(Error::MismatchedToolDirective);
         }
         Ok(())
     }
@@ -414,10 +409,8 @@ impl CompatTurnRequest {
     fn latest_input(&self) -> Option<PositionedInput<'_>> {
         let indexed = self.turns.iter().enumerate();
         indexed.rev().find_map(|(index, turn)| match turn {
-            CompatTurn::User(_) | CompatTurn::ToolResult(_) => {
-                Some(PositionedInput { index, turn })
-            }
-            CompatTurn::Assistant(_) | CompatTurn::ToolCall(_) => None,
+            Turn::User(_) | Turn::ToolResult(_) => Some(PositionedInput { index, turn }),
+            Turn::Assistant(_) | Turn::ToolCall(_) => None,
         })
     }
 
@@ -425,16 +418,16 @@ impl CompatTurnRequest {
     ///
     /// # Errors
     ///
-    /// Returns [`TurnError`] when a tool directive is malformed or conflicts
+    /// Returns [`Error`] when a tool directive is malformed or conflicts
     /// with the available tools or selected tool policy.
-    fn complete_user(&self, text: &str) -> Result<CompatOutput, TurnError> {
+    fn complete_user(&self, text: &str) -> Result<Output, Error> {
         match FunctionCall::parse_directive(text)? {
             Some(call) => {
                 self.validate_tool_call(&call)?;
-                Ok(CompatOutput::ToolCall(call))
+                Ok(Output::ToolCall(call))
             }
-            None if self.tool_choice.should_require_call() => Err(TurnError::RequiredToolDirective),
-            None => Ok(CompatOutput::Text(self.replay_eliza()?)),
+            None if self.tool_choice.should_require_call() => Err(Error::RequiredToolDirective),
+            None => Ok(Output::Text(self.replay_eliza()?)),
         }
     }
 
@@ -448,78 +441,75 @@ impl CompatTurnRequest {
         self,
         max_input_chars: NonZeroUsize,
         max_history_messages: NonZeroUsize,
-    ) -> Result<CompatTurnResponse, TurnError> {
+    ) -> Result<Response, Error> {
         self.validate_limits(max_input_chars, max_history_messages)?;
 
         // Select the newest turn that can produce a response.
         let Some(latest) = self.latest_input() else {
-            return Err(TurnError::MissingUserText);
+            return Err(Error::MissingUserText);
         };
 
         // Execute either a verified tool result or a new user request.
         let mut output = match latest.turn {
-            CompatTurn::ToolResult(_) => {
+            Turn::ToolResult(_) => {
                 self.validate_tool_result(latest.index)?;
-                CompatOutput::Text(TOOL_COMPLETE_TEXT.to_owned())
+                Output::Text(TOOL_COMPLETE_TEXT.to_owned())
             }
-            CompatTurn::User(text) => self.complete_user(text)?,
-            CompatTurn::Assistant(_) | CompatTurn::ToolCall(_) => unreachable!(),
+            Turn::User(text) => self.complete_user(text)?,
+            Turn::Assistant(_) | Turn::ToolCall(_) => unreachable!(),
         };
 
         // Structured formatting applies only after final text is available.
-        if let CompatOutput::Text(text) = &mut output {
+        if let Output::Text(text) = &mut output {
             *text = self.output_format.render(std::mem::take(text));
         }
 
         let prompt = self.prompt_tokens();
         let completion = match &output {
-            CompatOutput::Text(text) => Self::approximate_tokens(std::iter::once(text.as_str())),
-            CompatOutput::ToolCall(call) => {
+            Output::Text(text) => Self::approximate_tokens(std::iter::once(text.as_str())),
+            Output::ToolCall(call) => {
                 let arguments = call.arguments.serialized();
                 Self::approximate_tokens([call.name.as_str(), arguments.as_str()].into_iter())
             }
         };
 
         // Combine prompt and completion accounting into wire-neutral usage.
-        let usage = TokenUsage {
+        let usage = Usage {
             prompt,
             completion,
             total: prompt + completion,
         };
 
-        Ok(CompatTurnResponse { output, usage })
+        Ok(Response { output, usage })
     }
 }
 
 // -----------------------------------------------------------------------------
-// TokenUsage: Reports provider-neutral token accounting.
+// Usage: Reports provider-neutral token accounting.
 // -----------------------------------------------------------------------------
 
 /// Approximate provider token counts.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, JsonSchema)]
-pub struct TokenUsage {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct Usage {
     /// Approximate input token count.
-    #[serde(rename = "prompt_tokens")]
     pub prompt: usize,
     /// Approximate output token count.
-    #[serde(rename = "completion_tokens")]
     pub completion: usize,
     /// Prompt plus completion tokens.
-    #[serde(rename = "total_tokens")]
     pub total: usize,
 }
 
 // -----------------------------------------------------------------------------
-// CompatTurnResponse: Carries one completed neutral turn.
+// Response: Carries one completed neutral turn.
 // -----------------------------------------------------------------------------
 
 /// One completed provider-neutral turn.
 #[derive(Debug)]
-pub struct CompatTurnResponse {
+pub struct Response {
     /// Text or function call selected by the shared executor.
-    pub output: CompatOutput,
+    pub output: Output,
     /// Approximate token usage.
-    pub usage: TokenUsage,
+    pub usage: Usage,
 }
 
 // -----------------------------------------------------------------------------
@@ -552,12 +542,12 @@ mod tests {
 
     /// Build one request while keeping each typestate transition visible.
     fn it_should_build_request(
-        turns: Vec<CompatTurn>,
+        turns: Vec<Turn>,
         tools: Vec<FunctionTool>,
         tool_choice: ToolChoice,
         output_format: StructuredOutput,
-    ) -> CompatTurnRequest {
-        let request = CompatTurnRequest::builder().system_text(Vec::new());
+    ) -> Request {
+        let request = Request::builder().system_text(Vec::new());
         let request = request.turns(turns).tools(tools);
         let request = request
             .tool_choice(tool_choice)
@@ -566,10 +556,7 @@ mod tests {
     }
 
     /// Build one fixture request with the shared model and tool definition.
-    fn it_should_fixture_request(
-        turns: Vec<CompatTurn>,
-        tool_choice: ToolChoice,
-    ) -> CompatTurnRequest {
+    fn it_should_fixture_request(turns: Vec<Turn>, tool_choice: ToolChoice) -> Request {
         it_should_build_request(
             turns,
             vec![it_should_fixture_tool()],
@@ -591,9 +578,7 @@ mod tests {
     #[test]
     fn it_should_call_an_offered_tool_for_an_explicit_directive() {
         let response = it_should_fixture_request(
-            vec![CompatTurn::User(
-                "@tool echo {\"value\":\"hello\"}".to_owned(),
-            )],
+            vec![Turn::User("@tool echo {\"value\":\"hello\"}".to_owned())],
             ToolChoice::Auto,
         )
         .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
@@ -601,7 +586,7 @@ mod tests {
 
         assert_eq!(
             response.output,
-            CompatOutput::ToolCall(FunctionCall {
+            Output::ToolCall(FunctionCall {
                 name: "echo".to_owned(),
                 arguments: serde_json::from_value(serde_json::json!({"value":"hello"})).unwrap(),
             })
@@ -611,47 +596,45 @@ mod tests {
     #[test]
     fn it_should_call_eliza_for_an_ordinary_turn() {
         let response =
-            it_should_fixture_request(vec![CompatTurn::User("Hello".to_owned())], ToolChoice::Auto)
+            it_should_fixture_request(vec![Turn::User("Hello".to_owned())], ToolChoice::Auto)
                 .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
                 .unwrap();
 
-        assert!(matches!(response.output, CompatOutput::Text(_)));
+        assert!(matches!(response.output, Output::Text(_)));
     }
 
     #[test]
     fn it_should_call_out_a_malformed_directive() {
         let error = it_should_fixture_request(
-            vec![CompatTurn::User("@tool echo []".to_owned())],
+            vec![Turn::User("@tool echo []".to_owned())],
             ToolChoice::Auto,
         )
         .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap_err();
 
-        assert!(matches!(error, TurnError::InvalidToolArguments { .. }));
+        assert!(matches!(error, Error::InvalidToolArguments { .. }));
     }
 
     #[test]
     fn it_should_call_for_a_required_choice() {
-        let error = it_should_fixture_request(
-            vec![CompatTurn::User("Hello".to_owned())],
-            ToolChoice::Required,
-        )
-        .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
-        .unwrap_err();
+        let error =
+            it_should_fixture_request(vec![Turn::User("Hello".to_owned())], ToolChoice::Required)
+                .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+                .unwrap_err();
 
-        assert!(matches!(error, TurnError::RequiredToolDirective));
+        assert!(matches!(error, Error::RequiredToolDirective));
     }
 
     #[test]
     fn it_should_call_only_the_named_choice() {
         let error = it_should_fixture_request(
-            vec![CompatTurn::User("@tool echo {}".to_owned())],
+            vec![Turn::User("@tool echo {}".to_owned())],
             ToolChoice::Named("other".to_owned()),
         )
         .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap_err();
 
-        assert!(matches!(error, TurnError::ToolChoiceDisallows { .. }));
+        assert!(matches!(error, Error::ToolChoiceDisallows { .. }));
     }
 
     #[test]
@@ -662,19 +645,16 @@ mod tests {
         };
         let response = it_should_fixture_request(
             vec![
-                CompatTurn::User("@tool echo {\"value\":\"hello\"}".to_owned()),
-                CompatTurn::ToolCall(call),
-                CompatTurn::ToolResult("hello".to_owned()),
+                Turn::User("@tool echo {\"value\":\"hello\"}".to_owned()),
+                Turn::ToolCall(call),
+                Turn::ToolResult("hello".to_owned()),
             ],
             ToolChoice::Auto,
         )
         .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
         .unwrap();
 
-        assert_eq!(
-            response.output,
-            CompatOutput::Text(TOOL_COMPLETE_TEXT.to_owned())
-        );
+        assert_eq!(response.output, Output::Text(TOOL_COMPLETE_TEXT.to_owned()));
     }
 
     #[test]
@@ -685,10 +665,10 @@ mod tests {
         };
         let response = it_should_fixture_request(
             vec![
-                CompatTurn::User("@tool echo {\"value\":\"hello\"}".to_owned()),
-                CompatTurn::ToolCall(call),
-                CompatTurn::ToolResult("hello".to_owned()),
-                CompatTurn::User("I am sad".to_owned()),
+                Turn::User("@tool echo {\"value\":\"hello\"}".to_owned()),
+                Turn::ToolCall(call),
+                Turn::ToolResult("hello".to_owned()),
+                Turn::User("I am sad".to_owned()),
             ],
             ToolChoice::Auto,
         )
@@ -697,7 +677,7 @@ mod tests {
 
         assert_eq!(
             response.output,
-            CompatOutput::Text("I AM SORRY TO HEAR YOU ARE SAD".to_owned())
+            Output::Text("I AM SORRY TO HEAR YOU ARE SAD".to_owned())
         );
     }
 
@@ -709,7 +689,7 @@ mod tests {
             "required":["ok"]
         }));
         let request = it_should_build_request(
-            vec![CompatTurn::User("I am sad".to_owned())],
+            vec![Turn::User("I am sad".to_owned())],
             Vec::new(),
             ToolChoice::Auto,
             format,
@@ -718,10 +698,7 @@ mod tests {
             .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
             .unwrap();
 
-        assert_eq!(
-            response.output,
-            CompatOutput::Text(r#"{"ok":false}"#.to_owned())
-        );
+        assert_eq!(response.output, Output::Text(r#"{"ok":false}"#.to_owned()));
         assert_eq!(response.usage.completion, 1);
     }
 
@@ -729,7 +706,7 @@ mod tests {
     fn it_should_not_format_tool_calls() {
         // Build a formatted request whose output is a function call.
         let request = it_should_build_request(
-            vec![CompatTurn::User("@tool echo {}".to_owned())],
+            vec![Turn::User("@tool echo {}".to_owned())],
             vec![it_should_fixture_tool()],
             ToolChoice::Auto,
             StructuredOutput::json_object(),
@@ -740,7 +717,7 @@ mod tests {
             .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
             .unwrap();
 
-        assert!(matches!(response.output, CompatOutput::ToolCall(_)));
+        assert!(matches!(response.output, Output::ToolCall(_)));
     }
 
     #[test]
@@ -751,9 +728,9 @@ mod tests {
         };
         let request = it_should_build_request(
             vec![
-                CompatTurn::User("@tool echo {}".to_owned()),
-                CompatTurn::ToolCall(call),
-                CompatTurn::ToolResult("done".to_owned()),
+                Turn::User("@tool echo {}".to_owned()),
+                Turn::ToolCall(call),
+                Turn::ToolResult("done".to_owned()),
             ],
             vec![it_should_fixture_tool()],
             ToolChoice::Auto,
@@ -765,7 +742,7 @@ mod tests {
 
         assert_eq!(
             response.output,
-            CompatOutput::Text(r#"{"response":"TOOL CALL COMPLETE"}"#.to_owned())
+            Output::Text(r#"{"response":"TOOL CALL COMPLETE"}"#.to_owned())
         );
     }
 
@@ -785,7 +762,7 @@ mod tests {
 
         // Submit the request with a limit one character below its full input.
         let request = it_should_build_request(
-            vec![CompatTurn::User(user_input.to_owned())],
+            vec![Turn::User(user_input.to_owned())],
             Vec::new(),
             ToolChoice::Auto,
             format,
@@ -798,7 +775,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            TurnError::InputTooLarge { actual, limit }
+            Error::InputTooLarge { actual, limit }
                 if actual == expected_actual && limit == expected_limit
         ));
     }

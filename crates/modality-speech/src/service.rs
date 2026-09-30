@@ -5,16 +5,16 @@ use std::sync::Arc;
 
 use tokio::sync::{Semaphore, mpsc};
 
-use super::core::{AudioFormat, RenderedAudio, SpeechRequest};
-use super::errors::SpeechError;
+use super::core::{Audio, AudioFormat, Request};
+use super::errors::Error;
 use super::{audio, synth};
 
 // -----------------------------------------------------------------------------
-// Speech: Bounds and executes audio work off the async runtime.
+// Stream: Delivers an incremental encoded speech response.
 // -----------------------------------------------------------------------------
 
 /// One message produced by an incremental speech job.
-pub enum SpeechStreamItem {
+pub enum StreamItem {
     /// Encoded audio ready for immediate delivery.
     Chunk(
         /// Provider-ready bytes.
@@ -28,80 +28,84 @@ pub enum SpeechStreamItem {
     /// Failure after streaming had already started.
     Failed(
         /// Engine or encoder failure terminating the stream.
-        SpeechError,
+        Error,
     ),
 }
 
 /// Incremental encoded audio and its fixed response metadata.
-pub struct SpeechStream {
+pub struct Stream {
     /// Provider-safe MIME type.
     pub media_type: String,
     /// Samples per second in the uncompressed signal.
     pub sample_rate: u32,
     /// Bounded receiver that applies backpressure to synthesis.
-    pub items: mpsc::Receiver<SpeechStreamItem>,
+    pub items: mpsc::Receiver<StreamItem>,
 }
 
+// -----------------------------------------------------------------------------
+// Service: Bounds and executes audio work off the async runtime.
+// -----------------------------------------------------------------------------
+
 /// Maximum rendered duration accepted by the compatibility fixture.
-const SPEECH_MAX_SECONDS: usize = 120;
+const SERVICE_MAX_SECONDS: usize = 120;
 
 /// Maximum number of speech jobs allowed to retain audio buffers concurrently.
-const SPEECH_WORKERS: usize = 2;
+const SERVICE_WORKERS: usize = 2;
 
 /// Encoded chunks retained between a synthesis worker and its HTTP consumer.
-const SPEECH_STREAM_BUFFER: usize = 4;
+const SERVICE_STREAM_BUFFER: usize = 4;
 
 /// CPU-bounded facade around deterministic synthesis and encoding.
 #[derive(Debug, Clone)]
-pub struct SpeechService {
+pub struct Service {
     /// Fixed permits keep memory use independent of host CPU count.
     permits: Arc<Semaphore>,
 }
 
-impl Default for SpeechService {
+impl Default for Service {
     fn default() -> Self {
         Self {
-            permits: Arc::new(Semaphore::new(SPEECH_WORKERS)),
+            permits: Arc::new(Semaphore::new(SERVICE_WORKERS)),
         }
     }
 }
 
-impl SpeechService {
+impl Service {
     /// Run one streaming encoder until completion or client disconnect.
     ///
     /// # Errors
     ///
     /// Returns a synthesis, encoding, or disconnected-consumer failure.
     fn stream_audio(
-        request: &SpeechRequest,
+        request: &Request,
         mut encoder: audio::StreamingEncoder,
-        sender: &mpsc::Sender<SpeechStreamItem>,
-    ) -> Result<(), SpeechError> {
+        sender: &mpsc::Sender<StreamItem>,
+    ) -> Result<(), Error> {
         let send = |bytes: Vec<u8>| {
             // Some codecs need more PCM before they can emit a frame.
             if bytes.is_empty() {
                 return Ok(());
             }
             sender
-                .blocking_send(SpeechStreamItem::Chunk(bytes))
-                .map_err(|_| SpeechError::Unavailable)
+                .blocking_send(StreamItem::Chunk(bytes))
+                .map_err(|_| Error::Unavailable)
         };
         if let Some(header) = encoder.begin() {
             send(header)?;
         }
-        let maximum_samples = request.sample_rate as usize * SPEECH_MAX_SECONDS;
+        let maximum_samples = request.sample_rate as usize * SERVICE_MAX_SECONDS;
         let sample_count = synth::synthesize_streaming(request, maximum_samples, |samples| {
             send(encoder.push(samples)?)
         })?;
         send(encoder.finish()?)?;
         sender
-            .blocking_send(SpeechStreamItem::Done { sample_count })
-            .map_err(|_| SpeechError::Unavailable)
+            .blocking_send(StreamItem::Done { sample_count })
+            .map_err(|_| Error::Unavailable)
     }
 
     /// Report a worker failure unless the HTTP consumer already disconnected.
-    async fn report_failure(sender: &mpsc::Sender<SpeechStreamItem>, error: SpeechError) {
-        match sender.send(SpeechStreamItem::Failed(error)).await {
+    async fn report_failure(sender: &mpsc::Sender<StreamItem>, error: Error) {
+        match sender.send(StreamItem::Failed(error)).await {
             Ok(()) | Err(_) => {}
         }
     }
@@ -113,23 +117,23 @@ impl SpeechService {
     /// Returns a typed request, worker, synthesis, or encoding failure.
     pub async fn render(
         &self,
-        request: SpeechRequest,
+        request: Request,
         format: AudioFormat,
         max_chars: NonZeroUsize,
-    ) -> Result<RenderedAudio, SpeechError> {
+    ) -> Result<Audio, Error> {
         request.validate(max_chars)?;
         let permit = Arc::clone(&self.permits)
             .acquire_owned()
             .await
-            .map_err(|_| SpeechError::Unavailable)?;
+            .map_err(|_| Error::Unavailable)?;
 
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let sample_rate = request.sample_rate;
-            let samples = synth::synthesize(&request, sample_rate as usize * SPEECH_MAX_SECONDS)?;
+            let samples = synth::synthesize(&request, sample_rate as usize * SERVICE_MAX_SECONDS)?;
             let sample_count = samples.len();
             let encoded = audio::EncodedAudio::encode(&samples, sample_rate, format)?;
-            Ok(RenderedAudio {
+            Ok(Audio {
                 bytes: encoded.bytes,
                 media_type: encoded.media_type,
                 sample_count,
@@ -137,7 +141,7 @@ impl SpeechService {
             })
         })
         .await
-        .map_err(|source| SpeechError::Worker {
+        .map_err(|source| Error::Worker {
             detail: source.to_string(),
         })?
     }
@@ -149,19 +153,19 @@ impl SpeechService {
     /// Returns request validation or worker-pool failures before response delivery begins.
     pub async fn stream(
         &self,
-        request: SpeechRequest,
+        request: Request,
         format: AudioFormat,
         max_chars: NonZeroUsize,
-    ) -> Result<SpeechStream, SpeechError> {
+    ) -> Result<Stream, Error> {
         request.validate(max_chars)?;
         let permit = Arc::clone(&self.permits)
             .acquire_owned()
             .await
-            .map_err(|_| SpeechError::Unavailable)?;
+            .map_err(|_| Error::Unavailable)?;
         let sample_rate = request.sample_rate;
         let encoder = audio::StreamingEncoder::new(format, sample_rate);
         let media_type = encoder.media_type();
-        let (sender, items) = mpsc::channel(SPEECH_STREAM_BUFFER);
+        let (sender, items) = mpsc::channel(SERVICE_STREAM_BUFFER);
         let panic_sender = sender.clone();
         let worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -172,14 +176,14 @@ impl SpeechService {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => Self::report_failure(&panic_sender, error).await,
                 Err(source) => {
-                    let error = SpeechError::Worker {
+                    let error = Error::Worker {
                         detail: source.to_string(),
                     };
                     Self::report_failure(&panic_sender, error).await;
                 }
             }
         });
-        Ok(SpeechStream {
+        Ok(Stream {
             media_type,
             sample_rate,
             items,
@@ -194,7 +198,7 @@ impl SpeechService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::SpeechSegment;
+    use crate::core::Segment;
 
     /// Streaming PCM arrives in multiple chunks and terminates with an exact count.
     ///
@@ -203,11 +207,11 @@ mod tests {
     /// Panics if the worker limit, stream metadata, chunking, or accounting regresses.
     #[tokio::test]
     async fn streams_pcm_with_bounded_worker_count() {
-        let service = SpeechService::default();
+        let service = Service::default();
         let available_permits = service.permits.available_permits();
-        assert_eq!(available_permits, SPEECH_WORKERS);
-        let request = SpeechRequest {
-            segments: vec![SpeechSegment {
+        assert_eq!(available_permits, SERVICE_WORKERS);
+        let request = Request {
+            segments: vec![Segment {
                 text: "Hello from a genuinely progressive speech stream.".to_owned(),
                 voice: "Kore".to_owned(),
                 style: String::new(),
@@ -227,12 +231,12 @@ mod tests {
         let mut byte_count = 0;
         let sample_count = loop {
             match stream.items.recv().await {
-                Some(SpeechStreamItem::Chunk(bytes)) => {
+                Some(StreamItem::Chunk(bytes)) => {
                     chunks += 1;
                     byte_count += bytes.len();
                 }
-                Some(SpeechStreamItem::Done { sample_count }) => break sample_count,
-                Some(SpeechStreamItem::Failed(error)) => panic!("speech stream failed: {error}"),
+                Some(StreamItem::Done { sample_count }) => break sample_count,
+                Some(StreamItem::Failed(error)) => panic!("speech stream failed: {error}"),
                 None => panic!("speech stream closed without a terminal item"),
             }
         };
@@ -240,6 +244,6 @@ mod tests {
         assert_eq!(byte_count, sample_count * size_of::<i16>());
         assert!(stream.items.recv().await.is_none());
         let available_permits = service.permits.available_permits();
-        assert_eq!(available_permits, SPEECH_WORKERS);
+        assert_eq!(available_permits, SERVICE_WORKERS);
     }
 }

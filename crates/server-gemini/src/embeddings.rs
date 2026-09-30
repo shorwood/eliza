@@ -7,18 +7,15 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::extraction::ExtractionError;
-use eliza_http::lower::Lower;
-use eliza_modality_embedding::engine::{
-    self as embedding, EMBEDDING_DEFAULT_DIMENSIONS, EmbeddingInput, EmbeddingRequest,
-    EmbeddingResponse,
-};
+use eliza_modality_embedding as embedding;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::errors::{GeminiError, GeminiFailureResponse, GeminiRejection};
 use super::types::{Content, ContentPart};
+use crate::context::AppState;
 
 // -----------------------------------------------------------------------------
 // Gemini: Adapts native unary and batch embedding contracts.
@@ -95,9 +92,6 @@ struct GeminiBatchEmbedContentsResponse {
     usage_metadata: GeminiEmbeddingUsage,
 }
 
-/// Resource name required inside native Gemini embedding bodies.
-const GEMINI_MODEL_RESOURCE: &str = "models/fnv-embed";
-
 /// One Gemini `embedContent` request, also reused inside batches.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -116,39 +110,40 @@ struct GeminiEmbedContentRequest {
     embed_content_config: Option<GeminiEmbeddingConfig>,
 }
 
-impl Lower for GeminiEmbedContentRequest {
-    type Canonical = EmbeddingInput;
-
-    type Error = GeminiError;
-
-    fn lower(self) -> Result<Self::Canonical, Self::Error> {
-        // The body resource must agree with the fixed route model.
-        if self.model.as_deref() != Some(GEMINI_MODEL_RESOURCE) {
-            return Err(GeminiError::EmbeddingModelRequired);
-        }
-
-        let dimensions = gemini_validation_dimensions(
-            self.output_dimensionality,
-            self.embed_content_config.as_ref(),
-        )?;
-
-        if let Some(config) = self.embed_content_config {
-            config.validate()?;
-        }
-        drop((self.title, self.task_type));
-
-        Ok(EmbeddingInput {
-            text: gemini_validation_content_text(self.content)?,
-            dimensions,
-        })
-    }
-}
-
 /// Native Gemini synchronous batch request.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GeminiBatchEmbedContentsRequest {
     /// Ordered embedding requests.
     requests: Option<Vec<GeminiEmbedContentRequest>>,
+}
+
+/// Resource name required inside native Gemini embedding bodies.
+const GEMINI_MODEL_RESOURCE: &str = "models/fnv-embed";
+
+impl TryFrom<GeminiEmbedContentRequest> for embedding::engine::Input {
+    type Error = GeminiError;
+
+    fn try_from(request: GeminiEmbedContentRequest) -> Result<Self, Self::Error> {
+        // The body resource must agree with the fixed route model.
+        if request.model.as_deref() != Some(GEMINI_MODEL_RESOURCE) {
+            return Err(GeminiError::EmbeddingModelRequired);
+        }
+
+        let dimensions = gemini_validation_dimensions(
+            request.output_dimensionality,
+            request.embed_content_config.as_ref(),
+        )?;
+
+        if let Some(config) = request.embed_content_config {
+            config.validate()?;
+        }
+        drop((request.title, request.task_type));
+
+        Ok(embedding::engine::Input {
+            text: gemini_validation_content_text(request.content)?,
+            dimensions,
+        })
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -171,7 +166,7 @@ fn gemini_validation_dimensions(
             Err(GeminiError::ConflictingEmbeddingDimensions)
         }
         (Some(dimensions), _) | (_, Some(dimensions)) => Ok(dimensions),
-        (None, None) => Ok(EMBEDDING_DEFAULT_DIMENSIONS),
+        (None, None) => Ok(embedding::engine::MODEL_DEFAULT_DIMENSIONS),
     }
 }
 
@@ -224,7 +219,7 @@ fn gemini_validation_content_text(content: Option<Content>) -> Result<String, Ge
 }
 
 // -----------------------------------------------------------------------------
-// GeminiEmbeddings: Executes requests and mounts the fixed native routes.
+// GeminiEmbeddings: Executes requests against the shared engine.
 // -----------------------------------------------------------------------------
 
 /// Execute provider-neutral embeddings for native Gemini.
@@ -234,12 +229,9 @@ fn gemini_validation_content_text(content: Option<Content>) -> Result<String, Ge
 /// Returns any validation error raised by the shared embedding engine.
 fn gemini_embeddings_complete(
     state: &AppState,
-    inputs: Vec<EmbeddingInput>,
-) -> Result<EmbeddingResponse, embedding::EmbeddingError> {
-    EmbeddingRequest { inputs }.complete(
-        embedding::EMBEDDING_MODEL_ID,
-        state.config.limits.max_input_chars(),
-    )
+    inputs: Vec<embedding::engine::Input>,
+) -> Result<embedding::engine::Response, embedding::engine::Error> {
+    embedding::engine::Request { inputs }.complete(state.config.limits.max_input_chars())
 }
 
 /// Handle one native Gemini embedding request.
@@ -267,7 +259,7 @@ async fn gemini_embeddings_embed(
     };
 
     // Lower native fields into one shared input.
-    let input = match payload.lower() {
+    let input: embedding::engine::Input = match payload.try_into() {
         Ok(input) => input,
         // Native validation failures retain Gemini's error schema.
         Err(error) => {
@@ -280,7 +272,7 @@ async fn gemini_embeddings_embed(
         Ok(response) => response,
         // Shared validation failures use the same native schema.
         Err(error) => {
-            return GeminiRejection::from_error(&error).into_response();
+            return GeminiRejection::from(&error).into_response();
         }
     };
 
@@ -324,7 +316,7 @@ async fn gemini_embeddings_batch_embed(
     };
 
     // Lower each native item without disturbing its batch position.
-    let lowered = requests.into_iter().map(Lower::lower);
+    let lowered = requests.into_iter().map(TryInto::try_into);
 
     // Collect the batch only when every native item is valid.
     let inputs = match lowered.collect::<Result<Vec<_>, _>>() {
@@ -340,7 +332,7 @@ async fn gemini_embeddings_batch_embed(
         Ok(response) => response,
         // Shared validation failures use Gemini's native schema.
         Err(error) => {
-            return GeminiRejection::from_error(&error).into_response();
+            return GeminiRejection::from(&error).into_response();
         }
     };
 
@@ -361,31 +353,30 @@ async fn gemini_embeddings_batch_embed(
     .into_response()
 }
 
-/// Native Gemini embedding routes.
-pub(super) struct GeminiEmbeddings;
+// -----------------------------------------------------------------------------
+// Router: Publishes native Gemini embedding endpoints.
+// -----------------------------------------------------------------------------
 
-impl GeminiEmbeddings {
-    /// Mount fixed-model unary and batch embedding routes.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        let router = router.api_route(
-            "/v1beta/models/fnv-embed:embedContent",
-            post_with(gemini_embeddings_embed, |operation| {
-                operation
-                    .summary("Gemini embedding")
-                    .tag("gemini")
-                    .response::<200, Json<GeminiEmbedContentResponse>>()
-                    .default_response::<Json<GeminiFailureResponse>>()
-            }),
-        );
-        router.api_route(
-            "/v1beta/models/fnv-embed:batchEmbedContents",
-            post_with(gemini_embeddings_batch_embed, |operation| {
-                operation
-                    .summary("Gemini batch embeddings")
-                    .tag("gemini")
-                    .response::<200, Json<GeminiBatchEmbedContentsResponse>>()
-                    .default_response::<Json<GeminiFailureResponse>>()
-            }),
-        )
-    }
+/// Build fixed-model unary and batch embedding routes.
+pub(super) fn router() -> ApiRouter<AppState> {
+    let router = ApiRouter::new().api_route(
+        "/v1beta/models/fnv-embed:embedContent",
+        post_with(gemini_embeddings_embed, |operation| {
+            operation
+                .summary("Gemini embedding")
+                .tag("gemini")
+                .response::<200, Json<GeminiEmbedContentResponse>>()
+                .default_response::<Json<GeminiFailureResponse>>()
+        }),
+    );
+    router.api_route(
+        "/v1beta/models/fnv-embed:batchEmbedContents",
+        post_with(gemini_embeddings_batch_embed, |operation| {
+            operation
+                .summary("Gemini batch embeddings")
+                .tag("gemini")
+                .response::<200, Json<GeminiBatchEmbedContentsResponse>>()
+                .default_response::<Json<GeminiFailureResponse>>()
+        }),
+    )
 }

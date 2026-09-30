@@ -1,10 +1,8 @@
 //! Shared route configuration and provider authentication.
 
 use std::str::FromStr;
-use std::sync::Arc;
 
 use axum::http::HeaderMap;
-use eliza_modality_speech::service::SpeechService;
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -122,28 +120,6 @@ pub struct RouteConfig {
     pub stream_delay_ms: u64,
     /// Shared request-size and replay bounds.
     pub limits: RequestLimits,
-}
-
-// -----------------------------------------------------------------------------
-// AppState: Shares immutable route configuration.
-// -----------------------------------------------------------------------------
-
-/// Shared immutable state cloned into every provider route.
-#[derive(Debug, Clone)]
-pub struct AppState {
-    /// Validated behavior shared by handlers.
-    pub config: Arc<RouteConfig>,
-    /// Bounded executor for CPU-heavy speech synthesis and encoding.
-    pub speech: SpeechService,
-}
-
-impl From<RouteConfig> for AppState {
-    fn from(config: RouteConfig) -> Self {
-        Self {
-            config: Arc::new(config),
-            speech: SpeechService::default(),
-        }
-    }
 }
 
 // -----------------------------------------------------------------------------

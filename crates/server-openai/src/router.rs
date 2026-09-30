@@ -1,19 +1,46 @@
-//! `OpenAI` route-tree assembly.
+//! `OpenAI` route-tree assembly and state.
+
+use std::sync::Arc;
 
 use aide::axum::ApiRouter;
-use eliza_http::context::AppState;
+use eliza_http::context::RouteConfig;
+use eliza_modality_speech::service::Service as SpeechService;
 
-use super::chat_completions::OpenAiChatCompletions;
-use super::embeddings::OpenAiEmbeddings;
-use super::models::OpenAiModels;
-use super::responses::OpenAiResponses;
-use super::speech::OpenAiSpeech;
+use super::context::{AppState, SpeechState};
+use super::{chat_completions, compatibility, embeddings, models, responses, speech};
 
-/// Build the complete `OpenAI`-compatible route tree for mounting.
-pub fn mount() -> ApiRouter<AppState> {
-    let router = OpenAiModels::mount(ApiRouter::new());
-    let router = OpenAiChatCompletions::mount(router);
-    let router = OpenAiEmbeddings::mount(router);
-    let router = OpenAiResponses::mount(router);
-    OpenAiSpeech::mount(router)
+/// Configured OpenAI-compatible route tree.
+pub struct Routes {
+    /// Validated route behavior shared by provider endpoints.
+    config: Arc<RouteConfig>,
+    /// Bounded speech executor used by the audio endpoint.
+    speech: SpeechService,
+}
+
+impl Routes {
+    /// Capture the dependencies required by OpenAI-compatible endpoints.
+    #[must_use]
+    pub fn new(config: Arc<RouteConfig>, speech: SpeechService) -> Self {
+        Self { config, speech }
+    }
+
+    /// Build reusable OpenAI-compatible alias routes.
+    pub fn compatibility(config: Arc<RouteConfig>) -> ApiRouter {
+        compatibility::router().with_state(AppState { config })
+    }
+
+    /// Build the native OpenAI-compatible router.
+    pub fn into_router(self) -> ApiRouter {
+        let router = models::router().merge(chat_completions::router());
+        let router = router.merge(embeddings::router());
+        let router = router.merge(responses::router());
+        let router = router.with_state(AppState {
+            config: Arc::clone(&self.config),
+        });
+        let speech = speech::router().with_state(SpeechState {
+            config: self.config,
+            service: self.speech,
+        });
+        router.merge(speech)
+    }
 }

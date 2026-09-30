@@ -14,18 +14,17 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
-use eliza_http::context::{AppState, ProviderAuth, provider_authenticate};
+use eliza_http::context::{ProviderAuth, provider_authenticate};
 use eliza_http::errors::EncodingError;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
-use eliza_modality_speech::core::{self as speech, AudioFormat, SpeechRequest, SpeechSegment};
-use eliza_modality_speech::errors::SpeechError;
-use eliza_modality_speech::service::{SpeechStream, SpeechStreamItem};
+use eliza_modality_speech as speech;
 use futures_util::{Stream, StreamExt, stream};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection, OpenAiSpeechStreamError};
+use crate::context::SpeechState;
 
 // -----------------------------------------------------------------------------
 // Speech: Parses requests and streams encoded responses.
@@ -105,7 +104,7 @@ enum SpeechResponseFormat {
     Unsupported,
 }
 
-impl TryFrom<SpeechResponseFormat> for AudioFormat {
+impl TryFrom<SpeechResponseFormat> for speech::core::AudioFormat {
     type Error = OpenAiError;
 
     fn try_from(value: SpeechResponseFormat) -> Result<Self, Self::Error> {
@@ -232,16 +231,16 @@ const OPENAI_INPUT_LIMIT: usize = 4_096;
 
 /// Deliver encoded bytes as they arrive from the speech worker.
 fn speech_response_audio_chunks(
-    audio: SpeechStream,
+    audio: speech::service::Stream,
     delay_ms: u64,
 ) -> impl Stream<Item = Result<Bytes, OpenAiSpeechStreamError>> {
     stream::unfold(audio, |mut audio| async move {
         match audio.items.recv().await? {
-            SpeechStreamItem::Chunk(bytes) => {
+            speech::service::StreamItem::Chunk(bytes) => {
                 Some((Ok::<_, OpenAiSpeechStreamError>(Bytes::from(bytes)), audio))
             }
-            SpeechStreamItem::Done { .. } => None,
-            SpeechStreamItem::Failed(error) => {
+            speech::service::StreamItem::Done { .. } => None,
+            speech::service::StreamItem::Failed(error) => {
                 Some((Err(OpenAiSpeechStreamError::Speech(error)), audio))
             }
         }
@@ -256,7 +255,7 @@ fn speech_response_audio_chunks(
 
 /// Deliver base64 audio deltas followed by exact usage metadata.
 fn speech_response_sse_events(
-    audio: SpeechStream,
+    audio: speech::service::Stream,
     input_tokens: usize,
     delay_ms: u64,
 ) -> impl Stream<Item = Result<Event, OpenAiSpeechStreamError>> {
@@ -264,13 +263,13 @@ fn speech_response_sse_events(
     stream::unfold(audio, move |mut audio| async move {
         let item = audio.items.recv().await?;
         let event = match item {
-            SpeechStreamItem::Chunk(bytes) => SpeechStreamEvent::Delta {
+            speech::service::StreamItem::Chunk(bytes) => SpeechStreamEvent::Delta {
                 audio: base64::engine::general_purpose::STANDARD.encode(bytes),
             }
             .into_event()
             .map_err(OpenAiSpeechStreamError::Encoding),
-            SpeechStreamItem::Done { sample_count } => {
-                let output = speech::output_tokens(sample_count, sample_rate);
+            speech::service::StreamItem::Done { sample_count } => {
+                let output = speech::core::output_tokens(sample_count, sample_rate);
                 SpeechStreamEvent::Done {
                     usage: SpeechUsage {
                         input: input_tokens,
@@ -281,7 +280,9 @@ fn speech_response_sse_events(
                 .into_event()
                 .map_err(OpenAiSpeechStreamError::Encoding)
             }
-            SpeechStreamItem::Failed(error) => Err(OpenAiSpeechStreamError::Speech(error)),
+            speech::service::StreamItem::Failed(error) => {
+                Err(OpenAiSpeechStreamError::Speech(error))
+            }
         };
         Some((event, audio))
     })
@@ -298,14 +299,14 @@ enum SpeechResponse {
     /// Raw encoded audio chunks.
     Audio {
         /// Incremental engine output.
-        audio: SpeechStream,
+        audio: speech::service::Stream,
         /// Optional transport pacing.
         delay_ms: u64,
     },
     /// Base64 audio events and a terminal usage event.
     Sse {
         /// Incremental engine output.
-        audio: SpeechStream,
+        audio: speech::service::Stream,
         /// Approximate input text tokens.
         input_tokens: usize,
         /// Optional transport pacing.
@@ -343,9 +344,9 @@ impl IntoResponse for SpeechResponse {
 /// Provider-neutral request plus its selected response policy.
 struct LoweredSpeech {
     /// Provider-neutral synthesis input.
-    request: SpeechRequest,
+    request: speech::core::Request,
     /// Requested audio encoding.
-    format: AudioFormat,
+    format: speech::core::AudioFormat,
     /// Validated response delivery mode.
     delivery: SpeechDelivery,
 }
@@ -354,15 +355,15 @@ impl TryFrom<SpeechPayload> for LoweredSpeech {
     type Error = OpenAiError;
 
     fn try_from(payload: SpeechPayload) -> Result<Self, Self::Error> {
-        (payload.model.as_str() == speech::MODEL_ID)
+        (payload.model.as_str() == speech::core::MODEL_ID)
             .then_some(())
             .ok_or(OpenAiError::SpeechModelRequired)?;
         let format = payload.response_format.unwrap_or_default().try_into()?;
         let delivery = payload.stream_format.unwrap_or_default().try_into()?;
         let voice = payload.voice.into_name()?;
         Ok(Self {
-            request: SpeechRequest {
-                segments: vec![SpeechSegment {
+            request: speech::core::Request {
+                segments: vec![speech::core::Segment {
                     text: payload.input,
                     voice,
                     style: payload.instructions.unwrap_or_default(),
@@ -383,13 +384,13 @@ impl LoweredSpeech {
     /// # Errors
     ///
     /// Returns failures detected before HTTP response delivery begins.
-    async fn respond(self, state: &AppState) -> Result<SpeechResponse, SpeechError> {
+    async fn respond(self, state: &SpeechState) -> Result<SpeechResponse, speech::errors::Error> {
         let input_tokens = self.request.input_tokens();
         let configured_limit = state.config.limits.max_input_chars();
         let input_limit = configured_limit.get().min(OPENAI_INPUT_LIMIT);
         let input_limit = NonZeroUsize::new(input_limit).unwrap_or(configured_limit);
         let audio = state
-            .speech
+            .service
             .stream(self.request, self.format, input_limit)
             .await?;
         let delay_ms = state.config.stream_delay_ms;
@@ -405,56 +406,55 @@ impl LoweredSpeech {
 }
 
 // -----------------------------------------------------------------------------
-// OpenAiSpeech: Mounts and serves the OpenAI speech endpoint.
+// Handle: Executes one speech request.
 // -----------------------------------------------------------------------------
 
-/// `OpenAI` speech endpoint.
-pub(super) struct OpenAiSpeech;
-
-impl OpenAiSpeech {
-    /// Mount the speech route and its generated API response shapes.
-    pub(super) fn mount(router: ApiRouter<AppState>) -> ApiRouter<AppState> {
-        router.api_route(
-            "/v1/audio/speech",
-            post_with(Self::handle, |operation| {
-                operation
-                    .summary("OpenAI text to speech")
-                    .tag("openai")
-                    .response::<200, Bytes>()
-                    .default_response::<Json<OpenAiFailureResponse>>()
-            }),
-        )
+/// Authenticate, lower, render, and deliver one speech request.
+async fn handle(
+    State(state): State<SpeechState>,
+    headers: HeaderMap,
+    payload: Result<Json<SpeechPayload>, JsonRejection>,
+) -> Response {
+    // Authentication failures take precedence over request-body details.
+    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+        return OpenAiRejection::from_error(&error).into_response();
     }
 
-    /// Authenticate, lower, render, and deliver one speech request.
-    async fn handle(
-        State(state): State<AppState>,
-        headers: HeaderMap,
-        payload: Result<Json<SpeechPayload>, JsonRejection>,
-    ) -> Response {
-        // Authentication failures take precedence over request-body details.
-        if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
-            return OpenAiRejection::from_error(&error).into_response();
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        // Malformed JSON follows the shared extraction error contract.
+        Err(error) => {
+            return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
         }
+    };
 
-        let Json(payload) = match payload {
-            Ok(payload) => payload,
-            // Malformed JSON follows the shared extraction error contract.
-            Err(error) => {
-                return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
-            }
-        };
+    let lowered = match LoweredSpeech::try_from(payload) {
+        Ok(lowered) => lowered,
+        // Provider validation errors finish before synthesis work begins.
+        Err(error) => return OpenAiRejection::from_error(&error).into_response(),
+    };
 
-        let lowered = match LoweredSpeech::try_from(payload) {
-            Ok(lowered) => lowered,
-            // Provider validation errors finish before synthesis work begins.
-            Err(error) => return OpenAiRejection::from_error(&error).into_response(),
-        };
-
-        match lowered.respond(&state).await {
-            Ok(response) => response.into_response(),
-            // Engine failures map through the OpenAI rejection contract.
-            Err(error) => OpenAiRejection::from_error(&error).into_response(),
-        }
+    match lowered.respond(&state).await {
+        Ok(response) => response.into_response(),
+        // Engine failures map through the OpenAI rejection contract.
+        Err(error) => OpenAiRejection::from(&error).into_response(),
     }
+}
+
+// -----------------------------------------------------------------------------
+// Router: Publishes the speech endpoint.
+// -----------------------------------------------------------------------------
+
+/// Build the speech route and its generated API response shapes.
+pub(super) fn router() -> ApiRouter<SpeechState> {
+    ApiRouter::new().api_route(
+        "/v1/audio/speech",
+        post_with(handle, |operation| {
+            operation
+                .summary("OpenAI text to speech")
+                .tag("openai")
+                .response::<200, Bytes>()
+                .default_response::<Json<OpenAiFailureResponse>>()
+        }),
+    )
 }
