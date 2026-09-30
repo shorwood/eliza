@@ -522,7 +522,7 @@ impl ElizaHost {
     /// Returns an error for invalid handles, pattern bounds, or malformed rules.
     fn apply(&mut self, keyword: &str, words_handle: Word) -> Result<i64, NativeError> {
         let words = self.words(words_handle)?.to_vec();
-        let tags = self.script.tags.clone();
+        let tags = &self.script.tags;
 
         // Unknown keywords have no transformation.
         let Some(rule) = self.script.rules.get(keyword) else {

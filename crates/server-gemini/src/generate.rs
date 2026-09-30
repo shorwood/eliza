@@ -9,7 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks};
@@ -411,11 +411,10 @@ async fn generate(
     payload: Result<Json<GenerateContentRequest>, JsonRejection>,
 ) -> Response {
     // Authentication failures use Gemini's native error envelope.
-    if let Err(error) = provider_authenticate(
-        &headers,
-        &state.config,
-        ProviderAuth::ApiKey("x-goog-api-key"),
-    ) {
+    if let Err(error) = state
+        .config
+        .authenticate(&headers, ProviderAuth::ApiKey("x-goog-api-key"))
+    {
         return GeminiRejection::from_error(&error).into_response();
     }
 
