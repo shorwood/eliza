@@ -122,6 +122,39 @@ pub struct RouteConfig {
     pub limits: RequestLimits,
 }
 
+impl RouteConfig {
+    /// Check provider authentication headers against this route configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a provider rejection when configured credentials do not match.
+    pub fn authenticate(
+        &self,
+        headers: &HeaderMap,
+        provider: ProviderAuth,
+    ) -> Result<(), AuthenticationError> {
+        // Endpoints are public when authentication is disabled.
+        if self.auth == AuthMode::None {
+            return Ok(());
+        }
+
+        // Bearer mode without a configured token is always unauthorized.
+        let Some(expected) = self.bearer_token.as_ref() else {
+            return Err(AuthenticationError::Failed);
+        };
+
+        // Compare only successfully decoded provider credentials.
+        let supplied = provider
+            .credential(headers)
+            .map_err(|_| AuthenticationError::Failed)?;
+        if supplied == Some(expected.as_str()) {
+            Ok(())
+        } else {
+            Err(AuthenticationError::Failed)
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // ProviderAuth: Selects and validates provider-specific credentials.
 // -----------------------------------------------------------------------------
@@ -138,66 +171,126 @@ pub enum ProviderAuth {
     ),
 }
 
-/// Read an optional textual header without hiding malformed values.
-///
-/// # Errors
-///
-/// Returns an error when a present header is not valid text.
-fn provider_authenticate_header_text(
-    headers: &HeaderMap,
-    name: impl axum::http::header::AsHeaderName,
-) -> Result<Option<&str>, axum::http::header::ToStrError> {
-    // Absence is valid and distinct from a malformed present value.
-    let Some(value) = headers.get(name) else {
-        return Ok(None);
-    };
-    value.to_str().map(Some)
-}
+impl ProviderAuth {
+    /// Read an optional textual header without hiding malformed values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a present header is not valid text.
+    fn header_text(
+        headers: &HeaderMap,
+        name: impl axum::http::header::AsHeaderName,
+    ) -> Result<Option<&str>, axum::http::header::ToStrError> {
+        // Absence is valid and distinct from a malformed present value.
+        let Some(value) = headers.get(name) else {
+            return Ok(None);
+        };
+        value.to_str().map(Some)
+    }
 
-/// Read the credential represented by one provider's authentication scheme.
-///
-/// # Errors
-///
-/// Returns an error when the selected header is present but not valid text.
-fn provider_credential(
-    headers: &HeaderMap,
-    provider: ProviderAuth,
-) -> Result<Option<&str>, axum::http::header::ToStrError> {
-    match provider {
-        ProviderAuth::Bearer => {
-            provider_authenticate_header_text(headers, axum::http::header::AUTHORIZATION)
-                .map(|value| value.and_then(|text| text.strip_prefix("Bearer ")))
+    /// Read the credential represented by this authentication scheme.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected header is present but not valid text.
+    fn credential(
+        self,
+        headers: &HeaderMap,
+    ) -> Result<Option<&str>, axum::http::header::ToStrError> {
+        match self {
+            Self::Bearer => Self::header_text(headers, axum::http::header::AUTHORIZATION)
+                .map(|value| value.and_then(|text| text.strip_prefix("Bearer "))),
+            Self::ApiKey(name) => Self::header_text(headers, name),
         }
-        ProviderAuth::ApiKey(name) => provider_authenticate_header_text(headers, name),
     }
 }
 
-/// Check provider authentication headers against route configuration.
-///
-/// # Errors
-///
-/// Returns a provider rejection when configured credentials do not match.
-pub fn provider_authenticate(
-    headers: &HeaderMap,
-    config: &RouteConfig,
-    provider: ProviderAuth,
-) -> Result<(), AuthenticationError> {
-    // Endpoints are public when authentication is disabled.
-    if config.auth == AuthMode::None {
-        return Ok(());
+// -----------------------------------------------------------------------------
+// Tests: Verify public and authenticated route policies.
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+#[expect(
+    clippy::missing_panics_doc,
+    reason = "test assertions are the intended panic contract"
+)]
+#[expect(
+    rlib::missing_section_dividers,
+    reason = "compact authentication scenarios share one responsibility"
+)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    use super::*;
+
+    /// Build the smallest route configuration needed by authentication tests.
+    fn route_config(auth: AuthMode, bearer_token: Option<&str>) -> RouteConfig {
+        RouteConfig {
+            model: ModelId::default(),
+            auth,
+            bearer_token: bearer_token.map(|token| BearerToken(token.to_owned())),
+            stream_delay_ms: 0,
+            limits: RequestLimits::builder()
+                .max_input_chars(NonZeroUsize::MIN)
+                .max_history_messages(NonZeroUsize::MIN)
+                .build(),
+        }
     }
 
-    // Bearer mode without a configured token is always unauthorized.
-    let Some(expected) = config.bearer_token.as_ref() else {
-        return Err(AuthenticationError::Failed);
-    };
+    /// Authentication-disabled routes ignore provider headers.
+    #[test]
+    fn disabled_authentication_accepts_missing_credentials() {
+        let config = route_config(AuthMode::None, None);
 
-    // Compare only successfully decoded provider credentials.
-    let supplied =
-        provider_credential(headers, provider).map_err(|_| AuthenticationError::Failed)?;
-    if supplied == Some(expected.as_str()) {
-        Ok(())
-    } else {
-        Err(AuthenticationError::Failed)
+        assert!(
+            config
+                .authenticate(&HeaderMap::new(), ProviderAuth::Bearer)
+                .is_ok()
+        );
+    }
+
+    /// Both supported provider schemes compare their decoded credential.
+    #[test]
+    fn authentication_accepts_matching_credentials() {
+        let config = route_config(AuthMode::Bearer, Some("secret"));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret"),
+        );
+        headers.insert("x-api-key", HeaderValue::from_static("secret"));
+
+        assert!(config.authenticate(&headers, ProviderAuth::Bearer).is_ok());
+        assert!(
+            config
+                .authenticate(&headers, ProviderAuth::ApiKey("x-api-key"))
+                .is_ok()
+        );
+    }
+
+    /// Missing, malformed, and mismatched credentials are rejected alike.
+    #[test]
+    fn authentication_rejects_invalid_credentials() {
+        let config = route_config(AuthMode::Bearer, Some("secret"));
+        let mut headers = HeaderMap::new();
+
+        // A required credential cannot be omitted.
+        assert!(config.authenticate(&headers, ProviderAuth::Bearer).is_err());
+
+        // A decoded credential must match exactly.
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong"),
+        );
+        assert!(config.authenticate(&headers, ProviderAuth::Bearer).is_err());
+
+        // A present but non-text header remains an authentication failure.
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_bytes(b"Bearer \xff").unwrap(),
+        );
+        assert!(config.authenticate(&headers, ProviderAuth::Bearer).is_err());
     }
 }

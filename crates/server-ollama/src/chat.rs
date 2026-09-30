@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{NdjsonResponse, stream_chunks};
@@ -177,7 +177,7 @@ async fn chat(
     payload: Result<Json<ChatRequest>, JsonRejection>,
 ) -> Response {
     // Authentication failures use Ollama's native error envelope.
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OllamaRejection::from_error(&error).into_response();
     }
     let Json(payload) = match payload {

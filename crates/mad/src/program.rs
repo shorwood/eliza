@@ -92,9 +92,11 @@ impl Program {
     /// Returns the first unknown-label error.
     fn validate_targets(&self) -> Result<(), LinkError> {
         for instruction in &self.instructions {
-            for target in instruction.targets() {
-                self.validate_target(instruction, target)?;
-            }
+            // Instructions without transfers have no target to validate.
+            let Some(target) = instruction.target() else {
+                continue;
+            };
+            self.validate_target(instruction, target)?;
         }
         Ok(())
     }
@@ -247,11 +249,11 @@ impl Instruction {
         }
     }
 
-    /// Transfer targets nested in this instruction.
-    fn targets(&self) -> Vec<&JumpTarget> {
+    /// Transfer target nested in this instruction, when present.
+    fn target(&self) -> Option<&JumpTarget> {
         match self {
-            Self::Through { target, .. } | Self::Transfer { target, .. } => vec![target],
-            Self::Whenever { action, .. } => action.targets(),
+            Self::Through { target, .. } | Self::Transfer { target, .. } => Some(target),
+            Self::Whenever { action, .. } => action.target(),
             Self::Assign { .. }
             | Self::Comment { .. }
             | Self::Dimension { .. }
@@ -260,7 +262,7 @@ impl Instruction {
             | Self::Nop { .. }
             | Self::Print { .. }
             | Self::Read { .. }
-            | Self::Return { .. } => Vec::new(),
+            | Self::Return { .. } => None,
         }
     }
 }

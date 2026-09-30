@@ -31,6 +31,20 @@ pub enum AudioFormat {
     ALaw,
 }
 
+impl AudioFormat {
+    /// Return the provider-facing MIME type at the requested sample rate.
+    pub(super) fn media_type(self, sample_rate: u32) -> String {
+        match self {
+            Self::Mp3 => "audio/mpeg".to_owned(),
+            Self::Wav => "audio/wav".to_owned(),
+            Self::Pcm => format!("audio/pcm;rate={sample_rate}"),
+            Self::L16 => format!("audio/L16;rate={sample_rate}"),
+            Self::MuLaw => format!("audio/mulaw;rate={sample_rate}"),
+            Self::ALaw => format!("audio/alaw;rate={sample_rate}"),
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Segment: Defines one independently voiced request part.
 // -----------------------------------------------------------------------------

@@ -122,9 +122,9 @@ impl BcdWord {
     ///
     /// Returns an error for a character outside the 7094 repertoire.
     pub fn last_chunk(text: &str) -> Result<Self, BcdError> {
-        let characters = text.chars().collect::<Vec<_>>();
-        let start = characters.len().saturating_sub(1) / BCD_WORD_CHARACTERS * BCD_WORD_CHARACTERS;
-        let chunk = characters[start..].iter().collect::<String>();
+        let character_count = text.chars().count();
+        let start = character_count.saturating_sub(1) / BCD_WORD_CHARACTERS * BCD_WORD_CHARACTERS;
+        let chunk = text.chars().skip(start).collect::<String>();
         Self::encode(&chunk)
     }
 

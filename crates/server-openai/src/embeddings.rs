@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_modality_embedding as embedding;
@@ -175,7 +175,7 @@ pub(crate) async fn handle(
     payload: Result<Json<OpenAiEmbeddingRequest>, JsonRejection>,
 ) -> Response {
     // Authentication failures use OpenAI's native error envelope.
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OpenAiRejection::from_error(&error).into_response();
     }
 

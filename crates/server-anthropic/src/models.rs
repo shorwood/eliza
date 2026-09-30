@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 
 use super::errors::{AnthropicFailureResponse, AnthropicRejection};
 use super::types::{ModelDescriptor, ModelListResponse};
@@ -19,8 +19,9 @@ use crate::context::AppState;
 /// List the configured model in Anthropic's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Authentication failures use the provider's own error envelope.
-    if let Err(error) =
-        provider_authenticate(&headers, &state.config, ProviderAuth::ApiKey("x-api-key"))
+    if let Err(error) = state
+        .config
+        .authenticate(&headers, ProviderAuth::ApiKey("x-api-key"))
     {
         return AnthropicRejection::from_error(&error).into_response();
     }
