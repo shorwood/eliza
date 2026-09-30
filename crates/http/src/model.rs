@@ -14,7 +14,7 @@ use super::errors::ModelError;
 /// is the bundled DOCTOR model id used by the server.
 ///
 /// ```
-/// use eliza::types::ModelId;
+/// use eliza_http::model::ModelId;
 ///
 /// let model: ModelId = "eliza-1966".parse().unwrap();
 /// assert_eq!(model.as_str(), "eliza-1966");
@@ -23,7 +23,7 @@ use super::errors::ModelError;
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, JsonSchema)]
 #[serde(transparent)]
-pub(crate) struct ModelId(
+pub struct ModelId(
     /// Validated provider-visible identifier.
     String,
 );
@@ -31,7 +31,7 @@ pub(crate) struct ModelId(
 impl ModelId {
     /// Return the provider-visible model id.
     #[must_use]
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
