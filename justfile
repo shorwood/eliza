@@ -1,6 +1,6 @@
 fmt:
     cargo-fmt fmt --all
-    hurlfmt --in-place tests/http/public/*.hurl tests/http/auth/*.hurl
+    hurlfmt --in-place crates/cli/tests/http/public/*.hurl crates/cli/tests/http/auth/*.hurl
     nixfmt flake.nix nix/*.nix
 
 chat:
@@ -23,9 +23,12 @@ lint:
 test:
     cargo test --workspace --all-targets --locked
 
+test-http:
+    cargo test -p eliza-cli --test http --locked
+
 ok:
     cargo-fmt fmt --all -- --check
-    hurlfmt --check tests/http/public/*.hurl tests/http/auth/*.hurl
+    hurlfmt --check crates/cli/tests/http/public/*.hurl crates/cli/tests/http/auth/*.hurl
     nixfmt --check flake.nix nix/*.nix
     deadnix --fail flake.nix nix
     statix check .

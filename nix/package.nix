@@ -4,6 +4,7 @@
   hurl,
   lib,
   makeRustPlatform,
+  projectRoot ? ../.,
   rustToolchain,
   supportedSystems,
 }:
@@ -15,22 +16,31 @@ let
 in
 rustPlatform.buildRustPackage {
   pname = "eliza";
-  version = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).package.version;
+  version =
+    (builtins.fromTOML (builtins.readFile (projectRoot + "/crates/cli/Cargo.toml"))).package.version;
 
   # A narrow source set keeps unrelated files from invalidating the build.
-  # Tests and fixtures are included because `buildRustPackage` runs them.
+  # Workspace crates and tests are included because `buildRustPackage` runs them.
   src = lib.fileset.toSource {
-    root = ../.;
+    root = projectRoot;
     fileset = lib.fileset.unions [
-      ../Cargo.toml
-      ../Cargo.lock
-      ../examples/rust-rig
-      ../fixtures
-      ../src
-      ../tests
+      (projectRoot + "/Cargo.toml")
+      (projectRoot + "/Cargo.lock")
+      (projectRoot + "/crates")
+      (projectRoot + "/examples/rust-rig")
     ];
   };
-  cargoLock.lockFile = ../Cargo.lock;
+  cargoLock.lockFile = projectRoot + "/Cargo.lock";
+  cargoBuildFlags = [
+    "--package"
+    "eliza-cli"
+    "--bin"
+    "eliza"
+  ];
+  cargoTestFlags = [
+    "--package"
+    "eliza-cli"
+  ];
 
   # Rust otherwise embeds its sysroot path in the executable, retaining the
   # entire toolchain at runtime. Remapping it keeps the package closure small;
@@ -44,7 +54,7 @@ rustPlatform.buildRustPackage {
   # Keep the license notice in binary distributions. The container image uses
   # this package verbatim, so it receives the same notice automatically.
   postInstall = ''
-    install -Dm444 ${../LICENSE} "$out/share/licenses/eliza/LICENSE"
+    install -Dm444 ${projectRoot + "/LICENSE"} "$out/share/licenses/eliza/LICENSE"
   '';
 
   meta = {
