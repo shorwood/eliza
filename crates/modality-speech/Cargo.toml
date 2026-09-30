@@ -1,0 +1,17 @@
+[package]
+name = "eliza-modality-speech"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+audio-codec-algorithms = "=0.8.1"
+flite-rs = { version = "=0.2.0", default-features = false }
+miette = { version = "7.6.0", features = ["derive"] }
+rusty_mp3 = "0.8.0"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "sync"] }
+
+[lints]
+workspace = true

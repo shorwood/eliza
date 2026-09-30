@@ -2,26 +2,13 @@
 use std::num::NonZeroUsize;
 
 use super::errors::SpeechError;
-use crate::types::model::ModelId;
 
 // -----------------------------------------------------------------------------
 // ModelId: Publishes the built-in speech model identifier.
 // -----------------------------------------------------------------------------
 
 /// Provider-visible identifier for the bundled retro voice.
-pub(crate) const MODEL_ID: &str = "flite";
-
-/// Construct the fixed speech model ID without exposing unchecked strings.
-///
-/// # Panics
-///
-/// Panics only if the source constant is changed to an empty identifier.
-#[must_use]
-pub(crate) fn model_id() -> ModelId {
-    MODEL_ID
-        .parse()
-        .expect("the built-in speech model id is nonempty")
-}
+pub const MODEL_ID: &str = "flite";
 
 // -----------------------------------------------------------------------------
 // AudioFormat: Names the supported output encodings.
@@ -29,7 +16,7 @@ pub(crate) fn model_id() -> ModelId {
 
 /// Audio container or sample encoding requested by a provider adapter.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum AudioFormat {
+pub enum AudioFormat {
     /// MPEG Layer III.
     Mp3,
     /// RIFF/WAVE containing signed 16-bit PCM.
@@ -50,32 +37,32 @@ pub(crate) enum AudioFormat {
 
 /// One independently voiced piece of a speech request.
 #[derive(Debug, Clone)]
-pub(crate) struct SpeechSegment {
+pub struct SpeechSegment {
     /// Text pronounced by Flite's English speech pipeline.
-    pub(crate) text: String,
+    pub text: String,
     /// Arbitrary provider voice identifier.
-    pub(crate) voice: String,
+    pub voice: String,
     /// Optional provider prose interpreted as a small set of style keywords.
-    pub(crate) style: String,
+    pub style: String,
     /// Explicit speaking-rate multiplier.
-    pub(crate) speed: f32,
+    pub speed: f32,
     /// Silence appended after this segment.
-    pub(crate) pause_after_ms: u16,
+    pub pause_after_ms: u16,
 }
 
 /// Provider-neutral speech request.
 #[derive(Debug, Clone)]
-pub(crate) struct SpeechRequest {
+pub struct SpeechRequest {
     /// Ordered text and voice segments.
-    pub(crate) segments: Vec<SpeechSegment>,
+    pub segments: Vec<SpeechSegment>,
     /// Output samples per second.
-    pub(crate) sample_rate: u32,
+    pub sample_rate: u32,
 }
 
 impl SpeechRequest {
     /// Approximate input tokens using the convention used by chat adapters.
     #[must_use]
-    pub(crate) fn input_tokens(&self) -> usize {
+    pub fn input_tokens(&self) -> usize {
         self.segments
             .iter()
             .map(|segment| segment.text.split_whitespace().count())
@@ -148,7 +135,7 @@ impl SpeechRequest {
 
 /// Approximate audio tokens as 20 ms frames.
 #[must_use]
-pub(crate) fn output_tokens(sample_count: usize, sample_rate: u32) -> usize {
+pub fn output_tokens(sample_count: usize, sample_rate: u32) -> usize {
     sample_count.div_ceil((sample_rate as usize).div_ceil(50))
 }
 
@@ -158,11 +145,11 @@ pub(crate) fn output_tokens(sample_count: usize, sample_rate: u32) -> usize {
 
 /// Encoded audio returned to a provider adapter.
 #[derive(Debug)]
-pub(crate) struct RenderedAudio {
+pub struct RenderedAudio {
     /// Complete encoded payload.
-    pub(crate) bytes: Vec<u8>,
+    pub bytes: Vec<u8>,
     /// Provider-safe MIME type including the sample rate where relevant.
-    pub(crate) media_type: String,
+    pub media_type: String,
     /// Number of uncompressed mono samples represented by the payload.
     pub(super) sample_count: usize,
     /// Samples per second in the uncompressed signal.
@@ -172,7 +159,7 @@ pub(crate) struct RenderedAudio {
 impl RenderedAudio {
     /// Approximate audio tokens as 20 ms frames.
     #[must_use]
-    pub(crate) fn output_tokens(&self) -> usize {
+    pub fn output_tokens(&self) -> usize {
         output_tokens(self.sample_count, self.sample_rate)
     }
 }

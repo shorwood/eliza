@@ -1,4 +1,4 @@
-//! Thin adapter around Flite's embedded retro diphone voice.
+//! Adapter around Flite's embedded retro diphone voice.
 
 use flite_rs::{Engine, Flow};
 

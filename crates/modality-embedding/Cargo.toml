@@ -1,0 +1,13 @@
+[package]
+name = "eliza-modality-embedding"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+miette = { version = "7.6.0", features = ["derive"] }
+thiserror = "2.0.18"
+
+[lints]
+workspace = true
