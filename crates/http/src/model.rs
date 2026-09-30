@@ -10,15 +10,13 @@ use super::errors::ModelError;
 
 /// Provider-visible model identifier accepted from CLI and JSON bodies.
 ///
-/// Empty or whitespace-only model ids are rejected at the boundary. The default
-/// is the bundled DOCTOR model id used by the server.
+/// Empty or whitespace-only model ids are rejected at the boundary.
 ///
 /// ```
 /// use eliza_http::model::ModelId;
 ///
 /// let model: ModelId = "eliza-1966".parse().unwrap();
 /// assert_eq!(model.as_str(), "eliza-1966");
-/// assert_eq!(ModelId::default().as_str(), "eliza-1966");
 /// assert!("   ".parse::<ModelId>().is_err());
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, JsonSchema)]
@@ -33,12 +31,6 @@ impl ModelId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-impl Default for ModelId {
-    fn default() -> Self {
-        Self("eliza-1966".to_owned())
     }
 }
 

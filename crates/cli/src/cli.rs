@@ -1,21 +1,33 @@
 //! CLI contract and conversion into server configuration.
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 
-use clap::{Parser, Subcommand};
-use eliza_http::context::{ApiKey, RouteConfig};
+use clap::{Args, Parser, Subcommand};
+use eliza_http::context::{ApiKey, RequestLimits, RouteConfig};
 use eliza_http::model::ModelId;
-use eliza_http::response::RequestLimits;
 use eliza_server::serve::{CorsMode, LogFormat, ServerConfig};
 
-use crate::errors::{ConfigError, RequestLimit};
+// -----------------------------------------------------------------------------
+// ParsePositiveUsize: Parses request bounds without Rust type terminology.
+// -----------------------------------------------------------------------------
+
+/// Parse one positive CLI integer into its domain type.
+///
+/// # Errors
+///
+/// Returns a readable parser error when the value is zero or not an integer.
+fn parse_positive_usize(value: &str) -> Result<NonZeroUsize, String> {
+    let value = value.parse::<usize>().map_err(|error| error.to_string())?;
+    NonZeroUsize::new(value).ok_or_else(|| "must be greater than zero".to_owned())
+}
 
 // -----------------------------------------------------------------------------
 // ServeArgs: Captures CLI-visible server options.
 // -----------------------------------------------------------------------------
 
 /// CLI-visible server options.
-#[derive(Debug, Clone, Parser)]
+#[derive(Debug, Clone, Args)]
 #[command(after_long_help = "\
 Built-in modality models:
   Chat:       eliza-1966 (configurable with --chat-model)
@@ -48,9 +60,10 @@ pub(super) struct ServeArgs {
         long,
         value_name = "MESSAGES",
         default_value = "200",
-        help_heading = "Chat"
+        help_heading = "Chat",
+        value_parser = parse_positive_usize
     )]
-    max_history_messages: usize,
+    max_history_messages: NonZeroUsize,
 
     /// Require this key through each provider's native authentication scheme.
     #[arg(long, value_name = "KEY", help_heading = "Security")]
@@ -65,9 +78,10 @@ pub(super) struct ServeArgs {
         long,
         value_name = "CHARS",
         default_value = "8000",
-        help_heading = "Requests"
+        help_heading = "Requests",
+        value_parser = parse_positive_usize
     )]
-    max_input_chars: usize,
+    max_input_chars: NonZeroUsize,
 
     /// Delay between chunks for every streaming response.
     #[arg(
@@ -84,31 +98,13 @@ pub(super) struct ServeArgs {
 }
 
 impl ServeArgs {
-    /// Validate cross-option invariants and lower into runtime configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic when a request bound is zero.
-    #[expect(
-        rlib::long_method_chains,
-        reason = "the Bon builder is one declarative route configuration"
-    )]
-    pub(super) fn into_server_config(self) -> Result<ServerConfig, ConfigError> {
-        let max_input_chars = RequestLimit::InputChars.validate(self.max_input_chars)?;
-        let max_history_messages =
-            RequestLimit::HistoryMessages.validate(self.max_history_messages)?;
-        let limits = RequestLimits::builder()
-            .max_input_chars(max_input_chars)
-            .max_history_messages(max_history_messages)
-            .build();
+    /// Lower parsed arguments into runtime configuration.
+    #[must_use]
+    pub(super) fn into_server_config(self) -> ServerConfig {
+        let limits = RequestLimits::new(self.max_input_chars, self.max_history_messages);
 
-        // Lower route-wide behavior after validating numeric invariants.
-        let routes = RouteConfig::builder()
-            .chat_model(self.chat_model)
-            .api_key(self.api_key)
-            .stream_delay_ms(self.stream_delay_ms)
-            .limits(limits)
-            .build();
+        // Assemble route-wide behavior from parsed domain values.
+        let routes = RouteConfig::new(self.chat_model, self.api_key, self.stream_delay_ms, limits);
 
         // Translate simple CLI switches into explicit server modes.
         let cors = if self.should_allow_any_origin {
@@ -122,7 +118,7 @@ impl ServeArgs {
             LogFormat::Text
         };
 
-        Ok(ServerConfig::new(self.bind, routes, cors, log))
+        ServerConfig::new(self.bind, routes, cors, log)
     }
 }
 

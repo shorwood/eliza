@@ -1,4 +1,3 @@
-Error: eliza::serve::zero_limit
+error: invalid value '0' for '--max-history-messages <MESSAGES>': must be greater than zero
 
-  × --max-history-messages must be greater than zero
-
+For more information, try '--help'.

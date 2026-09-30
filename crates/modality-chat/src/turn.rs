@@ -258,7 +258,7 @@ pub enum Output {
 // -----------------------------------------------------------------------------
 
 /// One provider-neutral request.
-#[derive(Debug, bon::Builder)]
+#[derive(Debug)]
 pub struct Request {
     /// System instructions retained for limits and token accounting.
     system_text: Vec<String>,
@@ -269,11 +269,28 @@ pub struct Request {
     /// Client policy governing function selection.
     tool_choice: ToolChoice,
     /// Compiled text-response formatting applied after generation.
-    #[builder(default)]
     output_format: StructuredOutput,
 }
 
 impl Request {
+    /// Construct a request from provider-normalized conversation parts.
+    #[must_use]
+    pub fn new(
+        system_text: Vec<String>,
+        turns: Vec<Turn>,
+        tools: Vec<FunctionTool>,
+        tool_choice: ToolChoice,
+        output_format: StructuredOutput,
+    ) -> Self {
+        Self {
+            system_text,
+            turns,
+            tools,
+            tool_choice,
+            output_format,
+        }
+    }
+
     /// Approximate tokens across instructions, history, and tool definitions.
     fn prompt_tokens(&self) -> usize {
         let system_tokens = self
@@ -548,19 +565,14 @@ mod tests {
         )
     }
 
-    /// Build one request while keeping each typestate transition visible.
+    /// Build one request from fixture-owned neutral parts.
     fn it_should_build_request(
         turns: Vec<Turn>,
         tools: Vec<FunctionTool>,
         tool_choice: ToolChoice,
         output_format: StructuredOutput,
     ) -> Request {
-        let request = Request::builder().system_text(Vec::new());
-        let request = request.turns(turns).tools(tools);
-        let request = request
-            .tool_choice(tool_choice)
-            .output_format(output_format);
-        request.build()
+        Request::new(Vec::new(), turns, tools, tool_choice, output_format)
     }
 
     /// Build one fixture request with the shared model and tool definition.
