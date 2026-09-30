@@ -104,6 +104,12 @@ impl FunctionCall {
     fn char_count(&self) -> usize {
         self.name.chars().count() + self.arguments.serialized().chars().count()
     }
+
+    /// Approximate provider tokens in the function name and arguments.
+    fn token_count(&self) -> usize {
+        self.name.split_whitespace().count()
+            + self.arguments.serialized().split_whitespace().count()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -196,6 +202,16 @@ impl Turn {
             Self::ToolCall(call) => call.char_count(),
         }
     }
+
+    /// Approximate the provider tokens represented by this history turn.
+    fn token_count(&self) -> usize {
+        match self {
+            Self::User(text) | Self::Assistant(text) | Self::ToolResult(text) => {
+                text.split_whitespace().count()
+            }
+            Self::ToolCall(call) => call.token_count(),
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -258,26 +274,21 @@ pub struct Request {
 }
 
 impl Request {
-    /// Approximate token usage by counting whitespace-delimited words.
-    fn approximate_tokens<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
-        texts.flat_map(str::split_whitespace).count()
-    }
-
     /// Approximate tokens across instructions, history, and tool definitions.
     fn prompt_tokens(&self) -> usize {
-        let mut texts = self.system_text.clone();
-        texts.extend(self.turns.iter().map(|turn| match turn {
-            Turn::User(text) | Turn::Assistant(text) | Turn::ToolResult(text) => text.clone(),
-            Turn::ToolCall(call) => format!("{} {}", call.name, call.arguments.serialized()),
-        }));
+        let system_tokens = self
+            .system_text
+            .iter()
+            .map(|text| text.split_whitespace().count())
+            .sum::<usize>();
+        let turn_tokens = self.turns.iter().map(Turn::token_count).sum::<usize>();
         let definition_chars = self
             .tools
             .iter()
             .map(FunctionTool::char_count)
             .sum::<usize>();
         let schema_chars = self.output_format.schema_chars();
-        Self::approximate_tokens(texts.iter().map(String::as_str))
-            + (definition_chars + schema_chars).div_ceil(4)
+        system_tokens + turn_tokens + (definition_chars + schema_chars).div_ceil(4)
     }
 
     /// Replay ordinary user turns through a fresh deterministic ELIZA session.
@@ -466,11 +477,8 @@ impl Request {
 
         let prompt = self.prompt_tokens();
         let completion = match &output {
-            Output::Text(text) => Self::approximate_tokens(std::iter::once(text.as_str())),
-            Output::ToolCall(call) => {
-                let arguments = call.arguments.serialized();
-                Self::approximate_tokens([call.name.as_str(), arguments.as_str()].into_iter())
-            }
+            Output::Text(text) => text.split_whitespace().count(),
+            Output::ToolCall(call) => call.token_count(),
         };
 
         // Combine prompt and completion accounting into wire-neutral usage.

@@ -7,7 +7,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::errors::EncodingError;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
@@ -269,201 +269,159 @@ impl ResponseContext {
 }
 
 // -----------------------------------------------------------------------------
-// Sequence: Allocates monotonically increasing event positions.
+// ResponseStream: Owns OpenAI's ordered, monotonically numbered event sequence.
 // -----------------------------------------------------------------------------
 
-/// Next sequence number assigned to a Responses stream event.
-#[derive(Default)]
-struct Sequence(
-    /// Next available sequence number.
-    usize,
-);
+/// Event builder for one completed Responses API result.
+struct ResponseStream {
+    /// Stable identifiers and final response values shared by all events.
+    context: ResponseContext,
+    /// Encoded events in delivery order.
+    events: Vec<Event>,
+    /// Sequence number assigned to the next event.
+    next_sequence: usize,
+}
 
-impl Sequence {
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "private helpers propagate the builder's documented encoding failure"
+)]
+impl ResponseStream {
     /// Return the current sequence number and advance the counter.
-    fn next(&mut self) -> usize {
-        let current = self.0;
-        self.0 += 1;
+    fn next_sequence(&mut self) -> usize {
+        let current = self.next_sequence;
+        self.next_sequence += 1;
         current
     }
-}
 
-// -----------------------------------------------------------------------------
-// Stream: Renders OpenAI's Responses event sequence.
-// -----------------------------------------------------------------------------
+    /// Serialize and append one event.
+    fn push(&mut self, event: &ResponsesResponseStreamEvent) -> Result<(), EncodingError> {
+        self.events.push(json_event(event)?);
+        Ok(())
+    }
 
-/// Serialize and append one Responses stream event.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when the event cannot be serialized.
-fn stream_push_event(
-    events: &mut Vec<Event>,
-    event: &ResponsesResponseStreamEvent,
-) -> Result<(), EncodingError> {
-    events.push(json_event(event)?);
-    Ok(())
-}
-
-/// Append text item, delta, and completion events.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when a text event cannot be serialized.
-fn stream_push_text(
-    events: &mut Vec<Event>,
-    sequence: &mut Sequence,
-    context: &ResponseContext,
-    text: &str,
-) -> Result<(), EncodingError> {
-    stream_push_event(
-        events,
-        &ResponsesResponseStreamEvent::OutputItemAdded {
-            sequence_number: sequence.next(),
+    /// Append text item, delta, and completion events.
+    fn push_text(&mut self, text: &str) -> Result<(), EncodingError> {
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::OutputItemAdded {
+            sequence_number,
             output_index: 0,
             item: ResponsesResponseOutput::Message {
-                id: context.item_id.clone(),
+                id: self.context.item_id.clone(),
                 status: ResponsesResponseStatus::InProgress,
                 role: AssistantRole::Assistant,
                 content: Vec::new(),
             },
-        },
-    )?;
-    for chunk in stream_chunks(text) {
-        stream_push_event(
-            events,
-            &ResponsesResponseStreamEvent::OutputTextDelta {
-                sequence_number: sequence.next(),
-                item_id: context.item_id.clone(),
+        })?;
+        for chunk in stream_chunks(text) {
+            let sequence_number = self.next_sequence();
+            self.push(&ResponsesResponseStreamEvent::OutputTextDelta {
+                sequence_number,
+                item_id: self.context.item_id.clone(),
                 output_index: 0,
                 content_index: 0,
                 delta: chunk,
-            },
-        )?;
-    }
-    stream_push_event(
-        events,
-        &ResponsesResponseStreamEvent::OutputTextDone {
-            sequence_number: sequence.next(),
-            item_id: context.item_id.clone(),
+            })?;
+        }
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::OutputTextDone {
+            sequence_number,
+            item_id: self.context.item_id.clone(),
             output_index: 0,
             content_index: 0,
             text: text.to_owned(),
-        },
-    )
-}
+        })
+    }
 
-/// Append function item, argument delta, and completion events.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when a function event cannot be serialized.
-fn stream_push_tool(
-    events: &mut Vec<Event>,
-    sequence: &mut Sequence,
-    context: &ResponseContext,
-    call: &chat::turn::FunctionCall,
-) -> Result<(), EncodingError> {
-    stream_push_event(
-        events,
-        &ResponsesResponseStreamEvent::OutputItemAdded {
-            sequence_number: sequence.next(),
+    /// Append function item, argument delta, and completion events.
+    fn push_tool(&mut self, call: &chat::turn::FunctionCall) -> Result<(), EncodingError> {
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::OutputItemAdded {
+            sequence_number,
             output_index: 0,
             item: ResponsesResponseOutput::FunctionCall {
-                id: context.item_id.clone(),
-                call_id: context.call_id.clone(),
+                id: self.context.item_id.clone(),
+                call_id: self.context.call_id.clone(),
                 name: call.name.clone(),
                 arguments: String::new(),
                 status: ResponsesResponseStatus::InProgress,
             },
-        },
-    )?;
-    let arguments = call.arguments.serialized();
-    stream_push_event(
-        events,
-        &ResponsesResponseStreamEvent::FunctionArgumentsDelta {
-            sequence_number: sequence.next(),
-            item_id: context.item_id.clone(),
+        })?;
+        let arguments = call.arguments.serialized();
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::FunctionArgumentsDelta {
+            sequence_number,
+            item_id: self.context.item_id.clone(),
             output_index: 0,
-            call_id: context.call_id.clone(),
+            call_id: self.context.call_id.clone(),
             delta: arguments.clone(),
-        },
-    )?;
-    stream_push_event(
-        events,
-        &ResponsesResponseStreamEvent::FunctionArgumentsDone {
-            sequence_number: sequence.next(),
-            item_id: context.item_id.clone(),
+        })?;
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::FunctionArgumentsDone {
+            sequence_number,
+            item_id: self.context.item_id.clone(),
             output_index: 0,
-            call_id: context.call_id.clone(),
+            call_id: self.context.call_id.clone(),
             name: call.name.clone(),
             arguments,
-        },
-    )
-}
-
-/// Append output-specific events to one response stream.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when an output event cannot be serialized.
-fn stream_push_output(
-    events: &mut Vec<Event>,
-    sequence: &mut Sequence,
-    context: &ResponseContext,
-    output: &chat::turn::Output,
-) -> Result<(), EncodingError> {
-    match output {
-        chat::turn::Output::Text(text) => stream_push_text(events, sequence, context, text),
-        chat::turn::Output::ToolCall(call) => stream_push_tool(events, sequence, context, call),
+        })
     }
-}
 
-/// Render the complete SSE sequence for one neutral response.
-///
-/// # Errors
-///
-/// Returns [`EncodingError`] when any response event cannot be serialized.
-fn stream_response(
-    model: ModelId,
-    response: &chat::turn::Response,
-) -> Result<SseEvents, EncodingError> {
-    let context = ResponseContext::new(model, response);
-    let mut sequence = Sequence::default();
-    let mut events = Vec::new();
-    stream_push_event(
-        &mut events,
-        &ResponsesResponseStreamEvent::Created {
-            sequence_number: sequence.next(),
+    /// Append output-specific events.
+    fn push_output(&mut self, output: &chat::turn::Output) -> Result<(), EncodingError> {
+        match output {
+            chat::turn::Output::Text(text) => self.push_text(text),
+            chat::turn::Output::ToolCall(call) => self.push_tool(call),
+        }
+    }
+
+    /// Render the complete SSE sequence for one neutral response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncodingError`] when any response event cannot be serialized.
+    fn render(
+        model: ModelId,
+        response: &chat::turn::Response,
+    ) -> Result<Vec<Event>, EncodingError> {
+        let mut stream = Self {
+            context: ResponseContext::new(model, response),
+            events: Vec::new(),
+            next_sequence: 0,
+        };
+        let sequence_number = stream.next_sequence();
+        stream.push(&ResponsesResponseStreamEvent::Created {
+            sequence_number,
             response: ResponsesResponseProgress {
-                id: context.envelope.id.clone(),
+                id: stream.context.envelope.id.clone(),
                 object: "response",
-                created_at: context.envelope.created_at,
+                created_at: stream.context.envelope.created_at,
                 status: ResponsesResponseStatus::InProgress,
-                model: context.envelope.model.clone(),
+                model: stream.context.envelope.model.clone(),
                 output: Vec::new(),
                 error: None,
                 incomplete_details: None,
             },
-        },
-    )?;
-    stream_push_output(&mut events, &mut sequence, &context, &response.output)?;
-    stream_push_event(
-        &mut events,
-        &ResponsesResponseStreamEvent::OutputItemDone {
-            sequence_number: sequence.next(),
+        })?;
+        stream.push_output(&response.output)?;
+        let output_done_sequence = stream.next_sequence();
+        let completed_sequence = stream.next_sequence();
+        let Self {
+            context,
+            mut events,
+            ..
+        } = stream;
+        events.push(json_event(&ResponsesResponseStreamEvent::OutputItemDone {
+            sequence_number: output_done_sequence,
             output_index: 0,
             item: context.final_output,
-        },
-    )?;
-    stream_push_event(
-        &mut events,
-        &ResponsesResponseStreamEvent::Completed {
-            sequence_number: sequence.next(),
+        })?);
+        events.push(json_event(&ResponsesResponseStreamEvent::Completed {
+            sequence_number: completed_sequence,
             response: context.envelope,
-        },
-    )?;
-    Ok(SseEvents::from(events))
+        })?);
+        Ok(events)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -477,7 +435,7 @@ async fn open_ai_responses(
     payload: Result<Json<ResponsesRequest>, JsonRejection>,
 ) -> Response {
     // Authentication failures use OpenAI's native error envelope.
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OpenAiRejection::from_error(&error).into_response();
     }
     let Json(payload) = match payload {
@@ -513,8 +471,8 @@ async fn open_ai_responses(
     };
 
     if should_stream {
-        match stream_response(model, &response) {
-            Ok(events) => events
+        match ResponseStream::render(model, &response) {
+            Ok(events) => SseEvents::from(events)
                 .with_delay(state.config.stream_delay_ms)
                 .into_response(),
             Err(error) => OpenAiRejection::from_error(&error).into_response(),

@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::model::ModelId;
 use eliza_modality_embedding as embedding;
 
@@ -86,7 +86,7 @@ fn model_catalog_with_embedding(model: ModelId) -> ModelListResponse {
 /// List the configured models in Ollama's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Authentication failures use Ollama's native error envelope.
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OllamaRejection::from_error(&error).into_response();
     }
     Json(model_catalog_with_embedding(state.config.model.clone())).into_response()

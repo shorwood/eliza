@@ -99,6 +99,30 @@ pub struct Input {
     pub dimensions: i64,
 }
 
+impl Input {
+    /// Validate and convert the requested vector size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidDimensions`] when the size is outside the model bound.
+    fn dimensions(&self) -> Result<NonZeroUsize, Error> {
+        // Every vector must have a bounded nonzero bucket count.
+        if !(1..=MODEL_MAX_DIMENSIONS).contains(&self.dimensions) {
+            return Err(Error::InvalidDimensions {
+                actual: self.dimensions,
+            });
+        }
+
+        let dimensions =
+            usize::try_from(self.dimensions).map_err(|_| Error::InvalidDimensions {
+                actual: self.dimensions,
+            })?;
+        NonZeroUsize::new(dimensions).ok_or(Error::InvalidDimensions {
+            actual: self.dimensions,
+        })
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Response: Returns ordered vectors and usage.
 // -----------------------------------------------------------------------------
@@ -126,11 +150,82 @@ pub const MODEL_DEFAULT_DIMENSIONS: i64 = 256;
 pub const MODEL_MAX_DIMENSIONS: i64 = 1_024;
 
 // -----------------------------------------------------------------------------
-// EmbeddingFeature: Normalizes and hashes lexical features into unit vectors.
+// FeatureVector: Normalizes and hashes lexical features into unit vectors.
 // -----------------------------------------------------------------------------
 
+/// Nonempty vector under construction for one embedding input.
+struct FeatureVector(
+    /// Hashed feature buckets, always nonempty.
+    Vec<f32>,
+);
+
+impl FeatureVector {
+    /// Hash concatenated feature fragments with 64-bit FNV-1a.
+    fn hash(parts: &[&[u8]]) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for part in parts {
+            for byte in *part {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    /// Add one signed hashed feature to its vector bucket.
+    fn add(&mut self, parts: &[&[u8]]) {
+        let hash = Self::hash(parts);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the remainder is smaller than the validated vector length"
+        )]
+        let bucket = (hash % self.0.len() as u64) as usize;
+        let sign = if hash & (1_u64 << 63) == 0 { 1.0 } else { -1.0 };
+        self.0[bucket] += sign;
+    }
+
+    /// Scale a nonzero vector to unit length.
+    fn normalize(&mut self) {
+        let squared = self.0.iter().map(|value| value * value);
+        let magnitude = squared.sum::<f32>().sqrt();
+
+        // A zero vector is already normalized and cannot be scaled.
+        if magnitude == 0.0 {
+            return;
+        }
+        for value in &mut self.0 {
+            *value /= magnitude;
+        }
+    }
+
+    /// Hash lexical features into one requested vector size.
+    fn for_words(words: &[String], dimensions: NonZeroUsize) -> Self {
+        let mut vector = Self(vec![0.0; dimensions.get()]);
+
+        for word in words {
+            vector.add(&[b"w:", word.as_bytes()]);
+
+            let padded = format!("^{word}$");
+            for trigram in padded.as_bytes().windows(3) {
+                vector.add(&[b"c:", trigram]);
+            }
+        }
+        for pair in words.windows(2) {
+            vector.add(&[b"b:", pair[0].as_bytes(), b" ", pair[1].as_bytes()]);
+        }
+
+        vector.normalize();
+        vector
+    }
+
+    /// Consume the wrapper after construction is complete.
+    fn into_inner(self) -> Vec<f32> {
+        self.0
+    }
+}
+
 /// Normalize text into the deliberately small ASCII lexical model.
-fn embedding_feature_normalize_words(text: &str) -> Vec<String> {
+fn normalize_words(text: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word = String::new();
 
@@ -152,67 +247,6 @@ fn embedding_feature_normalize_words(text: &str) -> Vec<String> {
         words.push(word);
     }
     words
-}
-
-/// Hash concatenated feature fragments with 64-bit FNV-1a.
-fn embedding_feature_hash(parts: &[&[u8]]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for part in parts {
-        for byte in *part {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    hash
-}
-
-/// Add one signed hashed feature to its vector bucket.
-fn embedding_feature_add(vector: &mut [f32], parts: &[&[u8]]) {
-    let hash = embedding_feature_hash(parts);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the remainder is smaller than the validated vector length"
-    )]
-    let bucket = (hash % vector.len() as u64) as usize;
-    let sign = if hash & (1_u64 << 63) == 0 { 1.0 } else { -1.0 };
-    vector[bucket] += sign;
-}
-
-/// Scale a nonzero vector to unit length.
-fn embedding_feature_normalize(vector: &mut [f32]) {
-    let squared = vector.iter().map(|value| value * value);
-    let magnitude = squared.sum::<f32>().sqrt();
-
-    // A zero vector is already normalized and cannot be scaled.
-    if magnitude == 0.0 {
-        return;
-    }
-    for value in vector {
-        *value /= magnitude;
-    }
-}
-
-/// Hash lexical features into one requested vector size.
-fn embedding_feature_vector(words: &[String], dimensions: usize) -> Vec<f32> {
-    let mut vector = vec![0.0; dimensions];
-
-    for word in words {
-        embedding_feature_add(&mut vector, &[b"w:", word.as_bytes()]);
-
-        let padded = format!("^{word}$");
-        for trigram in padded.as_bytes().windows(3) {
-            embedding_feature_add(&mut vector, &[b"c:", trigram]);
-        }
-    }
-    for pair in words.windows(2) {
-        embedding_feature_add(
-            &mut vector,
-            &[b"b:", pair[0].as_bytes(), b" ", pair[1].as_bytes()],
-        );
-    }
-
-    embedding_feature_normalize(&mut vector);
-    vector
 }
 
 // -----------------------------------------------------------------------------
@@ -238,14 +272,13 @@ impl Request {
         if self.inputs.is_empty() {
             return Err(Error::EmptyBatch);
         }
-        for input in &self.inputs {
-            // Bounds keep allocations predictable across every adapter.
-            if !(1..=MODEL_MAX_DIMENSIONS).contains(&input.dimensions) {
-                return Err(Error::InvalidDimensions {
-                    actual: input.dimensions,
-                });
-            }
-        }
+
+        // Bounds keep allocations predictable across every adapter.
+        let dimensions = self
+            .inputs
+            .iter()
+            .map(Input::dimensions)
+            .collect::<Result<Vec<_>, _>>()?;
 
         let input_chars = self.inputs.iter().fold(0_usize, |total, input| {
             total.saturating_add(input.text.chars().count())
@@ -267,20 +300,16 @@ impl Request {
             .count();
 
         // Hash each normalized input without disturbing batch order.
-        let indexed_inputs = self.inputs.iter().enumerate();
+        let indexed_inputs = self.inputs.iter().zip(dimensions).enumerate();
         let embeddings = indexed_inputs
-            .map(|(index, input)| {
-                let words = embedding_feature_normalize_words(&input.text);
+            .map(|(index, (input, dimensions))| {
+                let words = normalize_words(&input.text);
 
                 // Punctuation-only input carries no lexical signal.
                 if words.is_empty() {
                     return Err(Error::BlankInput { index });
                 }
-                let dimensions =
-                    usize::try_from(input.dimensions).map_err(|_| Error::InvalidDimensions {
-                        actual: input.dimensions,
-                    })?;
-                Ok(embedding_feature_vector(&words, dimensions))
+                Ok(FeatureVector::for_words(&words, dimensions).into_inner())
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -322,17 +351,17 @@ mod tests {
     #[test]
     fn it_should_normalize_ascii_words_and_curly_apostrophes() {
         assert_eq!(
-            embedding_feature_normalize_words("  WE\u{2019}RE déjà--HERE 42! "),
+            normalize_words("  WE\u{2019}RE déjà--HERE 42! "),
             ["we're", "d", "j", "here", "42"]
         );
     }
 
     #[test]
     fn it_should_use_standard_fnv_one_a() {
-        assert_eq!(embedding_feature_hash(&[b"hello"]), 0xa430_d846_80aa_bd0b);
+        assert_eq!(FeatureVector::hash(&[b"hello"]), 0xa430_d846_80aa_bd0b);
         assert_eq!(
-            embedding_feature_hash(&[b"b:", b"hello", b" ", b"world"]),
-            embedding_feature_hash(&[b"b:hello world"])
+            FeatureVector::hash(&[b"b:", b"hello", b" ", b"world"]),
+            FeatureVector::hash(&[b"b:hello world"])
         );
     }
 
@@ -426,8 +455,8 @@ mod tests {
 
     #[test]
     fn it_should_leave_zero_magnitude_vectors_unchanged() {
-        let mut vector = [0.0, 0.0];
-        embedding_feature_normalize(&mut vector);
-        assert!(vector.iter().all(|value| value.abs() < f32::EPSILON));
+        let mut vector = FeatureVector::for_words(&[], NonZeroUsize::new(2).unwrap());
+        vector.normalize();
+        assert!(vector.0.iter().all(|value| value.abs() < f32::EPSILON));
     }
 }

@@ -1,6 +1,7 @@
 //! Diagnostics raised while lowering CLI arguments into server configuration.
 
 use std::fmt;
+use std::num::NonZeroUsize;
 
 use miette::Diagnostic;
 use thiserror::Error;
@@ -40,6 +41,17 @@ pub(super) enum RequestLimit {
     HistoryMessages,
     /// Maximum accepted input characters.
     InputChars,
+}
+
+impl RequestLimit {
+    /// Convert a raw CLI value into its positive runtime representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration diagnostic when `value` is zero.
+    pub(super) fn validate(self, value: usize) -> Result<NonZeroUsize, ConfigError> {
+        NonZeroUsize::new(value).ok_or(ConfigError::ZeroLimit { limit: self })
+    }
 }
 
 impl fmt::Display for RequestLimit {

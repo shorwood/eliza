@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::{ProviderAuth, provider_authenticate};
+use eliza_http::context::ProviderAuth;
 use eliza_http::model::ModelId;
 use eliza_modality_embedding as embedding;
 use eliza_modality_speech as speech;
@@ -37,7 +37,7 @@ fn model_id(value: &'static str) -> ModelId {
 /// List the configured model in `OpenAI`'s native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Authentication failures use the provider's own error envelope.
-    if let Err(error) = provider_authenticate(&headers, &state.config, ProviderAuth::Bearer) {
+    if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OpenAiRejection::from_error(&error).into_response();
     }
 

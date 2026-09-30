@@ -76,7 +76,7 @@ struct List {
 // -----------------------------------------------------------------------------
 
 /// Internal state for one allocated reader.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct Reader {
     /// Traversal order.
     direction: Direction,
@@ -173,8 +173,9 @@ impl Arena {
     ///
     /// Returns [`ArenaError::InvalidList`] for a stale handle.
     pub fn clear(&mut self, handle: ListHandle) -> Result<(), ArenaError> {
-        let removed = self.list_ref(handle)?.items.len();
-        self.list_mut(handle)?.items.clear();
+        let list = self.list_mut(handle)?;
+        let removed = list.items.len();
+        list.items.clear();
         self.cells -= removed;
         Ok(())
     }
@@ -265,11 +266,13 @@ impl Arena {
     ///
     /// Returns an error for a stale or empty list.
     pub fn pop_front(&mut self, handle: ListHandle) -> Result<Datum, ArenaError> {
+        let list = self.list_mut(handle)?;
+
         // Removing index zero requires a nonempty list.
-        if self.list_ref(handle)?.items.is_empty() {
+        if list.items.is_empty() {
             return Err(ArenaError::Empty);
         }
-        let datum = self.list_mut(handle)?.items.remove(0);
+        let datum = list.items.remove(0);
         self.cells -= 1;
         Ok(datum)
     }
@@ -306,7 +309,7 @@ impl Arena {
     ///
     /// Returns an error for stale reader or list handles.
     pub fn read(&mut self, handle: ReaderHandle) -> Result<Option<Datum>, ArenaError> {
-        let reader = self.reader_ref(handle)?.clone();
+        let reader = *self.reader_ref(handle)?;
         let list = self.list_ref(reader.list)?;
         let datum = match reader.direction {
             Direction::LeftToRight => list.items.get(reader.position).copied(),
