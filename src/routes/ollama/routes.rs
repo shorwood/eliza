@@ -13,6 +13,7 @@ use super::types::{
     ChatOutputMessage, ChatRequest, ChatResponse, MessageContent, MessageRole, ModelDescriptor,
     ModelDetails, ModelListResponse, ToolCall,
 };
+use crate::embedding;
 use crate::routes::errors::ExtractionError;
 use crate::types::http::{NdjsonResponse, stream_chunks};
 use crate::types::lower::Lower;
@@ -238,23 +239,40 @@ async fn chat(
 
 /// Build the model catalog for the configured ELIZA identity.
 fn tags_response_for_eliza(model: ModelId) -> ModelListResponse {
-    ModelListResponse {
-        models: vec![ModelDescriptor {
-            name: model.clone(),
-            model,
+    let include_embedding = model.as_str() != embedding::EMBEDDING_MODEL_ID;
+    let mut models = vec![ModelDescriptor {
+        name: model.clone(),
+        model,
+        modified_at: CREATED_AT,
+        size: 0,
+        digest: "eliza-1966",
+        details: ModelDetails {
+            parent_model: "",
+            format: "eliza",
+            family: "eliza",
+            families: vec!["eliza"],
+            parameter_size: "DOCTOR",
+            quantization_level: "none",
+        },
+    }];
+    if include_embedding {
+        models.push(ModelDescriptor {
+            name: embedding::embedding_model_id(),
+            model: embedding::embedding_model_id(),
             modified_at: CREATED_AT,
             size: 0,
-            digest: "eliza-1966",
+            digest: embedding::EMBEDDING_MODEL_ID,
             details: ModelDetails {
                 parent_model: "",
                 format: "eliza",
-                family: "eliza",
-                families: vec!["eliza"],
-                parameter_size: "DOCTOR",
+                family: "eliza-embed",
+                families: vec!["eliza-embed"],
+                parameter_size: "1024D",
                 quantization_level: "none",
             },
-        }],
+        });
     }
+    ModelListResponse { models }
 }
 
 /// List the configured model in Ollama's native envelope.
