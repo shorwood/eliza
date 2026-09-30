@@ -1,6 +1,5 @@
 //! Shared provider HTTP boundary types and helpers.
 
-use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
@@ -11,33 +10,6 @@ use futures_util::{StreamExt, stream};
 use serde::Serialize;
 
 use super::errors::EncodingError;
-
-// -----------------------------------------------------------------------------
-// RequestLimits: Bounds normalized request size and replay work.
-// -----------------------------------------------------------------------------
-
-/// Bounds transcript size and replay work.
-#[derive(Debug, Clone, Copy, bon::Builder)]
-pub struct RequestLimits {
-    /// Maximum serialized input size across all request components.
-    max_input_chars: NonZeroUsize,
-    /// Maximum number of normalized history turns.
-    max_history_messages: NonZeroUsize,
-}
-
-impl RequestLimits {
-    /// Return the maximum serialized input size.
-    #[must_use]
-    pub const fn max_input_chars(self) -> NonZeroUsize {
-        self.max_input_chars
-    }
-
-    /// Return the maximum normalized history length.
-    #[must_use]
-    pub const fn max_history_messages(self) -> NonZeroUsize {
-        self.max_history_messages
-    }
-}
 
 // -----------------------------------------------------------------------------
 // StreamChunks: Splits provider output at readable boundaries.

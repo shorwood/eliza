@@ -390,7 +390,7 @@ impl LoweredSpeech {
         let input_limit = configured_limit.get().min(OPENAI_INPUT_LIMIT);
         let input_limit = NonZeroUsize::new(input_limit).unwrap_or(configured_limit);
         let audio = state
-            .service
+            .speech
             .stream(self.request, self.format, input_limit)
             .await?;
         let delay_ms = state.config.stream_delay_ms;
