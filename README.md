@@ -5,9 +5,10 @@ conversation engine, exposed through partial OpenAI, Anthropic, Gemini, and
 Ollama HTTP contracts. It makes no upstream model calls and has no database,
 Nano dependency, configuration file, or persistent session state.
 
-The bundled script follows the 1966 Weizenbaum DOCTOR lineage from ELIZAGEN,
-not a BASIC-port rewrite. This is a compatibility fixture and historical
-chatbot, not a medical or therapeutic system.
+The conversation engine executes a bounded MAD reconstruction with the
+corrected 1966 Weizenbaum DOCTOR script, rather than a later BASIC-port
+rewrite. This is a compatibility fixture and historical chatbot, not a medical
+or therapeutic system.
 
 ## Install and run
 
