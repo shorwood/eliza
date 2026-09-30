@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["examples/rust-rig"]
+members = ["crates/*", "examples/rust-rig"]
 default-members = ["."]
 
 [workspace.package]
@@ -35,6 +35,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1.23.4", features = ["v7", "serde"] }
 
-[lints.clippy]
+[lints]
+workspace = true
+
+[workspace.lints.clippy]
 pedantic = "warn"
 arbitrary_source_item_ordering = "warn"
