@@ -1,6 +1,6 @@
 [package]
 name = "eliza-server-anthropic"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 license.workspace = true
 publish = false
@@ -10,6 +10,7 @@ aide = { version = "0.15.1", features = ["axum", "axum-json"] }
 axum = "0.8.9"
 eliza-http = { path = "../http" }
 eliza-modality-chat = { path = "../modality-chat" }
+eliza-modality-image = { path = "../modality-image" }
 miette = { version = "7.6.0", features = ["derive"] }
 schemars = "0.9.0"
 serde = { version = "1.0.228", features = ["derive"] }

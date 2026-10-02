@@ -8,6 +8,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use eliza_http::context::ProviderAuth;
 use eliza_modality_embedding as embedding;
+use eliza_modality_image as image;
 use eliza_modality_speech as speech;
 
 use super::errors::{GeminiFailureResponse, GeminiRejection};
@@ -80,6 +81,21 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 input_token_limit: state.config.limits.max_input_chars().get(),
                 output_token_limit: usize::try_from(embedding::engine::MODEL_MAX_DIMENSIONS)
                     .unwrap_or(1_024),
+            },
+        });
+    }
+    if state.config.chat_model.as_str() != image::generation::MODEL_ID {
+        models.push(GeminiModel {
+            identity: GeminiModelIdentity {
+                name: format!("models/{}", image::generation::MODEL_ID),
+                version: "fnv1a-ca-v1",
+                display_name: "ELIZA Retro Image",
+                description: "Deterministic cellular-automaton PNG image fixture.",
+            },
+            capabilities: GeminiModelCapabilities {
+                supported_generation_methods: vec!["generateContent", "streamGenerateContent"],
+                input_token_limit: state.config.limits.max_input_chars().get(),
+                output_token_limit: 512,
             },
         });
     }

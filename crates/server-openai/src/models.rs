@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use eliza_http::context::ProviderAuth;
 use eliza_http::model::ModelId;
 use eliza_modality_embedding as embedding;
+use eliza_modality_image as image;
 use eliza_modality_speech as speech;
 
 use super::errors::{OpenAiFailureResponse, OpenAiRejection};
@@ -64,6 +65,16 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if state.config.chat_model.as_str() != embedding::engine::MODEL_ID {
         data.push(ModelDescriptor {
             id: model_id(embedding::engine::MODEL_ID),
+            object: "model",
+            created: 0,
+            owned_by: "eliza",
+        });
+    }
+
+    // Include deterministic image generation unless it is already configured.
+    if state.config.chat_model.as_str() != image::generation::MODEL_ID {
+        data.push(ModelDescriptor {
+            id: model_id(image::generation::MODEL_ID),
             object: "model",
             created: 0,
             owned_by: "eliza",

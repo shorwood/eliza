@@ -1,11 +1,12 @@
 //! Provider-neutral chat diagnostics.
 
 use eliza_mad::engine::{Error as ElizaError, ErrorKind as ElizaErrorKind};
+use eliza_modality_image as image;
 use miette::Diagnostic;
 use thiserror::Error;
 
 // -----------------------------------------------------------------------------
-// Error: Classifies failures without transport semantics.
+// ErrorKind: Classifies failures without transport semantics.
 // -----------------------------------------------------------------------------
 
 /// Broad failure category exposed to provider adapters.
@@ -19,6 +20,10 @@ pub enum ErrorKind {
     Internal,
 }
 
+// -----------------------------------------------------------------------------
+// ErrorField: Identifies the provider-neutral request field at fault.
+// -----------------------------------------------------------------------------
+
 /// Provider-neutral request field associated with a failure.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ErrorField {
@@ -30,9 +35,41 @@ pub enum ErrorField {
     ToolChoice,
 }
 
+// -----------------------------------------------------------------------------
+// ImageError: Hides the image crate's representation behind a stable boundary.
+// -----------------------------------------------------------------------------
+
+/// Opaque provider-neutral image failure.
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[diagnostic(transparent)]
+pub struct ImageError(
+    /// Shared image failure retained for its stable diagnostic identity.
+    image::errors::Error,
+);
+
+impl ImageError {
+    /// Classify the underlying bounded image failure.
+    const fn kind(&self) -> image::errors::ErrorKind {
+        self.0.kind()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Error: Describes conversation validation and execution failures.
+// -----------------------------------------------------------------------------
+
 /// Conversation validation or execution failure.
 #[derive(Debug, Diagnostic, Error)]
 pub enum Error {
+    /// Shared image parsing, decoding, or resource validation failed.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Image(
+        /// Opaque provider-neutral image failure.
+        ImageError,
+    ),
+
     /// Provider text cannot be represented by the historical input contract.
     #[error("invalid ELIZA input: {detail}")]
     #[diagnostic(code(eliza::turn::invalid_eliza_input))]
@@ -144,12 +181,22 @@ pub enum Error {
     RequiredToolDirective,
 }
 
+impl From<image::errors::Error> for Error {
+    fn from(source: image::errors::Error) -> Self {
+        Self::Image(ImageError(source))
+    }
+}
+
 impl Error {
     /// Classify the failure without imposing HTTP or provider semantics.
     #[must_use]
     pub const fn kind(&self) -> ErrorKind {
         match self {
             Self::ElizaRuntime { .. } => ErrorKind::Internal,
+            Self::Image(source) => match source.kind() {
+                image::errors::ErrorKind::InvalidInput => ErrorKind::InvalidInput,
+                image::errors::ErrorKind::Limit => ErrorKind::Limit,
+            },
             Self::TooManyTurns { .. } | Self::InputTooLarge { .. } => ErrorKind::Limit,
             Self::ElizaInput { .. }
             | Self::MalformedToolDirective
@@ -176,7 +223,8 @@ impl Error {
             | Self::ToolChoiceDisallows { .. }
             | Self::RequiredToolDirective => Some(ErrorField::ToolChoice),
             Self::ToolNotOffered { .. } => Some(ErrorField::Tools),
-            Self::ElizaInput { .. }
+            Self::Image(_)
+            | Self::ElizaInput { .. }
             | Self::MalformedToolDirective
             | Self::MissingToolArguments
             | Self::MissingToolName

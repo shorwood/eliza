@@ -8,7 +8,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     rlib = {
-      url = "git+file:../rlib";
+      url = "github:shorwood/rlib/v1.0.0";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         fenix.follows = "fenix";

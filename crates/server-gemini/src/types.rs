@@ -85,6 +85,26 @@ pub(super) struct ContentSpeechMetadata {
     pub(super) style: Option<String>,
 }
 
+/// Inline bytes nested inside a Gemini content part.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ContentInlineData {
+    /// Declared PNG or JPEG media type.
+    pub(super) mime_type: Option<String>,
+    /// Standard base64 payload.
+    pub(super) data: Option<String>,
+}
+
+/// Provider-owned file nested inside a Gemini content part.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ContentFileData {
+    /// Declared PNG or JPEG media type.
+    pub(super) mime_type: Option<String>,
+    /// Provider file URI.
+    pub(super) file_uri: Option<String>,
+}
+
 /// One content part accepted by the Gemini adapter.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged, rename_all_fields = "camelCase")]
@@ -96,6 +116,16 @@ pub(super) enum ContentPart {
         /// Local speaker and style annotations.
         #[serde(alias = "speech_metadata")]
         speech_metadata: Option<ContentSpeechMetadata>,
+    },
+    /// Inline image bytes.
+    InlineData {
+        /// Typed base64 payload.
+        inline_data: ContentInlineData,
+    },
+    /// Provider-owned image file.
+    FileData {
+        /// Typed provider file reference.
+        file_data: ContentFileData,
     },
     /// Model request to invoke a function.
     FunctionCall {
@@ -263,21 +293,49 @@ impl TryFrom<ToolConfig> for chat::turn::ToolChoice {
 }
 
 // -----------------------------------------------------------------------------
-// Speech: Defines voice selection and audio response contracts.
+// GenerateDelivery: Selects unary and streaming response transport.
+// -----------------------------------------------------------------------------
+
+/// Provider-neutral delivery contract selected by the route and query.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum GenerateDelivery {
+    /// One complete JSON response.
+    Unary,
+    /// A JSON array containing response records.
+    JsonStream,
+    /// Response records encoded as server-sent events.
+    Sse,
+}
+
+impl GenerateDelivery {
+    /// Return whether this delivery mode uses streaming response records.
+    pub(super) const fn is_streaming(self) -> bool {
+        matches!(self, Self::JsonStream | Self::Sse)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// GenerateResponseModality: Defines generation output selection.
 // -----------------------------------------------------------------------------
 
 /// Response modality requested from Gemini generation.
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(super) enum SpeechResponseModality {
+pub(super) enum GenerateResponseModality {
     /// Text generation.
     Text,
     /// Audio generation through the local speech model.
     Audio,
+    /// PNG generation through the local image model.
+    Image,
     /// Any modality outside the supported subset.
     #[serde(other)]
     Unsupported,
 }
+
+// -----------------------------------------------------------------------------
+// Speech: Defines voice selection and audio response contracts.
+// -----------------------------------------------------------------------------
 
 /// Gemini's nested prebuilt-voice selector.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -351,6 +409,50 @@ pub(super) struct SpeechAudioConfig {
     pub(super) mime_type: Option<SpeechAudioFormat>,
     /// Requested output sample rate.
     pub(super) sample_rate: Option<u32>,
+}
+
+// -----------------------------------------------------------------------------
+// Image: Defines deterministic image response controls.
+// -----------------------------------------------------------------------------
+
+/// Aspect ratio accepted by the bounded image fixture.
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+pub(super) enum ImageAspectRatio {
+    /// Square output and default.
+    #[default]
+    #[serde(rename = "1:1")]
+    Square,
+    /// Landscape output.
+    #[serde(rename = "3:2")]
+    Landscape,
+    /// Portrait output.
+    #[serde(rename = "2:3")]
+    Portrait,
+    /// Any ratio outside the fixed subset.
+    #[serde(other)]
+    Unsupported,
+}
+
+/// Image-size class accepted by the bounded image fixture.
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+pub(super) enum ImageSize {
+    /// Gemini's default one-kilopixel size class.
+    #[default]
+    #[serde(rename = "1K")]
+    OneK,
+    /// Any size class outside the fixed subset.
+    #[serde(other)]
+    Unsupported,
+}
+
+/// Gemini image-generation format properties.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ImageResponseFormat {
+    /// Fixed output aspect ratio.
+    pub(super) aspect_ratio: Option<ImageAspectRatio>,
+    /// Fixed one-kilopixel size class.
+    pub(super) image_size: Option<ImageSize>,
 }
 
 // -----------------------------------------------------------------------------
@@ -627,28 +729,30 @@ impl TextResponseFormat {
 }
 
 // -----------------------------------------------------------------------------
-// ResponseFormat: Combines current text and audio response controls.
+// ResponseFormat: Combines current modality response controls.
 // -----------------------------------------------------------------------------
 
-/// Gemini response-format envelope for generated text or audio.
+/// Gemini response-format envelope for generated text, audio, or images.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct ResponseFormat {
     /// Text-specific response properties.
-    text: Option<TextResponseFormat>,
+    pub(super) text: Option<TextResponseFormat>,
     /// Audio-specific response properties.
     pub(super) audio: Option<SpeechAudioConfig>,
+    /// Image-specific response properties.
+    pub(super) image: Option<ImageResponseFormat>,
 }
 
 // -----------------------------------------------------------------------------
 // GenerateConfig: Compiles request-wide generation controls.
 // -----------------------------------------------------------------------------
 
-/// Gemini generation controls used by text and speech requests.
+/// Gemini generation controls used by text, speech, and image requests.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GenerateConfig {
     /// Requested response modalities.
-    pub(super) response_modalities: Option<Vec<SpeechResponseModality>>,
+    pub(super) response_modalities: Option<Vec<GenerateResponseModality>>,
     /// Requested response wire format.
     pub(super) response_format: Option<ResponseFormat>,
     /// Legacy text response MIME type.
@@ -667,6 +771,11 @@ impl GenerateConfig {
             .is_some_and(|format| format.text.is_some())
             || self.response_mime_type.is_some()
             || self.response_json_schema.is_some()
+    }
+
+    /// Report whether an image request contains text-format controls.
+    pub(super) fn has_legacy_text_format_controls(&self) -> bool {
+        self.response_mime_type.is_some() || self.response_json_schema.is_some()
     }
 }
 
@@ -711,6 +820,14 @@ impl TryFrom<GenerateConfig> for chat::structured_output::StructuredOutput {
     type Error = GeminiError;
 
     fn try_from(config: GenerateConfig) -> Result<Self, Self::Error> {
+        // Image formatting belongs exclusively to the image-generation path.
+        if config
+            .response_format
+            .as_ref()
+            .is_some_and(|format| format.image.is_some())
+        {
+            return Err(GeminiError::ImageFormatForText);
+        }
         let has_current = config.response_format.is_some();
         let has_legacy =
             config.response_mime_type.is_some() || config.response_json_schema.is_some();
