@@ -1,5 +1,6 @@
 //! Runs the Hurl HTTP contracts against a compiled ELIZA server.
 
+use std::io::Write as _;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -15,6 +16,19 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Delay between server readiness probes.
 const STARTUP_RETRY: Duration = Duration::from_millis(20);
+
+// -----------------------------------------------------------------------------
+// JsonRequest: Distinguishes one direct test path from its body.
+// -----------------------------------------------------------------------------
+
+/// Raw JSON request submitted outside the Hurl contract runner.
+#[derive(Clone, Copy)]
+struct JsonRequest<'request> {
+    /// Route path below the test server's root URL.
+    path: &'request str,
+    /// Complete JSON request body.
+    body: &'request str,
+}
 
 // -----------------------------------------------------------------------------
 // TestServer: Owns one isolated HTTP test process.
@@ -55,6 +69,37 @@ impl TestServer {
             child,
             base_url: format!("http://{address}"),
         })
+    }
+
+    /// Submit one raw JSON request and collect the closed HTTP response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the socket cannot send or receive the request.
+    fn post_json(&self, request: JsonRequest<'_>) -> io::Result<String> {
+        // Configure curl to expose headers and consume an exact stdin body.
+        let url = format!("{}{}", self.base_url, request.path);
+        let mut command = Command::new("curl");
+        command.args(["--silent", "--include", "--request", "POST"]);
+        command.args(["--header", "Content-Type: application/json"]);
+        command.args(["--data-binary", "@-", &url]);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+
+        // Submit the body and wait for curl to close the HTTP exchange.
+        let mut child = command.spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("curl stdin was not piped"))?
+            .write_all(request.body.as_bytes())?;
+        let output = child.wait_with_output()?;
+
+        // A failed curl process cannot yield a trustworthy HTTP response.
+        if !output.status.success() {
+            return Err(io::Error::other("curl failed to submit image body"));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// Run every Hurl file below `contracts` against this server.
@@ -165,4 +210,84 @@ fn http_contracts_authenticated() -> io::Result<()> {
     let server = TestServer::spawn(&["--api-key", "secret"])?;
     let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/auth");
     server.run_hurl(&contracts, Some("secret"))
+}
+
+/// Prove image routes raise Axum's former two-mebibyte JSON body limit.
+///
+/// # Errors
+///
+/// Returns an I/O error when the server cannot process the direct request.
+///
+/// # Panics
+///
+/// Panics when the route does not accept the body or loses its typed failure.
+#[test]
+fn http_contracts_image_json_body_exceeds_default_limit() -> io::Result<()> {
+    // Build malformed image input beyond Axum's former two-mebibyte limit.
+    let server = TestServer::spawn(&[])?;
+    let encoded = "A".repeat(2 * 1024 * 1024 + 4);
+    let body = format!(
+        "{{\"model\":\"eliza-1966\",\"messages\":[{{\"role\":\"user\",\"content\":[{{\"type\":\"image_url\",\"image_url\":{{\"url\":\"data:image/png;base64,{encoded}\"}}}}]}}]}}"
+    );
+
+    // The route must reach image validation instead of rejecting body size.
+    let response = server.post_json(JsonRequest {
+        path: "/openai/v1/chat/completions",
+        body: &body,
+    })?;
+
+    assert!(
+        response.contains("HTTP/1.1 400 Bad Request"),
+        "unexpected response: {response}"
+    );
+    assert!(
+        response.contains("x-eliza-error-code: eliza::image::malformed"),
+        "unexpected response: {response}"
+    );
+    Ok(())
+}
+
+/// Prove image-generation prompt limits retain provider-native 413 envelopes.
+///
+/// # Errors
+///
+/// Returns an I/O error when the server cannot process either direct request.
+///
+/// # Panics
+///
+/// Panics when a provider loses the shared limit diagnostic.
+#[test]
+fn http_contracts_image_generation_prompt_limit() -> io::Result<()> {
+    let server = TestServer::spawn(&[])?;
+    let prompt = "x".repeat(8_001);
+    let openai_body = format!("{{\"model\":\"eliza-retro-image\",\"prompt\":\"{prompt}\"}}");
+    let openai = server.post_json(JsonRequest {
+        path: "/openai/v1/images/generations",
+        body: &openai_body,
+    })?;
+    assert!(
+        openai.contains("HTTP/1.1 413 Payload Too Large"),
+        "unexpected response: {openai}"
+    );
+    assert!(
+        openai.contains("x-eliza-error-code: eliza::image::generation::prompt_too_large"),
+        "unexpected response: {openai}"
+    );
+
+    let gemini_body = format!(
+        "{{\"contents\":[{{\"role\":\"user\",\"parts\":[{{\"text\":\"{prompt}\"}}]}}],\"generationConfig\":{{\"responseModalities\":[\"IMAGE\"]}}}}"
+    );
+    let gemini = server.post_json(JsonRequest {
+        path: "/gemini/v1beta/models/eliza-retro-image:generateContent",
+        body: &gemini_body,
+    })?;
+    assert!(
+        gemini.contains("HTTP/1.1 413 Payload Too Large"),
+        "unexpected response: {gemini}"
+    );
+    assert!(
+        gemini.contains("x-eliza-error-code: eliza::image::generation::prompt_too_large"),
+        "unexpected response: {gemini}"
+    );
+    Ok(())
 }

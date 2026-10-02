@@ -25,6 +25,32 @@ pub(super) enum MessageRole {
     Unsupported,
 }
 
+/// One source accepted by an Anthropic image block.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum MessageImageSource {
+    /// Inline standard base64 with a declared media type.
+    Base64 {
+        /// Declared PNG or JPEG media type.
+        media_type: Option<String>,
+        /// Standard base64 payload.
+        data: Option<String>,
+    },
+    /// Data or HTTP(S) URL.
+    Url {
+        /// Image location.
+        url: Option<String>,
+    },
+    /// Provider-owned uploaded file.
+    File {
+        /// Provider file identifier.
+        file_id: Option<String>,
+    },
+    /// Any image-source kind outside the supported subset.
+    #[serde(other)]
+    Unsupported,
+}
+
 /// One structured block from an Anthropic message.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -33,6 +59,11 @@ pub(super) enum MessageContentBlock {
     Text {
         /// Text carried by the block.
         text: String,
+    },
+    /// User-provided image content.
+    Image {
+        /// Inline, URL, or provider-file source.
+        source: Option<MessageImageSource>,
     },
     /// Model request to invoke a tool.
     ToolUse {

@@ -1,6 +1,8 @@
 //! Provider-neutral conversation execution.
 use std::num::NonZeroUsize;
 
+use eliza_modality_image as image;
+
 use crate::eliza::{doctor, input_record};
 use crate::errors::Error;
 use crate::json::JsonObject;
@@ -171,10 +173,12 @@ impl ToolChoice {
 #[derive(Debug, Clone)]
 pub enum Turn {
     /// Text replayed through the ELIZA engine.
-    User(
+    User {
         /// User-authored text.
-        String,
-    ),
+        text: String,
+        /// User-authored images in provider order.
+        images: Vec<image::source::Source>,
+    },
     /// Prior model text retained only for request limits.
     Assistant(
         /// Model-authored text.
@@ -193,10 +197,16 @@ pub enum Turn {
 }
 
 impl Turn {
+    /// Construct one user turn with ordered image sources.
+    #[must_use]
+    pub fn user_with_images(text: String, images: Vec<image::source::Source>) -> Self {
+        Self::User { text, images }
+    }
+
     /// Count the provider-visible content represented by this history turn.
     fn char_count(&self) -> usize {
         match self {
-            Self::User(text) | Self::Assistant(text) | Self::ToolResult(text) => {
+            Self::User { text, .. } | Self::Assistant(text) | Self::ToolResult(text) => {
                 text.chars().count()
             }
             Self::ToolCall(call) => call.char_count(),
@@ -206,10 +216,19 @@ impl Turn {
     /// Approximate the provider tokens represented by this history turn.
     fn token_count(&self) -> usize {
         match self {
-            Self::User(text) | Self::Assistant(text) | Self::ToolResult(text) => {
+            Self::User { text, .. } | Self::Assistant(text) | Self::ToolResult(text) => {
                 text.split_whitespace().count()
             }
             Self::ToolCall(call) => call.token_count(),
+        }
+    }
+}
+
+impl From<String> for Turn {
+    fn from(text: String) -> Self {
+        Self::User {
+            text,
+            images: Vec::new(),
         }
     }
 }
@@ -291,8 +310,30 @@ impl Request {
         }
     }
 
+    /// Select unchanged text, or joined analysis lines for an image-only turn.
+    fn user_text(text: &str, analyses: &[image::analysis::Analysis]) -> String {
+        // Authored text remains byte-for-byte unchanged during replay.
+        if !text.is_empty() {
+            return text.to_owned();
+        }
+        let lines = analyses.iter().map(ToString::to_string).collect::<Vec<_>>();
+        lines.join("\n")
+    }
+
+    /// Prefix every request image line to one ordinary ELIZA answer.
+    fn prefix_analyses(text: &mut String, analyses: &[Vec<image::analysis::Analysis>]) {
+        let all_analyses = analyses.iter().flatten();
+        let lines = all_analyses.map(ToString::to_string).collect::<Vec<_>>();
+
+        // Text without request images needs no decoration.
+        if lines.is_empty() {
+            return;
+        }
+        *text = format!("{}\n{text}", lines.join("\n"));
+    }
+
     /// Approximate tokens across instructions, history, and tool definitions.
-    fn prompt_tokens(&self) -> usize {
+    fn prompt_tokens(&self, analyses: &[Vec<image::analysis::Analysis>]) -> usize {
         let system_tokens = self
             .system_text
             .iter()
@@ -305,7 +346,31 @@ impl Request {
             .map(FunctionTool::char_count)
             .sum::<usize>();
         let schema_chars = self.output_format.schema_chars();
-        system_tokens + turn_tokens + (definition_chars + schema_chars).div_ceil(4)
+        let all_analyses = analyses.iter().flatten();
+        let image_lines = all_analyses.map(ToString::to_string);
+        let image_tokens = image_lines
+            .map(|line| line.split_whitespace().count())
+            .sum::<usize>();
+        system_tokens + turn_tokens + image_tokens + (definition_chars + schema_chars).div_ceil(4)
+    }
+
+    /// Analyze every image in transcript order while retaining turn ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first typed image parsing, decoding, or limit failure.
+    fn analyze_images(&self) -> Result<Vec<Vec<image::analysis::Analysis>>, Error> {
+        let mut batch = image::analysis::Batch::default();
+        self.turns
+            .iter()
+            .map(|turn| match turn {
+                Turn::User { images, .. } => images
+                    .iter()
+                    .map(|source| batch.analyze(source).map_err(Error::from))
+                    .collect(),
+                Turn::Assistant(_) | Turn::ToolCall(_) | Turn::ToolResult(_) => Ok(Vec::new()),
+            })
+            .collect()
     }
 
     /// Replay ordinary user turns through a fresh deterministic ELIZA session.
@@ -313,17 +378,18 @@ impl Request {
     /// # Errors
     ///
     /// Returns a rejection when the history has no ordinary user message.
-    fn replay_eliza(&self) -> Result<String, Error> {
+    fn replay_eliza(&self, analyses: &[Vec<image::analysis::Analysis>]) -> Result<String, Error> {
         let mut session = doctor()?.session()?;
         let mut output = None;
-        for turn in &self.turns {
-            let Turn::User(text) = turn else {
+        for (turn, turn_analyses) in self.turns.iter().zip(analyses) {
+            let Turn::User { text, .. } = turn else {
                 continue;
             };
+            let text = Self::user_text(text, turn_analyses);
             if text.starts_with("@tool") {
                 continue;
             }
-            output = Some(session.respond(&input_record(text))?);
+            output = Some(session.respond(&input_record(&text))?);
         }
         output.ok_or(Error::MissingOrdinaryUserTurn)
     }
@@ -396,7 +462,7 @@ impl Request {
         let indexed = turns.iter().enumerate();
         indexed.rev().find_map(|(index, turn)| match turn {
             Turn::ToolCall(call) => Some(PositionedToolCall { index, call }),
-            Turn::User(_) | Turn::Assistant(_) | Turn::ToolResult(_) => None,
+            Turn::User { .. } | Turn::Assistant(_) | Turn::ToolResult(_) => None,
         })
     }
 
@@ -415,7 +481,7 @@ impl Request {
 
         // The call must itself follow a user-authored fixture directive.
         let Some(marker) = prior_turns.iter().rev().find_map(|turn| match turn {
-            Turn::User(text) => Some(text),
+            Turn::User { text, .. } => Some(text),
             Turn::Assistant(_) | Turn::ToolCall(_) | Turn::ToolResult(_) => None,
         }) else {
             return Err(Error::MissingToolDirective);
@@ -437,7 +503,7 @@ impl Request {
     fn latest_input(&self) -> Option<PositionedInput<'_>> {
         let indexed = self.turns.iter().enumerate();
         indexed.rev().find_map(|(index, turn)| match turn {
-            Turn::User(_) | Turn::ToolResult(_) => Some(PositionedInput { index, turn }),
+            Turn::User { .. } | Turn::ToolResult(_) => Some(PositionedInput { index, turn }),
             Turn::Assistant(_) | Turn::ToolCall(_) => None,
         })
     }
@@ -448,14 +514,18 @@ impl Request {
     ///
     /// Returns [`Error`] when a tool directive is malformed or conflicts
     /// with the available tools or selected tool policy.
-    fn complete_user(&self, text: &str) -> Result<Output, Error> {
+    fn complete_user(
+        &self,
+        text: &str,
+        analyses: &[Vec<image::analysis::Analysis>],
+    ) -> Result<Output, Error> {
         match FunctionCall::parse_directive(text)? {
             Some(call) => {
                 self.validate_tool_call(&call)?;
                 Ok(Output::ToolCall(call))
             }
             None if self.tool_choice.should_require_call() => Err(Error::RequiredToolDirective),
-            None => Ok(Output::Text(self.replay_eliza()?)),
+            None => Ok(Output::Text(self.replay_eliza(analyses)?)),
         }
     }
 
@@ -471,6 +541,7 @@ impl Request {
         max_history_messages: NonZeroUsize,
     ) -> Result<Response, Error> {
         self.validate_limits(max_input_chars, max_history_messages)?;
+        let analyses = self.analyze_images()?;
 
         // Select the newest turn that can produce a response.
         let Some(latest) = self.latest_input() else {
@@ -478,21 +549,31 @@ impl Request {
         };
 
         // Execute either a verified tool result or a new user request.
-        let mut output = match latest.turn {
+        let (mut output, is_ordinary) = match latest.turn {
             Turn::ToolResult(_) => {
                 self.validate_tool_result(latest.index)?;
-                Output::Text(TOOL_COMPLETE_TEXT.to_owned())
+                (Output::Text(TOOL_COMPLETE_TEXT.to_owned()), false)
             }
-            Turn::User(text) => self.complete_user(text)?,
+            Turn::User { text, .. } => {
+                let text = Self::user_text(text, &analyses[latest.index]);
+                let output = self.complete_user(&text, &analyses)?;
+                let is_ordinary = matches!(output, Output::Text(_));
+                (output, is_ordinary)
+            }
             Turn::Assistant(_) | Turn::ToolCall(_) => unreachable!(),
         };
+
+        // Image analyses decorate ordinary ELIZA text, never tool traffic.
+        if is_ordinary && let Output::Text(text) = &mut output {
+            Self::prefix_analyses(text, &analyses);
+        }
 
         // Structured formatting applies only after final text is available.
         if let Output::Text(text) = &mut output {
             *text = self.output_format.render(std::mem::take(text));
         }
 
-        let prompt = self.prompt_tokens();
+        let prompt = self.prompt_tokens(&analyses);
         let completion = match &output {
             Output::Text(text) => text.split_whitespace().count(),
             Output::ToolCall(call) => call.token_count(),
@@ -551,6 +632,8 @@ pub struct Response {
     reason = "the shared it_should naming family already groups compact scenario tests"
 )]
 mod tests {
+    use eliza_modality_image::source::Source;
+
     use super::*;
     use crate::structured_output::StructuredOutput;
 
@@ -595,10 +678,15 @@ mod tests {
         StructuredOutput::try_from(schema).unwrap()
     }
 
+    /// Build one unreachable URL that must remain opaque.
+    fn it_should_opaque_image() -> Source {
+        Source::url("https://127.0.0.1:1/never-fetched.png").unwrap()
+    }
+
     #[test]
     fn it_should_call_an_offered_tool_for_an_explicit_directive() {
         let response = it_should_fixture_request(
-            vec![Turn::User("@tool echo {\"value\":\"hello\"}".to_owned())],
+            vec![Turn::from("@tool echo {\"value\":\"hello\"}".to_owned())],
             ToolChoice::Auto,
         )
         .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
@@ -616,7 +704,7 @@ mod tests {
     #[test]
     fn it_should_call_eliza_for_an_ordinary_turn() {
         let response =
-            it_should_fixture_request(vec![Turn::User("Hello".to_owned())], ToolChoice::Auto)
+            it_should_fixture_request(vec![Turn::from("Hello".to_owned())], ToolChoice::Auto)
                 .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
                 .unwrap();
 
@@ -626,7 +714,7 @@ mod tests {
     #[test]
     fn it_should_call_out_a_malformed_directive() {
         let error = it_should_fixture_request(
-            vec![Turn::User("@tool echo []".to_owned())],
+            vec![Turn::from("@tool echo []".to_owned())],
             ToolChoice::Auto,
         )
         .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
@@ -638,7 +726,7 @@ mod tests {
     #[test]
     fn it_should_call_for_a_required_choice() {
         let error =
-            it_should_fixture_request(vec![Turn::User("Hello".to_owned())], ToolChoice::Required)
+            it_should_fixture_request(vec![Turn::from("Hello".to_owned())], ToolChoice::Required)
                 .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
                 .unwrap_err();
 
@@ -648,7 +736,7 @@ mod tests {
     #[test]
     fn it_should_call_only_the_named_choice() {
         let error = it_should_fixture_request(
-            vec![Turn::User("@tool echo {}".to_owned())],
+            vec![Turn::from("@tool echo {}".to_owned())],
             ToolChoice::Named("other".to_owned()),
         )
         .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
@@ -665,7 +753,7 @@ mod tests {
         };
         let response = it_should_fixture_request(
             vec![
-                Turn::User("@tool echo {\"value\":\"hello\"}".to_owned()),
+                Turn::from("@tool echo {\"value\":\"hello\"}".to_owned()),
                 Turn::ToolCall(call),
                 Turn::ToolResult("hello".to_owned()),
             ],
@@ -685,10 +773,10 @@ mod tests {
         };
         let response = it_should_fixture_request(
             vec![
-                Turn::User("@tool echo {\"value\":\"hello\"}".to_owned()),
+                Turn::from("@tool echo {\"value\":\"hello\"}".to_owned()),
                 Turn::ToolCall(call),
                 Turn::ToolResult("hello".to_owned()),
-                Turn::User("I am sad".to_owned()),
+                Turn::from("I am sad".to_owned()),
             ],
             ToolChoice::Auto,
         )
@@ -709,7 +797,7 @@ mod tests {
             "required":["ok"]
         }));
         let request = it_should_build_request(
-            vec![Turn::User("I am sad".to_owned())],
+            vec![Turn::from("I am sad".to_owned())],
             Vec::new(),
             ToolChoice::Auto,
             format,
@@ -726,7 +814,7 @@ mod tests {
     fn it_should_not_format_tool_calls() {
         // Build a formatted request whose output is a function call.
         let request = it_should_build_request(
-            vec![Turn::User("@tool echo {}".to_owned())],
+            vec![Turn::from("@tool echo {}".to_owned())],
             vec![it_should_fixture_tool()],
             ToolChoice::Auto,
             StructuredOutput::json_object(),
@@ -748,7 +836,7 @@ mod tests {
         };
         let request = it_should_build_request(
             vec![
-                Turn::User("@tool echo {}".to_owned()),
+                Turn::from("@tool echo {}".to_owned()),
                 Turn::ToolCall(call),
                 Turn::ToolResult("done".to_owned()),
             ],
@@ -782,7 +870,7 @@ mod tests {
 
         // Submit the request with a limit one character below its full input.
         let request = it_should_build_request(
-            vec![Turn::User(user_input.to_owned())],
+            vec![Turn::from(user_input.to_owned())],
             Vec::new(),
             ToolChoice::Auto,
             format,
@@ -798,5 +886,81 @@ mod tests {
             Error::InputTooLarge { actual, limit }
                 if actual == expected_actual && limit == expected_limit
         ));
+    }
+
+    #[test]
+    fn it_should_prefix_images_without_changing_text_replay() {
+        let request = it_should_build_request(
+            vec![Turn::user_with_images(
+                "I am sad".to_owned(),
+                vec![it_should_opaque_image()],
+            )],
+            Vec::new(),
+            ToolChoice::Auto,
+            StructuredOutput::default(),
+        );
+        let response = request
+            .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+            .unwrap();
+
+        assert_eq!(
+            response.output,
+            Output::Text(
+                "[RETRO VISION 1: OPAQUE IMAGE NOT INSPECTED]\nI AM SORRY TO HEAR YOU ARE SAD"
+                    .to_owned()
+            )
+        );
+        assert_eq!(response.usage.prompt, 10);
+    }
+
+    #[test]
+    fn it_should_replay_analysis_for_an_image_only_turn() {
+        let request = it_should_build_request(
+            vec![Turn::user_with_images(
+                String::new(),
+                vec![it_should_opaque_image()],
+            )],
+            Vec::new(),
+            ToolChoice::Auto,
+            StructuredOutput::default(),
+        );
+        let response = request
+            .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+            .unwrap();
+        let Output::Text(text) = response.output else {
+            panic!("image-only input must produce text");
+        };
+
+        assert_eq!(
+            text.lines().next(),
+            Some("[RETRO VISION 1: OPAQUE IMAGE NOT INSPECTED]")
+        );
+        assert_eq!(
+            text.matches("[RETRO VISION 1: OPAQUE IMAGE NOT INSPECTED]")
+                .count(),
+            1
+        );
+        assert_eq!(response.usage.prompt, 7);
+    }
+
+    #[test]
+    fn it_should_leave_tool_traffic_unchanged_when_images_are_present() {
+        let call = FunctionCall {
+            name: "echo".to_owned(),
+            arguments: serde_json::from_value(serde_json::json!({})).unwrap(),
+        };
+        let request = it_should_fixture_request(
+            vec![
+                Turn::user_with_images("@tool echo {}".to_owned(), vec![it_should_opaque_image()]),
+                Turn::ToolCall(call),
+                Turn::ToolResult("done".to_owned()),
+            ],
+            ToolChoice::Auto,
+        );
+        let response = request
+            .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+            .unwrap();
+
+        assert_eq!(response.output, Output::Text(TOOL_COMPLETE_TEXT.to_owned()));
     }
 }

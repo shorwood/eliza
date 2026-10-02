@@ -1,0 +1,15 @@
+[package]
+name = "eliza-modality-image"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+base64 = "0.22.1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+miette = { version = "7.6.0", features = ["derive"] }
+thiserror = "2.0.18"
+
+[lints]
+workspace = true

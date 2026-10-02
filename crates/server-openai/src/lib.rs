@@ -8,6 +8,7 @@ mod compatibility;
 mod context;
 mod embeddings;
 mod errors;
+mod images;
 mod models;
 mod responses;
 pub mod router;

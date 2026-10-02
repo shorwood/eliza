@@ -1,12 +1,13 @@
 [package]
 name = "eliza-modality-chat"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 license.workspace = true
 publish = false
 
 [dependencies]
 eliza-mad = { path = "../eliza-mad" }
+eliza-modality-image = { path = "../modality-image" }
 miette = { version = "7.6.0", features = ["derive"] }
 schemars = "0.9.0"
 serde = { version = "1.0.228", features = ["derive"] }

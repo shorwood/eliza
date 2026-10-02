@@ -65,17 +65,18 @@
         ]
       },
       "locked": {
-        "lastModified": 1790641806,
-        "narHash": "sha256-qP9DIzbjswGoGF81sm7w4QMp5+xdFEiqQeeLmIIoCtY=",
-        "ref": "refs/heads/main",
-        "rev": "c5048db6505a076e87d2c10e28bc057c6a2210e8",
-        "revCount": 236,
-        "type": "git",
-        "url": "file:../rlib"
+        "lastModified": 1790952333,
+        "narHash": "sha256-HSD5ODWVtWzi+twu9qUvEhPrTHQI052cEoEebBzP/NY=",
+        "owner": "shorwood",
+        "repo": "rlib",
+        "rev": "781ec6f2dbdbafad66626fc4e483b1e1a17c23a4",
+        "type": "github"
       },
       "original": {
-        "type": "git",
-        "url": "file:../rlib"
+        "owner": "shorwood",
+        "ref": "v1.0.0",
+        "repo": "rlib",
+        "type": "github"
       }
     },
     "root": {
