@@ -15,8 +15,8 @@ use futures_util::{Stream, StreamExt, stream};
 use super::errors::{GeminiError, GeminiRejection, GeminiSpeechStreamError};
 use super::types::{
     Content, ContentPart, ContentRole, GenerateCandidate, GenerateContentRequest,
-    GenerateContentResponse, GenerateFinishReason, GenerateInlineData, GenerateOutputContent,
-    GenerateOutputPart, GenerateUsage, SpeechAudioFormat, SpeechConfig, SpeechResponseModality,
+    GenerateContentResponse, GenerateDelivery, GenerateFinishReason, GenerateInlineData,
+    GenerateOutputContent, GenerateOutputPart, GenerateUsage, SpeechAudioFormat, SpeechConfig,
     SpeechSpeakerVoiceConfig, SpeechVoiceConfig,
 };
 use crate::context::AppState;
@@ -24,60 +24,6 @@ use crate::context::AppState;
 // -----------------------------------------------------------------------------
 // Speech: Selects and validates Gemini speech generation.
 // -----------------------------------------------------------------------------
-
-/// Generation mode selected by `responseModalities`.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(super) enum SpeechRequestMode {
-    /// Existing ELIZA text generation.
-    Text,
-    /// Retro diphone audio generation.
-    Audio,
-}
-
-impl SpeechRequestMode {
-    /// Interpret the modality selector without consuming the request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-modality error for unsupported modality lists.
-    pub(super) fn for_payload(payload: &GenerateContentRequest) -> Result<Self, GeminiError> {
-        let modalities = payload
-            .generation_config
-            .as_ref()
-            .and_then(|config| config.response_modalities.as_deref());
-        match modalities {
-            None | Some([SpeechResponseModality::Text]) => Ok(Self::Text),
-            Some([SpeechResponseModality::Audio])
-                if payload
-                    .generation_config
-                    .as_ref()
-                    .is_some_and(super::types::GenerateConfig::has_text_format_controls) =>
-            {
-                Err(GeminiError::TextFormatForAudio)
-            }
-            Some([SpeechResponseModality::Audio]) => Ok(Self::Audio),
-            _ => Err(GeminiError::InvalidResponseModalities),
-        }
-    }
-}
-
-/// Delivery contract selected by the route path and `alt` query.
-#[derive(Debug, Clone, Copy)]
-pub(super) enum SpeechDelivery {
-    /// One complete JSON response.
-    Unary,
-    /// A JSON array of incremental responses.
-    JsonStream,
-    /// Incremental responses encoded as server-sent events.
-    Sse,
-}
-
-impl SpeechDelivery {
-    /// Return whether this delivery mode uses chunked response records.
-    const fn is_streaming(self) -> bool {
-        matches!(self, Self::JsonStream | Self::Sse)
-    }
-}
 
 impl TryFrom<SpeechAudioFormat> for speech::core::AudioFormat {
     type Error = GeminiError;
@@ -533,7 +479,7 @@ impl LoweredSpeech {
     /// Returns a provider error for unsupported controls, encoding, content, or voice settings.
     fn from_payload(
         payload: GenerateContentRequest,
-        delivery: SpeechDelivery,
+        delivery: GenerateDelivery,
     ) -> Result<Self, GeminiError> {
         let has_unsupported_controls = payload.system_instruction.is_some()
             || payload.tools.is_some()
@@ -609,7 +555,7 @@ impl LoweredSpeech {
         self,
         state: &AppState,
         model: ModelId,
-        delivery: SpeechDelivery,
+        delivery: GenerateDelivery,
         prompt_tokens: usize,
     ) -> Result<SpeechResponse, speech::errors::Error> {
         let audio = state
@@ -622,19 +568,19 @@ impl LoweredSpeech {
             .await?;
         let delay_ms = state.config.stream_delay_ms;
         Ok(match delivery {
-            SpeechDelivery::JsonStream => SpeechResponse::JsonStream {
+            GenerateDelivery::JsonStream => SpeechResponse::JsonStream {
                 model,
                 audio,
                 prompt_tokens,
                 delay_ms,
             },
-            SpeechDelivery::Sse => SpeechResponse::Sse {
+            GenerateDelivery::Sse => SpeechResponse::Sse {
                 model,
                 audio,
                 prompt_tokens,
                 delay_ms,
             },
-            SpeechDelivery::Unary => unreachable!("unary handled before streaming"),
+            GenerateDelivery::Unary => unreachable!("unary handled before streaming"),
         })
     }
 
@@ -647,12 +593,12 @@ impl LoweredSpeech {
         self,
         state: &AppState,
         model: ModelId,
-        delivery: SpeechDelivery,
+        delivery: GenerateDelivery,
     ) -> Result<SpeechResponse, speech::errors::Error> {
         let prompt_tokens = self.request.input_tokens();
         match delivery {
-            SpeechDelivery::Unary => self.respond_unary(state, model, prompt_tokens).await,
-            SpeechDelivery::JsonStream | SpeechDelivery::Sse => {
+            GenerateDelivery::Unary => self.respond_unary(state, model, prompt_tokens).await,
+            GenerateDelivery::JsonStream | GenerateDelivery::Sse => {
                 self.respond_streaming(state, model, delivery, prompt_tokens)
                     .await
             }
@@ -664,7 +610,7 @@ impl LoweredSpeech {
 pub(super) async fn generate(
     state: &AppState,
     model: ModelId,
-    delivery: SpeechDelivery,
+    delivery: GenerateDelivery,
     payload: GenerateContentRequest,
 ) -> Response {
     // Only the dedicated speech model can execute AUDIO requests.

@@ -343,6 +343,8 @@ pub(super) struct ChatMessage {
     pub(super) role: MessageRole,
     /// Optional message payload.
     pub(super) content: Option<MessageContent>,
+    /// Inline standard-base64 images attached to a user message.
+    pub(super) images: Option<Vec<String>>,
     /// Tool calls requested by an assistant message.
     pub(super) tool_calls: Option<Vec<ToolCall>>,
 }

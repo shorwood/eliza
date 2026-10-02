@@ -2,8 +2,8 @@
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
@@ -13,6 +13,7 @@ use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks, unix_timestamp};
 use eliza_modality_chat as chat;
+use eliza_modality_image as image;
 use uuid::Uuid;
 
 use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
@@ -143,10 +144,11 @@ fn lower_message(
         }
         ChatRequestRole::User => {
             let content = content.ok_or(OpenAiError::MissingUserContent)?;
-            turns.push(chat::turn::Turn::User(text_content(
-                content,
-                "messages.content",
-            )?));
+            let content: UserContent = content.try_into()?;
+            turns.push(chat::turn::Turn::user_with_images(
+                content.text,
+                content.images,
+            ));
         }
         ChatRequestRole::Assistant => lower_assistant_message(content, tool_calls, turns)?,
         ChatRequestRole::Tool => {
@@ -160,7 +162,80 @@ fn lower_message(
 }
 
 // -----------------------------------------------------------------------------
-// Text: Normalizes OpenAI content shapes into replayable text.
+// UserContent: Normalizes OpenAI user text and images.
+// -----------------------------------------------------------------------------
+
+/// Text and images lowered from one user message.
+struct UserContent {
+    /// Joined user text parts.
+    text: String,
+    /// Images retained in content-part order.
+    images: Vec<image::source::Source>,
+}
+
+impl UserContent {
+    /// Join user text while retaining ordered image sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure when any content part cannot be normalized.
+    fn from_parts(parts: Vec<ChatContentPart>) -> Result<Self, OpenAiError> {
+        let mut text = Vec::new();
+        let mut images = Vec::new();
+        for part in parts {
+            match part {
+                ChatContentPart::Text { text: part } => text.push(part),
+                ChatContentPart::ImageUrl { image_url } => {
+                    images.push(Self::image_source(image_url)?);
+                }
+                ChatContentPart::Unsupported => {
+                    Err(OpenAiError::UnsupportedContentPart {
+                        param: "messages.content",
+                    })?;
+                }
+            }
+        }
+        Ok(Self {
+            text: text.join("\n"),
+            images,
+        })
+    }
+
+    /// Normalize one Chat Completions image object.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure for a missing, malformed, or unsupported URL.
+    fn image_source(
+        image_url: Option<super::types::ChatImageUrl>,
+    ) -> Result<image::source::Source, OpenAiError> {
+        let missing = || OpenAiError::Image(image::errors::Error::MissingSource);
+        let image_url = image_url.ok_or_else(missing)?;
+        let _ = image_url.detail;
+        let url = image_url.url.ok_or_else(missing)?;
+        image::source::Source::url(&url).map_err(OpenAiError::Image)
+    }
+}
+
+impl TryFrom<ChatContent> for UserContent {
+    type Error = OpenAiError;
+
+    fn try_from(content: ChatContent) -> Result<Self, Self::Error> {
+        match content {
+            ChatContent::Text(text) => Ok(Self {
+                text,
+                images: Vec::new(),
+            }),
+            ChatContent::Parts(parts) => Self::from_parts(parts),
+            ChatContent::Object(_) => Err(OpenAiError::UnsupportedContentShape {
+                param: "messages.content",
+            }),
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Text: Normalizes non-user OpenAI content into replayable text.
 // -----------------------------------------------------------------------------
 
 /// Join a sequence of text-only content parts.
@@ -177,7 +252,7 @@ fn text_parts_join(
         match part {
             ChatContentPart::Text { text: part } => text.push(part),
             // Non-text content cannot be represented by ELIZA.
-            ChatContentPart::Unsupported => {
+            ChatContentPart::ImageUrl { .. } | ChatContentPart::Unsupported => {
                 return Err(OpenAiError::UnsupportedContentPart { param });
             }
         }
@@ -441,7 +516,7 @@ pub(crate) async fn handle(
         Ok(request) => request,
         // Provider validation failures use OpenAI's native envelope.
         Err(error) => {
-            return OpenAiRejection::from_error(&error).into_response();
+            return OpenAiRejection::request(&error, "messages").into_response();
         }
     };
 
@@ -484,6 +559,7 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .tag("openai")
                 .response::<200, Json<ChatResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
-        }),
+        })
+        .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
     )
 }

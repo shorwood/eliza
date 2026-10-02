@@ -7,6 +7,7 @@ mod context;
 mod embeddings;
 mod errors;
 mod generate;
+mod images;
 mod models;
 pub mod router;
 mod speech;

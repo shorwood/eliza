@@ -1,6 +1,7 @@
 # `pkgs.callPackage` fills these dependencies from nixpkgs. The flake passes
 # the pinned Rust toolchain and the systems that this repository supports.
 {
+  curl,
   hurl,
   lib,
   makeRustPlatform,
@@ -17,7 +18,7 @@ in
 rustPlatform.buildRustPackage {
   pname = "eliza";
   version =
-    (builtins.fromTOML (builtins.readFile (projectRoot + "/crates/cli/Cargo.toml"))).package.version;
+    (builtins.fromTOML (builtins.readFile (projectRoot + "/Cargo.toml"))).workspace.package.version;
 
   # A narrow source set keeps unrelated files from invalidating the build.
   # Workspace crates and tests are included because `buildRustPackage` runs them.
@@ -49,7 +50,10 @@ rustPlatform.buildRustPackage {
   disallowedReferences = [ rustToolchain ];
 
   # The Rust integration tests invoke Hurl to verify the HTTP contracts.
-  nativeCheckInputs = [ hurl ];
+  nativeCheckInputs = [
+    curl
+    hurl
+  ];
 
   # Keep the license notice in binary distributions. The container image uses
   # this package verbatim, so it receives the same notice automatically.
