@@ -2,8 +2,8 @@
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
@@ -13,6 +13,7 @@ use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks, unix_timestamp};
 use eliza_modality_chat as chat;
+use eliza_modality_image as image;
 use uuid::Uuid;
 
 use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
@@ -75,11 +76,21 @@ fn lower_message_item(
     system: &mut Vec<String>,
     turns: &mut Vec<chat::turn::Turn>,
 ) -> Result<(), OpenAiError> {
-    let text = text_content(content, "input.content")?;
     match role {
-        ResponsesRequestRole::User => turns.push(chat::turn::Turn::User(text)),
-        ResponsesRequestRole::System | ResponsesRequestRole::Developer => system.push(text),
-        ResponsesRequestRole::Assistant => turns.push(chat::turn::Turn::Assistant(text)),
+        ResponsesRequestRole::User => {
+            let content: UserContent = content.try_into()?;
+            turns.push(chat::turn::Turn::user_with_images(
+                content.text,
+                content.images,
+            ));
+        }
+        ResponsesRequestRole::System | ResponsesRequestRole::Developer => {
+            system.push(text_content(content, "input.content")?);
+        }
+        ResponsesRequestRole::Assistant => turns.push(chat::turn::Turn::Assistant(text_content(
+            content,
+            "input.content",
+        )?)),
         // Unknown provider roles cannot be replayed safely.
         ResponsesRequestRole::Unsupported => return Err(OpenAiError::UnsupportedResponsesRole),
     }
@@ -133,7 +144,7 @@ fn lower_input(
     system: &mut Vec<String>,
 ) -> Result<Vec<chat::turn::Turn>, OpenAiError> {
     match input {
-        ResponsesRequestInput::Text(text) => Ok(vec![chat::turn::Turn::User(text)]),
+        ResponsesRequestInput::Text(text) => Ok(vec![chat::turn::Turn::from(text)]),
         ResponsesRequestInput::Items(items) => {
             let mut turns = Vec::new();
             for item in items {
@@ -145,7 +156,81 @@ fn lower_input(
 }
 
 // -----------------------------------------------------------------------------
-// Text: Normalizes Responses content into replayable text.
+// UserContent: Normalizes Responses user text and images.
+// -----------------------------------------------------------------------------
+
+/// Text and images lowered from one Responses user message.
+struct UserContent {
+    /// Joined user text parts.
+    text: String,
+    /// Images retained in content-part order.
+    images: Vec<image::source::Source>,
+}
+
+impl UserContent {
+    /// Join user text while retaining ordered image sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure when any content part cannot be normalized.
+    fn from_parts(parts: Vec<ResponsesRequestContentPart>) -> Result<Self, OpenAiError> {
+        let mut text = Vec::new();
+        let mut images = Vec::new();
+        for part in parts {
+            match part {
+                ResponsesRequestContentPart::InputText { text: part }
+                | ResponsesRequestContentPart::OutputText { text: part }
+                | ResponsesRequestContentPart::Text { text: part } => text.push(part),
+                ResponsesRequestContentPart::InputImage {
+                    image_url,
+                    file_id,
+                    detail,
+                } => {
+                    let _ = detail;
+                    images.push(Self::image_source(image_url, file_id)?);
+                }
+                ResponsesRequestContentPart::Unsupported => {
+                    Err(OpenAiError::UnsupportedContentPart {
+                        param: "input.content",
+                    })?;
+                }
+            }
+        }
+        Ok(Self {
+            text: text.join("\n"),
+            images,
+        })
+    }
+
+    /// Normalize exactly one Responses image source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure when the source is missing, conflicting, or invalid.
+    fn image_source(
+        image_url: Option<String>,
+        file_id: Option<String>,
+    ) -> Result<image::source::Source, OpenAiError> {
+        image::source::Source::url_or_reference(image_url, file_id).map_err(OpenAiError::Image)
+    }
+}
+
+impl TryFrom<ResponsesRequestContent> for UserContent {
+    type Error = OpenAiError;
+
+    fn try_from(content: ResponsesRequestContent) -> Result<Self, Self::Error> {
+        match content {
+            ResponsesRequestContent::Text(text) => Ok(Self {
+                text,
+                images: Vec::new(),
+            }),
+            ResponsesRequestContent::Parts(parts) => Self::from_parts(parts),
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Text: Normalizes non-user Responses content into replayable text.
 // -----------------------------------------------------------------------------
 
 /// Lower one Responses content part into its text payload.
@@ -161,7 +246,8 @@ fn text_part(
         ResponsesRequestContentPart::InputText { text }
         | ResponsesRequestContentPart::OutputText { text }
         | ResponsesRequestContentPart::Text { text } => Ok(text),
-        ResponsesRequestContentPart::Unsupported => {
+        ResponsesRequestContentPart::InputImage { .. }
+        | ResponsesRequestContentPart::Unsupported => {
             Err(OpenAiError::UnsupportedContentPart { param })
         }
     }
@@ -453,7 +539,7 @@ async fn open_ai_responses(
         Ok(request) => request,
         // Provider validation failures use OpenAI's native envelope.
         Err(error) => {
-            return OpenAiRejection::from_error(&error).into_response();
+            return OpenAiRejection::request(&error, "input").into_response();
         }
     };
 
@@ -496,6 +582,7 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .tag("openai")
                 .response::<200, Json<ResponsesResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
-        }),
+        })
+        .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
     )
 }

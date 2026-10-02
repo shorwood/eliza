@@ -88,8 +88,35 @@ pub(super) enum AssistantRole {
 }
 
 // -----------------------------------------------------------------------------
-// ChatContent: Defines Chat Completions content shapes.
+// ImageDetail: Accepts documented OpenAI image-detail hints.
 // -----------------------------------------------------------------------------
+
+/// Documented `OpenAI` image-detail hint accepted as a deterministic no-op.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum ImageDetail {
+    /// Let the provider choose detail automatically.
+    Auto,
+    /// Request low image detail.
+    Low,
+    /// Request high image detail.
+    High,
+    /// Request original image detail.
+    Original,
+}
+
+// -----------------------------------------------------------------------------
+// Chat: Defines Chat Completions content shapes.
+// -----------------------------------------------------------------------------
+
+/// URL object nested inside a Chat Completions image part.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct ChatImageUrl {
+    /// Data or HTTP(S) image URL.
+    pub(super) url: Option<String>,
+    /// Accepted detail hint with no effect on deterministic sampling.
+    pub(super) detail: Option<ImageDetail>,
+}
 
 /// One structured Chat Completions content part.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -99,6 +126,11 @@ pub(super) enum ChatContentPart {
     Text {
         /// Text carried by the part.
         text: String,
+    },
+    /// User-provided image URL.
+    ImageUrl {
+        /// URL and optional detail hint.
+        image_url: Option<ChatImageUrl>,
     },
     /// Any content-part kind outside the supported subset.
     #[serde(other)]
@@ -477,6 +509,15 @@ pub(super) enum ResponsesRequestContentPart {
     Text {
         /// Text carried by the part.
         text: String,
+    },
+    /// User-provided image URL or uploaded-file reference.
+    InputImage {
+        /// Data or HTTP(S) image URL.
+        image_url: Option<String>,
+        /// Provider-owned uploaded file identifier.
+        file_id: Option<String>,
+        /// Accepted detail hint with no effect on deterministic sampling.
+        detail: Option<ImageDetail>,
     },
     /// Any content-part kind outside the supported subset.
     #[serde(other)]

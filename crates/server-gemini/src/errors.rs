@@ -5,6 +5,7 @@ use eliza_http::errors::EncodingError;
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
 use eliza_modality_chat as chat;
 use eliza_modality_embedding as embedding;
+use eliza_modality_image as image;
 use eliza_modality_speech as speech;
 use miette::Diagnostic;
 use schemars::JsonSchema;
@@ -18,6 +19,14 @@ use thiserror::Error;
 /// Failure detected while lowering a Gemini request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum GeminiError {
+    /// Shared image source validation failed during provider lowering.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Image(
+        /// Provider-neutral image failure.
+        image::errors::Error,
+    ),
+
     /// An embedding body selected a model other than the fixed resource.
     #[error("embeddings require model `models/fnv-embed`")]
     #[diagnostic(code(eliza::gemini::embedding_model_required))]
@@ -155,6 +164,14 @@ pub(super) enum GeminiError {
         #[source]
         source: chat::structured_output::StructuredOutputError,
     },
+    /// Text generation included image-specific response controls.
+    #[error("image response formats are not valid for TEXT responses")]
+    #[diagnostic(code(eliza::gemini::image_format_for_text))]
+    ImageFormatForText,
+    /// Audio generation included image-specific response controls.
+    #[error("image response formats are not valid for AUDIO responses")]
+    #[diagnostic(code(eliza::gemini::image_format_for_audio))]
+    ImageFormatForAudio,
     /// Audio generation included text-output formatting controls.
     #[error("text response formats are not valid for AUDIO responses")]
     #[diagnostic(code(eliza::gemini::text_format_for_audio))]
@@ -167,8 +184,16 @@ pub(super) enum GeminiError {
     #[error("model `flite` only supports AUDIO responses")]
     #[diagnostic(code(eliza::gemini::speech_model_audio_only))]
     SpeechModelAudioOnly,
-    /// Response modalities did not select exactly one supported modality.
-    #[error("responseModalities must contain exactly TEXT or AUDIO")]
+    /// Image generation used a model other than the local image fixture.
+    #[error("image generation requires model `eliza-retro-image`")]
+    #[diagnostic(code(eliza::gemini::image_generation_model_required))]
+    ImageGenerationModelRequired,
+    /// The local image model was asked for a response without an image.
+    #[error("model `eliza-retro-image` requires IMAGE output")]
+    #[diagnostic(code(eliza::gemini::image_model_requires_image))]
+    ImageModelRequiresImage,
+    /// Response modalities did not select one supported output combination.
+    #[error("responseModalities must select TEXT, AUDIO, IMAGE, or TEXT with IMAGE")]
     #[diagnostic(code(eliza::gemini::invalid_response_modalities))]
     InvalidResponseModalities,
     /// Audio generation omitted its speech configuration or voice.
@@ -187,6 +212,25 @@ pub(super) enum GeminiError {
     #[error("tools and system instructions are not supported for audio generation")]
     #[diagnostic(code(eliza::gemini::speech_controls_unsupported))]
     SpeechControlsUnsupported,
+    /// Image generation received anything other than one user text prompt.
+    #[error("image generation supports one user content record with text parts only")]
+    #[diagnostic(code(eliza::gemini::image_text_only))]
+    ImageTextOnly,
+    /// Image generation included controls outside the initial compatibility subset.
+    #[error("unsupported image generation control `{param}`")]
+    #[diagnostic(code(eliza::gemini::unsupported_image_control))]
+    UnsupportedImageControl {
+        /// Request field selecting unsupported behavior.
+        param: &'static str,
+    },
+    /// Image generation selected a ratio outside the fixed subset.
+    #[error("unsupported image aspect ratio")]
+    #[diagnostic(code(eliza::gemini::unsupported_image_aspect_ratio))]
+    UnsupportedImageAspectRatio,
+    /// Image generation selected a size class outside the fixed subset.
+    #[error("unsupported image size")]
+    #[diagnostic(code(eliza::gemini::unsupported_image_size))]
+    UnsupportedImageSize,
     /// A multi-speaker request did not define two distinct speakers.
     #[error("multi-speaker speech requires exactly two distinct speaker mappings")]
     #[diagnostic(code(eliza::gemini::invalid_speaker_config))]
@@ -200,10 +244,16 @@ pub(super) enum GeminiError {
 impl ProblemDetails for GeminiError {
     fn class(&self) -> ProblemClass {
         match self {
+            Self::Image(source) => match source.kind() {
+                image::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+                image::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            },
             Self::EmbeddingTextOnly
             | Self::UnsupportedEmbeddingControl { .. }
             | Self::UnsupportedResponseFormat { .. }
             | Self::UnsupportedResponseSchema { .. }
+            | Self::ImageFormatForText
+            | Self::ImageFormatForAudio
             | Self::MissingFunctionDeclarations
             | Self::UnsupportedCallingMode { .. }
             | Self::UnsupportedModelAction { .. }
@@ -213,7 +263,11 @@ impl ProblemDetails for GeminiError {
             | Self::UnsupportedTextPart { .. }
             | Self::UnsupportedSpeechFormat
             | Self::SpeechTextOnly
-            | Self::SpeechControlsUnsupported => ProblemClass::UnsupportedRequest,
+            | Self::SpeechControlsUnsupported
+            | Self::ImageTextOnly
+            | Self::UnsupportedImageControl { .. }
+            | Self::UnsupportedImageAspectRatio
+            | Self::UnsupportedImageSize => ProblemClass::UnsupportedRequest,
             _ => ProblemClass::InvalidRequest,
         }
     }
@@ -226,6 +280,9 @@ impl ProblemDetails for GeminiError {
             Self::ConflictingResponseFormats
             | Self::TextFormatForAudio
             | Self::SpeechControlsUnsupported => Some("generationConfig"),
+            Self::ImageFormatForText | Self::ImageFormatForAudio => {
+                Some("generationConfig.responseFormat.image")
+            }
             Self::MissingFunctionDeclarations | Self::MissingFunctionName => Some("tools"),
             Self::UnsupportedEmbeddingControl { param }
             | Self::InvalidResponseFormat { param, .. }
@@ -234,26 +291,35 @@ impl ProblemDetails for GeminiError {
             | Self::UnsupportedResponseSchema { param, .. }
             | Self::UnsupportedCallingMode { param }
             | Self::MissingTextParts { param }
-            | Self::UnsupportedTextPart { param } => Some(param),
+            | Self::UnsupportedTextPart { param }
+            | Self::UnsupportedImageControl { param } => Some(param),
             Self::UnsupportedModelAction { .. } | Self::MissingModelAction | Self::EmptyModel => {
                 Some("model")
             }
             Self::UnsupportedRole => Some("contents.role"),
-            Self::MissingContentParts
+            Self::Image(_)
+            | Self::MissingContentParts
             | Self::MissingFunctionResponse
             | Self::UnsupportedUserPart
             | Self::MissingFunctionCallName
             | Self::UnsupportedModelPart
             | Self::SpeechTextOnly
+            | Self::ImageTextOnly
             | Self::UnknownSpeaker => Some("contents.parts"),
             Self::EmbeddingModelRequired
             | Self::SpeechModelRequired
-            | Self::SpeechModelAudioOnly => Some("model"),
+            | Self::SpeechModelAudioOnly
+            | Self::ImageGenerationModelRequired
+            | Self::ImageModelRequiresImage => Some("model"),
             Self::InvalidResponseModalities => Some("generationConfig.responseModalities"),
             Self::MissingSpeechConfig | Self::InvalidSpeakerConfig => {
                 Some("generationConfig.speechConfig")
             }
             Self::UnsupportedSpeechFormat => Some("generationConfig.responseFormat.audio.mimeType"),
+            Self::UnsupportedImageAspectRatio => {
+                Some("generationConfig.responseFormat.image.aspectRatio")
+            }
+            Self::UnsupportedImageSize => Some("generationConfig.responseFormat.image.imageSize"),
         }
     }
 }
@@ -386,6 +452,21 @@ impl From<&embedding::engine::Error> for GeminiRejection {
         let param = match error.field() {
             embedding::engine::ErrorField::Input => Some("content.parts"),
             embedding::engine::ErrorField::Dimensions => Some("outputDimensionality"),
+        };
+        Self(Problem::from_diagnostic(error, class, param))
+    }
+}
+
+impl From<&image::generation::Error> for GeminiRejection {
+    fn from(error: &image::generation::Error) -> Self {
+        let class = match error.kind() {
+            image::generation::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            image::generation::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            image::generation::ErrorKind::Internal => ProblemClass::Internal,
+        };
+        let param = match error.field() {
+            image::generation::ErrorField::Prompt => Some("contents.parts"),
+            image::generation::ErrorField::Count | image::generation::ErrorField::None => None,
         };
         Self(Problem::from_diagnostic(error, class, param))
     }

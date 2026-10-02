@@ -14,29 +14,29 @@ or therapeutic system.
 
 ### Nix flake
 
-Install the executable from a checkout:
+Install the 1.0.0 release from GitHub:
 
 ```sh
-nix profile install .#eliza
+nix profile install github:shorwood/eliza/v1.0.0#eliza
 eliza serve
 ```
 
-Replace `.` with the published flake reference when installing remotely. The
-same package can be run without adding it to a profile:
+Use `.#eliza` instead when installing from a checkout. The published package
+can also be run without adding it to a profile:
 
 ```sh
-nix run .#eliza -- serve
+nix run github:shorwood/eliza/v1.0.0#eliza -- serve
 ```
 
 ### Docker image
 
-The flake exposes `eliza:0.1.0` Linux image archives for x86-64 and ARM64.
+The flake exposes `eliza:1.0.0` Linux image archives for x86-64 and ARM64.
 On a matching Linux host, build and load the native image with:
 
 ```sh
 nix build .#dockerImage
 docker load --input result
-docker run --rm -p 127.0.0.1:8787:8787 eliza:0.1.0
+docker run --rm -p 127.0.0.1:8787:8787 eliza:1.0.0
 ```
 
 From a non-Linux host, select the Linux target explicitly and configure a
@@ -53,12 +53,15 @@ The image runs as an unprivileged user and defaults to
 default command, so include `serve` when supplying options:
 
 ```sh
-docker run --rm -p 127.0.0.1:8787:8787 eliza:0.1.0 \
+docker run --rm -p 127.0.0.1:8787:8787 eliza:1.0.0 \
   serve --bind 0.0.0.0:8787 --json-logs
 ```
 
-For a registry-published image, replace `eliza:0.1.0` with its full image
-reference; the runtime arguments are unchanged.
+The same x86-64 and ARM64 image is published to GHCR for each release:
+
+```sh
+docker run --rm -p 127.0.0.1:8787:8787 ghcr.io/shorwood/eliza:1.0.0
+```
 
 The server listens on `http://127.0.0.1:8787` in both examples. Verify it with:
 
@@ -91,7 +94,7 @@ Every provider route is namespaced. Unprefixed routes such as `/v1/models` and
 | Surface | Routes | Successful response transport |
 | --- | --- | --- |
 | System | `GET /healthz` | JSON |
-| OpenAI | `GET /openai/v1/models`<br>`POST /openai/v1/chat/completions`<br>`POST /openai/v1/responses`<br>`POST /openai/v1/audio/speech`<br>`POST /openai/v1/embeddings` | JSON, binary audio, or SSE |
+| OpenAI | `GET /openai/v1/models`<br>`POST /openai/v1/chat/completions`<br>`POST /openai/v1/responses`<br>`POST /openai/v1/audio/speech`<br>`POST /openai/v1/embeddings`<br>`POST /openai/v1/images/generations` | JSON, binary audio, or SSE |
 | Gemini OpenAI alias | `POST /gemini/v1beta/openai/chat/completions`<br>`POST /gemini/v1beta/openai/embeddings` | OpenAI JSON or SSE |
 | Anthropic | `GET /anthropic/v1/models`<br>`POST /anthropic/v1/messages` | JSON; SSE when `stream: true` |
 | Gemini | `GET /gemini/v1beta/models`<br>`POST /gemini/v1beta/models/{model}:generateContent`<br>`POST /gemini/v1beta/models/{model}:streamGenerateContent`<br>`POST /gemini/v1beta/models/fnv-embed:embedContent`<br>`POST /gemini/v1beta/models/fnv-embed:batchEmbedContents` | JSON; the stream action returns a JSON array, or SSE with `?alt=sse` |
@@ -100,8 +103,9 @@ Every provider route is namespaced. Unprefixed routes such as `/v1/models` and
 
 OpenAI and Gemini model lists advertise the model selected by `--chat-model`,
 which defaults to `eliza-1966`, plus the fixed `flite` speech model and
-`fnv-embed` embedding model. Ollama advertises the configured chat
-model and embedding model; Anthropic advertises only the chat model.
+`fnv-embed` embedding model, and `eliza-retro-image` image model. Ollama
+advertises the configured chat model and embedding model; Anthropic advertises
+only the chat model.
 
 ## Request examples
 
@@ -123,6 +127,51 @@ curl -s http://127.0.0.1:8787/openai/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{"model":"eliza-1966","input":"I need help."}'
 ```
+
+### Image input
+
+Chat routes accept bounded PNG and JPEG input in each provider's native shape.
+For example, OpenAI Chat Completions accepts a data URL alongside ordinary
+text:
+
+```sh
+IMAGE_BASE64=$(base64 < image.png | tr -d '\n')
+curl -s http://127.0.0.1:8787/openai/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\":\"eliza-1966\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What do you make of this?\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,$IMAGE_BASE64\"}}]}]}"
+```
+
+The response starts with a deterministic measurement such as
+`[RETRO VISION 1: 640x480 LANDSCAPE, DARK, WARM, HIGH CONTRAST, 38% FOREGROUND]`.
+The same analysis is available through OpenAI Responses, Anthropic image
+blocks, Gemini `inlineData`/`fileData`, Ollama `images`, and Gemini's OpenAI
+alias.
+
+### Image generation
+
+The image model renders prompt-selected cellular automata locally. OpenAI
+returns standard-base64 PNG data:
+
+```sh
+curl -s http://127.0.0.1:8787/openai/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"eliza-retro-image","prompt":"neon cats dreaming","size":"1024x1024"}' \
+  | jq -r '.data[0].b64_json' | base64 --decode > retro.png
+```
+
+Native Gemini clients use the existing generation route. `IMAGE` returns one
+inline PNG; omitting `responseModalities` returns an ELIZA text part followed
+by the image.
+
+```sh
+curl -s http://127.0.0.1:8787/gemini/v1beta/models/eliza-retro-image:generateContent \
+  -H 'Content-Type: application/json' \
+  -d '{"contents":[{"role":"user","parts":[{"text":"neon cats dreaming"}]}],"generationConfig":{"responseModalities":["IMAGE"],"responseFormat":{"image":{"aspectRatio":"3:2","imageSize":"1K"}}}}'
+```
+
+Image generation is a deterministic compatibility fixture, not a semantic
+image model. The same normalized prompt, variation, and dimensions always
+produce identical PNG bytes.
 
 ### OpenAI Speech
 
@@ -232,7 +281,7 @@ eliza serve --help
 ```
 
 For the container image, use
-`docker run --rm eliza:0.1.0 serve --help`.
+`docker run --rm eliza:1.0.0 serve --help`.
 
 ### Authentication
 
@@ -253,8 +302,18 @@ request failures use provider-native JSON envelopes and include a stable
 
 - Request and response envelopes are typed per provider; unknown object fields
   are tolerated, while unsupported known variants are rejected explicitly.
-- Conversation input is text-only. Multimodal content and Ollama reasoning
-  output are not implemented.
+- Chat input supports up to four PNG/JPEG images. Inline images are capped at
+  8 MiB of base64, 4096 pixels per dimension, 4 million pixels each, and
+  8 million pixels per request. Image-capable JSON routes have a fixed 48 MiB
+  body cap.
+- Image analysis samples pixels deterministically; it does not perform OCR,
+  object recognition, or face detection. HTTP(S) URLs and provider file
+  references are reported as opaque and are never fetched.
+- Image generation is synchronous and in-memory. It supports one through four
+  OpenAI PNGs and one Gemini inline PNG from a single text prompt; URLs, edits,
+  masks, reference images, and progressive previews are not implemented.
+- Embedding and speech inputs, system instructions, and chat-model history
+  remain text-only. Ollama reasoning output is not implemented.
 - Structured output supports primitive `type`, primitive `const` and `enum`,
   `anyOf`, required object properties, arrays with zero or one required item,
   root `$defs`, and local `$ref`. Other JSON Schema constraints are rejected;
@@ -271,18 +330,20 @@ request failures use provider-native JSON envelopes and include a stable
 - A request replays its user history through a fresh ELIZA session. State is
   not retained between HTTP requests.
 - Usage counts are deterministic approximations, not provider tokenizer output.
-  Serialized schemas count toward input usage and final serialized JSON counts
-  toward output usage.
+  Serialized schemas and rendered image-analysis lines count toward input
+  usage, while input and generated base64 payloads do not; final serialized
+  JSON counts toward output usage.
 - Text streaming splits an already-computed deterministic response into native
-  SSE or NDJSON records. Speech streaming synthesizes and encodes incrementally
-  through a bounded two-worker pool; `--stream-delay-ms` paces delivery.
+  SSE or NDJSON records. Image streaming emits one complete terminal record.
+  Speech streaming synthesizes and encodes incrementally through a bounded
+  two-worker pool; `--stream-delay-ms` paces delivery.
 - Input and history limits apply after provider contracts are lowered into the
   shared conversation contract; serialized output schemas count toward the
   input-character limit.
 
 ## Deterministic tool fixture
 
-Every generation surface accepts client-defined function tools. Tool
+Every text-generation surface accepts client-defined function tools. Tool
 definitions do not affect an ordinary ELIZA prompt. To request a call, make the
 complete latest user message:
 
@@ -359,6 +420,13 @@ just ok
 The gate checks formatting, the one-request-per-Hurl-file contract, compilation,
 unit tests, CLI UI snapshots, HTTP contracts, Clippy, and rlib Dylint rules.
 Use `just test-http` for only the Hurl-backed HTTP suites.
+
+## Releasing
+
+Stable releases use `vX.Y.Z` tags matching the workspace version. Push the tag
+only after `main` CI is green; GitHub Actions verifies the source again, builds
+the native x86-64 and ARM64 images, publishes the multi-architecture GHCR
+manifest, and then creates the GitHub Release.
 
 ## License
 

@@ -5,6 +5,7 @@ default-members = ["crates/cli"]
 
 [workspace.package]
 license = "MIT"
+version = "1.0.0"
 
 [workspace.lints.clippy]
 pedantic = "warn"

@@ -3,6 +3,8 @@
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
+use axum::extract::DefaultBodyLimit;
+use eliza_modality_image as image;
 
 use crate::chat_completions;
 use crate::context::AppState;
@@ -20,7 +22,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .tag("openai")
                 .response::<200, Json<ChatResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
-        }),
+        })
+        .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
     );
     router.api_route(
         "/embeddings",

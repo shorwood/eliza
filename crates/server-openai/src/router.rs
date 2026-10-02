@@ -7,7 +7,7 @@ use eliza_http::context::RouteConfig;
 use eliza_modality_speech::service::Service as SpeechService;
 
 use super::context::{AppState, SpeechState};
-use super::{chat_completions, compatibility, embeddings, models, responses, speech};
+use super::{chat_completions, compatibility, embeddings, images, models, responses, speech};
 
 /// Configured OpenAI-compatible route tree.
 pub struct Routes {
@@ -33,6 +33,7 @@ impl Routes {
     pub fn into_router(self) -> ApiRouter {
         let router = models::router().merge(chat_completions::router());
         let router = router.merge(embeddings::router());
+        let router = router.merge(images::router());
         let router = router.merge(responses::router());
         let router = router.with_state(AppState {
             config: Arc::clone(&self.config),

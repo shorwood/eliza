@@ -2,8 +2,8 @@
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use eliza_http::context::ProviderAuth;
@@ -11,6 +11,7 @@ use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{NdjsonResponse, stream_chunks};
 use eliza_modality_chat as chat;
+use eliza_modality_image as image;
 
 use super::errors::{OllamaError, OllamaFailureResponse, OllamaRejection};
 use super::types::{
@@ -38,9 +39,23 @@ impl TryFrom<ChatRequest> for chat::turn::Request {
         let mut turns = Vec::new();
         for message in payload.messages {
             let content = MessageContent::into_text(message.content);
+            let images = message.images.unwrap_or_default();
+
+            // Image payloads are valid only on user-authored turns.
+            if !matches!(message.role, MessageRole::User) && !images.is_empty() {
+                return Err(OllamaError::ImagesRequireUserRole);
+            }
+
+            // Lower each validated provider role into neutral conversation state.
             match message.role {
                 MessageRole::System => system.push(content),
-                MessageRole::User => turns.push(chat::turn::Turn::User(content)),
+                MessageRole::User => {
+                    let images = images
+                        .into_iter()
+                        .map(image::source::Source::inline_base64)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    turns.push(chat::turn::Turn::user_with_images(content, images));
+                }
                 MessageRole::Assistant => {
                     assistant_lower(content, message.tool_calls, &mut turns)?;
                 }
@@ -239,6 +254,7 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .tag("ollama")
                 .response::<200, Json<ChatResponse>>()
                 .default_response::<Json<OllamaFailureResponse>>()
-        }),
+        })
+        .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
     )
 }
