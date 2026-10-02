@@ -4,6 +4,7 @@ use axum::response::{IntoResponse, Response};
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
 use eliza_modality_chat as chat;
 use eliza_modality_embedding as embedding;
+use eliza_modality_image as image;
 use miette::Diagnostic;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -16,6 +17,15 @@ use thiserror::Error;
 /// Failure detected while lowering an Ollama request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OllamaError {
+    /// Shared image source validation failed during provider lowering.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Image(
+        /// Provider-neutral image failure.
+        #[from]
+        image::errors::Error,
+    ),
+
     /// An embedding request selected a model other than the fixed fixture.
     #[error("embeddings require model `fnv-embed`")]
     #[diagnostic(code(eliza::embedding::model_required))]
@@ -52,6 +62,10 @@ pub(super) enum OllamaError {
     #[error("unsupported Ollama role")]
     #[diagnostic(code(eliza::ollama::unsupported_role))]
     UnsupportedRole,
+    /// An image list was attached to a non-user message.
+    #[error("images are supported only on user messages")]
+    #[diagnostic(code(eliza::ollama::images_require_user_role))]
+    ImagesRequireUserRole,
     /// A tool call selected a non-function kind.
     #[error("only function tool calls are supported")]
     #[diagnostic(code(eliza::ollama::unsupported_tool_call_kind))]
@@ -98,6 +112,10 @@ pub(super) enum OllamaError {
 impl ProblemDetails for OllamaError {
     fn class(&self) -> ProblemClass {
         match self {
+            Self::Image(source) => match source.kind() {
+                image::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+                image::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            },
             Self::UnsupportedEmbeddingInput
             | Self::UnsupportedResponseFormat
             | Self::UnsupportedResponseSchema { .. }
@@ -111,6 +129,7 @@ impl ProblemDetails for OllamaError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::Image(_) | Self::ImagesRequireUserRole => Some("messages.images"),
             Self::EmbeddingModelRequired => Some("model"),
             Self::UnsupportedEmbeddingInput => Some("input"),
             Self::InvalidResponseSchema { .. }

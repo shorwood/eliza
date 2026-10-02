@@ -3,6 +3,7 @@ use axum::Json;
 use axum::response::{IntoResponse, Response};
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
 use eliza_modality_chat as chat;
+use eliza_modality_image as image;
 use miette::Diagnostic;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -15,6 +16,14 @@ use thiserror::Error;
 /// Failure detected while lowering an Anthropic request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum AnthropicError {
+    /// Shared image source validation failed during provider lowering.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Image(
+        /// Provider-neutral image failure.
+        image::errors::Error,
+    ),
+
     /// A structured-output control omitted its schema.
     #[error("invalid output format: schema is required")]
     #[diagnostic(code(eliza::anthropic::invalid_output_format))]
@@ -96,6 +105,10 @@ pub(super) enum AnthropicError {
 impl ProblemDetails for AnthropicError {
     fn class(&self) -> ProblemClass {
         match self {
+            Self::Image(source) => match source.kind() {
+                image::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+                image::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            },
             Self::UnsupportedOutputFormat
             | Self::UnsupportedOutputSchema { .. }
             | Self::UnsupportedToolChoice
@@ -118,7 +131,8 @@ impl ProblemDetails for AnthropicError {
             Self::MissingNamedToolChoice | Self::UnsupportedToolChoice => Some("tool_choice"),
             Self::UnsupportedRole => Some("messages.role"),
             Self::UnsupportedSystemBlock => Some("system"),
-            Self::MissingUserContent
+            Self::Image(_)
+            | Self::MissingUserContent
             | Self::UnsupportedUserBlock
             | Self::MissingToolUseName
             | Self::MissingToolUseInput

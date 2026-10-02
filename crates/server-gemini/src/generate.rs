@@ -5,7 +5,7 @@ use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
@@ -14,15 +14,17 @@ use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks};
 use eliza_modality_chat as chat;
+use eliza_modality_image as image;
 use eliza_modality_speech as speech;
 use uuid::Uuid;
 
 use super::errors::{GeminiError, GeminiFailureResponse, GeminiRejection};
-use super::speech::{SpeechDelivery, SpeechRequestMode};
+use super::images::ImageTransport;
 use super::types::{
     Content, ContentFunctionResponseValue, ContentPart, ContentRole, GenerateCandidate,
-    GenerateContentRequest, GenerateContentResponse, GenerateFinishReason, GenerateFunctionCall,
-    GenerateOutputContent, GenerateOutputPart, GenerateQuery, GenerateStreamFormat,
+    GenerateContentRequest, GenerateContentResponse, GenerateDelivery, GenerateFinishReason,
+    GenerateFunctionCall, GenerateOutputContent, GenerateOutputPart, GenerateQuery,
+    GenerateResponseModality, GenerateStreamFormat,
 };
 use crate::context::AppState;
 
@@ -84,6 +86,75 @@ impl FromStr for GeminiAction {
     }
 }
 
+// -----------------------------------------------------------------------------
+// GenerateRequestMode: Selects the engine before request lowering.
+// -----------------------------------------------------------------------------
+
+/// Generation engine selected by `responseModalities` and model defaults.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum GenerateRequestMode {
+    /// Existing ELIZA text generation.
+    Text,
+    /// Retro diphone audio generation.
+    Audio,
+    /// Cellular-automaton PNG generation.
+    Image {
+        /// Whether the candidate also includes a leading ELIZA text part.
+        composition: super::images::ImageComposition,
+    },
+}
+
+impl GenerateRequestMode {
+    /// Interpret response modalities without consuming the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for unsupported modality combinations or controls.
+    fn for_payload(model: &ModelId, payload: &GenerateContentRequest) -> Result<Self, GeminiError> {
+        let generation = payload.generation_config.as_ref();
+        let modalities = generation.and_then(|config| config.response_modalities.as_deref());
+        match modalities {
+            None if model.as_str() == image::generation::MODEL_ID => Ok(Self::Image {
+                composition: super::images::ImageComposition::TextAndImage,
+            }),
+            None | Some([GenerateResponseModality::Text]) => Ok(Self::Text),
+            Some([GenerateResponseModality::Audio])
+                if generation
+                    .is_some_and(super::types::GenerateConfig::has_text_format_controls) =>
+            {
+                Err(GeminiError::TextFormatForAudio)
+            }
+            Some([GenerateResponseModality::Audio])
+                if generation.is_some_and(|config| {
+                    config
+                        .response_format
+                        .as_ref()
+                        .is_some_and(|format| format.image.is_some())
+                }) =>
+            {
+                Err(GeminiError::ImageFormatForAudio)
+            }
+            Some([GenerateResponseModality::Audio]) => Ok(Self::Audio),
+            Some([GenerateResponseModality::Image]) => Ok(Self::Image {
+                composition: super::images::ImageComposition::ImageOnly,
+            }),
+            Some(
+                [
+                    GenerateResponseModality::Text,
+                    GenerateResponseModality::Image,
+                ]
+                | [
+                    GenerateResponseModality::Image,
+                    GenerateResponseModality::Text,
+                ],
+            ) => Ok(Self::Image {
+                composition: super::images::ImageComposition::TextAndImage,
+            }),
+            _ => Err(GeminiError::InvalidResponseModalities),
+        }
+    }
+}
+
 impl TryFrom<GenerateContentRequest> for chat::turn::Request {
     type Error = GeminiError;
 
@@ -140,23 +211,72 @@ impl TryFrom<GenerateContentRequest> for chat::turn::Request {
 fn content_lower(content: Content, turns: &mut Vec<chat::turn::Turn>) -> Result<(), GeminiError> {
     let parts = content.parts.unwrap_or_default();
     match content.role.unwrap_or(ContentRole::User) {
-        ContentRole::User | ContentRole::Function => user_parts_lower(parts, turns),
+        ContentRole::User => user_parts_lower(parts, turns, UserImagePolicy::Allow),
+        ContentRole::Function => user_parts_lower(parts, turns, UserImagePolicy::Reject),
         ContentRole::Model => model_parts_lower(parts, turns),
         ContentRole::Unsupported => Err(GeminiError::UnsupportedRole),
     }
 }
 
 // -----------------------------------------------------------------------------
+// UserImagePolicy: Controls image admission by Gemini content role.
+// -----------------------------------------------------------------------------
+
+/// Whether one Gemini role admits image parts.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum UserImagePolicy {
+    /// Admit image parts on ordinary user content.
+    Allow,
+    /// Reject image parts on function-response content.
+    Reject,
+}
+
+// -----------------------------------------------------------------------------
 // User: Lowers user text and function responses in source order.
 // -----------------------------------------------------------------------------
 
-/// Flush accumulated user text before a function-response boundary.
-fn user_text_flush(text: &mut Vec<String>, turns: &mut Vec<chat::turn::Turn>) {
+/// Flush accumulated user text and images before a function-response boundary.
+fn user_content_flush(
+    text: &mut Vec<String>,
+    images: &mut Vec<image::source::Source>,
+    turns: &mut Vec<chat::turn::Turn>,
+) {
     // Empty buffers do not represent a conversation turn.
-    if text.is_empty() {
+    if text.is_empty() && images.is_empty() {
         return;
     }
-    turns.push(chat::turn::Turn::User(std::mem::take(text).join("\n")));
+    turns.push(chat::turn::Turn::user_with_images(
+        std::mem::take(text).join("\n"),
+        std::mem::take(images),
+    ));
+}
+
+/// Normalize one Gemini inline-image payload.
+///
+/// # Errors
+///
+/// Returns a typed failure for missing or unsupported inline data.
+fn user_inline_image_source(
+    inline: super::types::ContentInlineData,
+) -> Result<image::source::Source, GeminiError> {
+    let missing = || GeminiError::Image(image::errors::Error::MissingSource);
+    let media_type = inline.mime_type.ok_or_else(missing)?;
+    let data = inline.data.ok_or_else(missing)?;
+    image::source::Source::typed_inline_base64(&media_type, data).map_err(GeminiError::Image)
+}
+
+/// Normalize one Gemini provider-file payload.
+///
+/// # Errors
+///
+/// Returns a typed failure for a missing or unsupported file reference.
+fn user_file_image_source(
+    file: super::types::ContentFileData,
+) -> Result<image::source::Source, GeminiError> {
+    let missing = || GeminiError::Image(image::errors::Error::MissingSource);
+    let media_type = file.mime_type.ok_or_else(missing)?;
+    let uri = file.file_uri.ok_or_else(missing)?;
+    image::source::Source::provider_reference(&uri, Some(&media_type)).map_err(GeminiError::Image)
 }
 
 /// Lower one required function response into replayable text.
@@ -182,27 +302,38 @@ fn user_function_response_text(
 fn user_parts_lower(
     parts: Vec<ContentPart>,
     turns: &mut Vec<chat::turn::Turn>,
+    image_policy: UserImagePolicy,
 ) -> Result<(), GeminiError> {
     // Gemini content must contain at least one typed part.
     if parts.is_empty() {
         return Err(GeminiError::MissingContentParts);
     }
     let mut text = Vec::new();
+    let mut images = Vec::new();
     for part in parts {
         match part {
             ContentPart::Text { text: part, .. } => text.push(part),
+            ContentPart::InlineData { inline_data } if image_policy == UserImagePolicy::Allow => {
+                images.push(user_inline_image_source(inline_data)?);
+            }
+            ContentPart::FileData { file_data } if image_policy == UserImagePolicy::Allow => {
+                images.push(user_file_image_source(file_data)?);
+            }
             ContentPart::FunctionResponse { function_response } => {
-                user_text_flush(&mut text, turns);
+                user_content_flush(&mut text, &mut images, turns);
                 let response = user_function_response_text(function_response.response)?;
                 turns.push(chat::turn::Turn::ToolResult(response));
             }
             // User content cannot originate model function calls.
-            ContentPart::FunctionCall { .. } | ContentPart::Unsupported { .. } => {
+            ContentPart::InlineData { .. }
+            | ContentPart::FileData { .. }
+            | ContentPart::FunctionCall { .. }
+            | ContentPart::Unsupported { .. } => {
                 return Err(GeminiError::UnsupportedUserPart);
             }
         }
     }
-    user_text_flush(&mut text, turns);
+    user_content_flush(&mut text, &mut images, turns);
     Ok(())
 }
 
@@ -227,7 +358,10 @@ fn model_parts_lower(
                 turns.push(function_call.try_into()?);
             }
             // Model content cannot contain client function responses.
-            ContentPart::FunctionResponse { .. } | ContentPart::Unsupported { .. } => {
+            ContentPart::InlineData { .. }
+            | ContentPart::FileData { .. }
+            | ContentPart::FunctionResponse { .. }
+            | ContentPart::Unsupported { .. } => {
                 return Err(GeminiError::UnsupportedModelPart);
             }
         }
@@ -253,7 +387,9 @@ fn text_parts(parts: Vec<ContentPart>, param: &'static str) -> Result<String, Ge
         .into_iter()
         .map(|part| match part {
             ContentPart::Text { text, .. } => Ok(text),
-            ContentPart::FunctionCall { .. }
+            ContentPart::InlineData { .. }
+            | ContentPart::FileData { .. }
+            | ContentPart::FunctionCall { .. }
             | ContentPart::FunctionResponse { .. }
             | ContentPart::Unsupported { .. } => Err(GeminiError::UnsupportedTextPart { param }),
         })
@@ -452,24 +588,39 @@ async fn generate(
         }
     };
 
-    let speech_delivery = if !action.kind.is_stream() {
-        SpeechDelivery::Unary
+    let delivery = if !action.kind.is_stream() {
+        GenerateDelivery::Unary
     } else if matches!(query.alt, Some(GenerateStreamFormat::Sse)) {
-        SpeechDelivery::Sse
+        GenerateDelivery::Sse
     } else {
-        SpeechDelivery::JsonStream
+        GenerateDelivery::JsonStream
     };
 
-    match SpeechRequestMode::for_payload(&payload) {
+    let mode = match GenerateRequestMode::for_payload(&action.model, &payload) {
+        Ok(mode) => mode,
+        // Invalid modality controls cannot proceed to provider lowering.
+        Err(error) => return GeminiRejection::from_error(&error).into_response(),
+    };
+
+    // Dedicated modality models never silently fall back to another engine.
+    if action.model.as_str() == image::generation::MODEL_ID
+        && !matches!(mode, GenerateRequestMode::Image { .. })
+    {
+        return GeminiRejection::from_error(&GeminiError::ImageModelRequiresImage).into_response();
+    }
+
+    match mode {
         // Audio generation owns its provider-native response.
-        Ok(SpeechRequestMode::Audio) => {
-            return super::speech::generate(&state, action.model, speech_delivery, payload).await;
+        GenerateRequestMode::Audio => {
+            return super::speech::generate(&state, action.model, delivery, payload).await;
         }
-        Ok(SpeechRequestMode::Text) => {}
-        // Invalid modality lists fail before ordinary text lowering.
-        Err(error) => {
-            return GeminiRejection::from_error(&error).into_response();
+        // Image generation owns its provider-native multipart response.
+        GenerateRequestMode::Image { composition } => {
+            let transport =
+                ImageTransport::generate(&state, action.model, delivery, payload, composition);
+            return transport.into_response();
         }
+        GenerateRequestMode::Text => {}
     }
 
     // The dedicated speech model does not silently fall back to text.
@@ -519,6 +670,7 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .tag("gemini")
                 .response::<200, Json<GenerateContentResponse>>()
                 .default_response::<Json<GeminiFailureResponse>>()
-        }),
+        })
+        .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
     )
 }

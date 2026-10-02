@@ -2,8 +2,8 @@
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
 use axum::Json;
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
@@ -13,13 +13,14 @@ use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks};
 use eliza_modality_chat as chat;
+use eliza_modality_image as image;
 use uuid::Uuid;
 
 use super::errors::{AnthropicError, AnthropicFailureResponse, AnthropicRejection};
 use super::types::{
-    MessageContent, MessageContentBlock, MessageRole, MessagesOutputBlock, MessagesRequest,
-    MessagesResponse, MessagesStopReason, MessagesUsage, StreamDelta, StreamEvent, StreamMessage,
-    StreamMessageDelta, StreamOutputUsage, ToolResultContent, ToolResultTextBlock,
+    MessageContent, MessageContentBlock, MessageImageSource, MessageRole, MessagesOutputBlock,
+    MessagesRequest, MessagesResponse, MessagesStopReason, MessagesUsage, StreamDelta, StreamEvent,
+    StreamMessage, StreamMessageDelta, StreamOutputUsage, ToolResultContent, ToolResultTextBlock,
 };
 use crate::context::AppState;
 
@@ -78,7 +79,8 @@ impl TryFrom<MessagesRequest> for chat::turn::Request {
 fn system_block_text(block: MessageContentBlock) -> Result<String, AnthropicError> {
     match block {
         MessageContentBlock::Text { text } => Ok(text),
-        MessageContentBlock::ToolUse { .. }
+        MessageContentBlock::Image { .. }
+        | MessageContentBlock::ToolUse { .. }
         | MessageContentBlock::ToolResult { .. }
         | MessageContentBlock::Unsupported => Err(AnthropicError::UnsupportedSystemBlock),
     }
@@ -113,13 +115,48 @@ fn system_text(content: MessageContent) -> Result<String, AnthropicError> {
 // User: Lowers user content and tool results in source order.
 // -----------------------------------------------------------------------------
 
-/// Flush accumulated user text before a tool-result boundary.
-fn user_text_flush(text: &mut Vec<String>, turns: &mut Vec<chat::turn::Turn>) {
+/// Flush accumulated user text and images before a tool-result boundary.
+fn user_content_flush(
+    text: &mut Vec<String>,
+    images: &mut Vec<image::source::Source>,
+    turns: &mut Vec<chat::turn::Turn>,
+) {
     // Empty buffers do not represent a conversation turn.
-    if text.is_empty() {
+    if text.is_empty() && images.is_empty() {
         return;
     }
-    turns.push(chat::turn::Turn::User(std::mem::take(text).join("\n")));
+    turns.push(chat::turn::Turn::user_with_images(
+        std::mem::take(text).join("\n"),
+        std::mem::take(images),
+    ));
+}
+
+/// Normalize one typed Anthropic image source.
+///
+/// # Errors
+///
+/// Returns a typed failure for missing, malformed, or unsupported source data.
+fn user_image_source(
+    source: Option<MessageImageSource>,
+) -> Result<image::source::Source, AnthropicError> {
+    let missing = || AnthropicError::Image(image::errors::Error::MissingSource);
+    match source.ok_or_else(missing)? {
+        MessageImageSource::Base64 { media_type, data } => {
+            let media_type = media_type.ok_or_else(missing)?;
+            let data = data.ok_or_else(missing)?;
+            image::source::Source::typed_inline_base64(&media_type, data)
+                .map_err(AnthropicError::Image)
+        }
+        MessageImageSource::Url { url } => {
+            let url = url.ok_or_else(missing)?;
+            image::source::Source::url(&url).map_err(AnthropicError::Image)
+        }
+        MessageImageSource::File { file_id } => {
+            let file_id = file_id.ok_or_else(missing)?;
+            image::source::Source::provider_reference(&file_id, None).map_err(AnthropicError::Image)
+        }
+        MessageImageSource::Unsupported => Err(AnthropicError::UnsupportedUserBlock),
+    }
 }
 
 /// Lower one user message into neutral user and tool-result turns.
@@ -135,7 +172,7 @@ fn user_content_lower(
     let blocks = match content {
         // A string message is already a complete user turn.
         MessageContent::Text(text) => {
-            turns.push(chat::turn::Turn::User(text));
+            turns.push(chat::turn::Turn::from(text));
             return Ok(());
         }
         MessageContent::Blocks(blocks) => blocks,
@@ -147,11 +184,13 @@ fn user_content_lower(
     }
 
     let mut text = Vec::new();
+    let mut images = Vec::new();
     for block in blocks {
         match block {
             MessageContentBlock::Text { text: part } => text.push(part),
+            MessageContentBlock::Image { source } => images.push(user_image_source(source)?),
             MessageContentBlock::ToolResult { content } => {
-                user_text_flush(&mut text, turns);
+                user_content_flush(&mut text, &mut images, turns);
                 turns.push(chat::turn::Turn::ToolResult(tool_result_text(content)?));
             }
             // User messages cannot originate assistant tool calls.
@@ -160,7 +199,7 @@ fn user_content_lower(
             }
         }
     }
-    user_text_flush(&mut text, turns);
+    user_content_flush(&mut text, &mut images, turns);
     Ok(())
 }
 
@@ -203,7 +242,9 @@ fn assistant_blocks_lower(
                 )?));
             }
             // Assistant messages cannot contain client tool results.
-            MessageContentBlock::ToolResult { .. } | MessageContentBlock::Unsupported => {
+            MessageContentBlock::Image { .. }
+            | MessageContentBlock::ToolResult { .. }
+            | MessageContentBlock::Unsupported => {
                 return Err(AnthropicError::UnsupportedAssistantBlock);
             }
         }
@@ -471,6 +512,7 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .tag("anthropic")
                 .response::<200, Json<MessagesResponse>>()
                 .default_response::<Json<AnthropicFailureResponse>>()
-        }),
+        })
+        .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
     )
 }

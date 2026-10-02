@@ -5,6 +5,7 @@ use eliza_http::errors::EncodingError;
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
 use eliza_modality_chat as chat;
 use eliza_modality_embedding as embedding;
+use eliza_modality_image as image;
 use eliza_modality_speech as speech;
 use miette::Diagnostic;
 use schemars::JsonSchema;
@@ -18,6 +19,37 @@ use thiserror::Error;
 /// Failure detected while lowering an `OpenAI` request.
 #[derive(Debug, Diagnostic, Error)]
 pub(super) enum OpenAiError {
+    /// Shared image source validation failed during provider lowering.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Image(
+        /// Provider-neutral image failure.
+        image::errors::Error,
+    ),
+
+    /// Image generation selected a model other than the fixed fixture.
+    #[error("image generation requires model `eliza-retro-image`")]
+    #[diagnostic(code(eliza::openai::image_generation_model_required))]
+    ImageGenerationModelRequired,
+    /// Image generation selected an output representation outside PNG base64.
+    #[error("unsupported image output format")]
+    #[diagnostic(code(eliza::openai::unsupported_image_output_format))]
+    UnsupportedImageOutputFormat {
+        /// Request field selecting unsupported output.
+        param: &'static str,
+    },
+    /// Image generation selected dimensions outside the bounded fixture.
+    #[error("unsupported image size")]
+    #[diagnostic(code(eliza::openai::unsupported_image_size))]
+    UnsupportedImageSize,
+    /// A known image-generation control cannot be honored locally.
+    #[error("unsupported image generation control `{param}`")]
+    #[diagnostic(code(eliza::openai::unsupported_image_control))]
+    UnsupportedImageControl {
+        /// Request field selecting unsupported behavior.
+        param: &'static str,
+    },
+
     /// An embedding request selected a model other than the fixed fixture.
     #[error("embeddings require model `fnv-embed`")]
     #[diagnostic(code(eliza::embedding::model_required))]
@@ -187,7 +219,14 @@ pub(super) enum OpenAiError {
 impl ProblemDetails for OpenAiError {
     fn class(&self) -> ProblemClass {
         match self {
+            Self::Image(source) => match source.kind() {
+                image::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+                image::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            },
             Self::UnsupportedEmbeddingEncoding
+            | Self::UnsupportedImageOutputFormat { .. }
+            | Self::UnsupportedImageSize
+            | Self::UnsupportedImageControl { .. }
             | Self::EmbeddingTokenInputUnsupported
             | Self::UnsupportedEmbeddingInput
             | Self::UnsupportedToolCallKind { .. }
@@ -208,9 +247,13 @@ impl ProblemDetails for OpenAiError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
-            Self::EmbeddingModelRequired | Self::SpeechModelRequired => Some("model"),
+            Self::EmbeddingModelRequired
+            | Self::ImageGenerationModelRequired
+            | Self::SpeechModelRequired => Some("model"),
             Self::UnsupportedEmbeddingEncoding => Some("encoding_format"),
-            Self::EmbeddingTokenInputUnsupported | Self::UnsupportedEmbeddingInput => Some("input"),
+            Self::Image(_)
+            | Self::EmbeddingTokenInputUnsupported
+            | Self::UnsupportedEmbeddingInput => Some("input"),
             Self::InvalidFunctionArguments { param, .. }
             | Self::UnsupportedToolCallKind { param }
             | Self::MissingToolCallFunction { param }
@@ -220,8 +263,11 @@ impl ProblemDetails for OpenAiError {
             | Self::UnsupportedResponseFormat { param }
             | Self::InvalidResponseSchema { param, .. }
             | Self::UnsupportedResponseSchema { param, .. }
+            | Self::UnsupportedImageOutputFormat { param }
+            | Self::UnsupportedImageControl { param }
             | Self::UnsupportedContentShape { param }
             | Self::UnsupportedContentPart { param } => Some(param),
+            Self::UnsupportedImageSize => Some("size"),
             Self::UnsupportedToolDefinition | Self::MissingToolDefinition => Some("tools"),
             Self::UnsupportedToolChoiceMode | Self::UnsupportedNamedToolChoice => {
                 Some("tool_choice")
@@ -348,6 +394,19 @@ impl OpenAiRejection {
         Self(Problem::from_diagnostic(error, class, param))
     }
 
+    /// Capture provider-lowering failures with an endpoint-specific input field.
+    pub(super) fn request(error: &OpenAiError, input: &'static str) -> Self {
+        // Non-image lowering errors already carry their provider field.
+        let OpenAiError::Image(source) = error else {
+            return Self::from_error(error);
+        };
+        let class = match source.kind() {
+            image::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            image::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+        };
+        Self(Problem::from_diagnostic(source, class, Some(input)))
+    }
+
     /// Capture a typed diagnostic for `OpenAI` rendering.
     pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
         Self(Problem::from_error(error))
@@ -363,6 +422,22 @@ impl From<&embedding::engine::Error> for OpenAiRejection {
         let param = match error.field() {
             embedding::engine::ErrorField::Input => Some("input"),
             embedding::engine::ErrorField::Dimensions => Some("dimensions"),
+        };
+        Self(Problem::from_diagnostic(error, class, param))
+    }
+}
+
+impl From<&image::generation::Error> for OpenAiRejection {
+    fn from(error: &image::generation::Error) -> Self {
+        let class = match error.kind() {
+            image::generation::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
+            image::generation::ErrorKind::Limit => ProblemClass::RequestTooLarge,
+            image::generation::ErrorKind::Internal => ProblemClass::Internal,
+        };
+        let param = match error.field() {
+            image::generation::ErrorField::Prompt => Some("prompt"),
+            image::generation::ErrorField::Count => Some("n"),
+            image::generation::ErrorField::None => None,
         };
         Self(Problem::from_diagnostic(error, class, param))
     }

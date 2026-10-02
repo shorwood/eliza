@@ -1,6 +1,6 @@
 [package]
 name = "eliza-server-openai"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 license.workspace = true
 publish = false
@@ -12,6 +12,7 @@ base64 = "0.22.1"
 eliza-http = { path = "../http" }
 eliza-modality-chat = { path = "../modality-chat" }
 eliza-modality-embedding = { path = "../modality-embedding" }
+eliza-modality-image = { path = "../modality-image" }
 eliza-modality-speech = { path = "../modality-speech" }
 futures-util = "0.3"
 miette = { version = "7.6.0", features = ["derive"] }

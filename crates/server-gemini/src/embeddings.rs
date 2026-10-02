@@ -210,7 +210,9 @@ fn gemini_validation_content_text(content: Option<Content>) -> Result<String, Ge
                 text.push(part);
             }
             // Feature hashing has no representation for structured parts.
-            ContentPart::FunctionCall { .. }
+            ContentPart::InlineData { .. }
+            | ContentPart::FileData { .. }
+            | ContentPart::FunctionCall { .. }
             | ContentPart::FunctionResponse { .. }
             | ContentPart::Unsupported { .. } => return Err(GeminiError::EmbeddingTextOnly),
         }
