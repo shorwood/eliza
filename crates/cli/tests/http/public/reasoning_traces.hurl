@@ -86,6 +86,33 @@ jsonpath "$.message.content" == "I AM SORRY TO HEAR YOU ARE SAD"
 jsonpath "$.message.thinking" == "NORMALIZED INPUT: YOU ARE SAD\nRANKED KEYWORDS: I AM\nSELECTED RULE: I/1/0\nRESPONSE SOURCE: KEYWORD"
 jsonpath "$.eval_count" == 23
 
+# Chat surfaces accept effort without adding a nonstandard output extension.
+POST {{base_url}}/openai/v1/chat/completions
+Content-Type: application/json
+{
+  "model": "eliza-1966",
+  "reasoning_effort": "high",
+  "messages": [{"role": "user", "content": "I am sad"}]
+}
+HTTP 200
+[Asserts]
+jsonpath "$.choices[0].message.content" == "I AM SORRY TO HEAR YOU ARE SAD"
+jsonpath "$.choices[0].message.reasoning_content" not exists
+jsonpath "$.usage.total_tokens" == 11
+
+POST {{base_url}}/gemini/v1beta/openai/chat/completions
+Content-Type: application/json
+{
+  "model": "eliza-1966",
+  "reasoning_effort": "high",
+  "messages": [{"role": "user", "content": "I am sad"}]
+}
+HTTP 200
+[Asserts]
+jsonpath "$.choices[0].message.content" == "I AM SORRY TO HEAR YOU ARE SAD"
+jsonpath "$.choices[0].message.reasoning_content" not exists
+jsonpath "$.usage.total_tokens" == 11
+
 # Provider signatures and thinking blocks may be returned in history.
 POST {{base_url}}/openai/v1/responses
 Content-Type: application/json
@@ -137,6 +164,22 @@ Content-Type: application/json
 HTTP 200
 
 # Generic validation rejects invalid controls without model-specific ranges.
+POST {{base_url}}/openai/v1/chat/completions
+Content-Type: application/json
+{"model": "eliza-1966", "reasoning_effort": "extreme", "messages": [{"role": "user", "content": "Hello"}]}
+HTTP 400
+[Asserts]
+header "x-eliza-error-code" == "eliza::openai::unsupported_reasoning_effort"
+jsonpath "$.error.param" == "reasoning_effort"
+
+POST {{base_url}}/openai/v1/responses
+Content-Type: application/json
+{"model": "eliza-1966", "input": "Hello", "reasoning": {"generate_summary": "verbose"}}
+HTTP 400
+[Asserts]
+header "x-eliza-error-code" == "eliza::openai::unsupported_reasoning_summary"
+jsonpath "$.error.param" == "reasoning.generate_summary"
+
 POST {{base_url}}/openai/v1/responses
 Content-Type: application/json
 {"model": "eliza-1966", "input": "Hello", "max_output_tokens": 0}

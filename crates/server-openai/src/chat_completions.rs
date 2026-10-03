@@ -30,7 +30,7 @@ impl TryFrom<ChatRequest> for chat::turn::Request {
 
     fn try_from(payload: ChatRequest) -> Result<Self, Self::Error> {
         if let Some(effort) = payload.reasoning_effort {
-            effort.validate()?;
+            effort.validate("reasoning_effort")?;
         }
         let output_format = payload
             .response_format
