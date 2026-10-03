@@ -568,6 +568,7 @@ dependencies = [
 name = "eliza-modality-chat"
 version = "1.0.0"
 dependencies = [
+ "base64",
  "eliza-mad",
  "eliza-modality-image",
  "miette",

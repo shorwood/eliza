@@ -1,12 +1,14 @@
 //! Public conversation API driven by the MAD machine.
 
+use std::fmt;
+
 use mad::machine::{Machine, RunState};
 use mad::program::Program;
 use mad::source::SourceModule;
 use thiserror::Error as ThisError;
 
 use crate::programs::MAD_1965;
-use crate::runtime::{ElizaHost, NativeError};
+use crate::runtime::{ElizaHost, NativeError, TraceSource as RuntimeTraceSource, TraceState};
 use crate::script::Script;
 
 // -----------------------------------------------------------------------------
@@ -67,6 +69,120 @@ const TURN_LIMIT: usize = 1_000_000;
 
 /// Maximum characters in one historical input record.
 const INPUT_RECORD_COLUMNS: usize = 72;
+
+// -----------------------------------------------------------------------------
+// Trace: Describes the mechanical rule-selection path for one response.
+// -----------------------------------------------------------------------------
+
+/// Final rule coordinates selected during one turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TraceRule {
+    /// Canonical keyword whose rule produced the response.
+    pub keyword: String,
+    /// Zero-based decomposition position.
+    pub decomposition: usize,
+    /// Zero-based reassembly position.
+    pub reassembly: usize,
+}
+
+/// Branch that produced one response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TraceSource {
+    /// A ranked keyword rule produced the response.
+    Keyword,
+    /// A queued memory produced the response.
+    Memory,
+    /// The script's `NONE` rule or historical fallback produced the response.
+    None,
+    /// A provider-neutral fixture tool produced the response.
+    Tool,
+}
+
+impl fmt::Display for TraceSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Keyword => "KEYWORD",
+            Self::Memory => "MEMORY",
+            Self::None => "NONE",
+            Self::Tool => "TOOL",
+        })
+    }
+}
+
+/// Join one word list or render the trace's explicit empty marker.
+fn words_or_dash(words: &[String]) -> String {
+    if words.is_empty() {
+        "-".to_owned()
+    } else {
+        words.join(" ")
+    }
+}
+
+/// Honest mechanical facts recorded while ELIZA selected one response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Trace {
+    /// Canonical input words after substitutions and delimiter handling.
+    pub normalized_input: Vec<String>,
+    /// Keywords in the order ELIZA inspected them.
+    pub ranked_keywords: Vec<String>,
+    /// Final rule that assembled response text, when one did.
+    pub selected_rule: Option<TraceRule>,
+    /// Branch that produced the response.
+    pub source: TraceSource,
+}
+
+impl fmt::Display for Trace {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let normalized = words_or_dash(&self.normalized_input);
+        let keywords = words_or_dash(&self.ranked_keywords);
+        let selected = self.selected_rule.as_ref().map_or_else(
+            || "-".to_owned(),
+            |rule| {
+                format!(
+                    "{}/{}/{}",
+                    rule.keyword, rule.decomposition, rule.reassembly
+                )
+            },
+        );
+        write!(
+            formatter,
+            "NORMALIZED INPUT: {normalized}\nRANKED KEYWORDS: {keywords}\nSELECTED RULE: {selected}\nRESPONSE SOURCE: {}",
+            self.source
+        )
+    }
+}
+
+impl From<TraceState> for Trace {
+    fn from(trace: TraceState) -> Self {
+        Self {
+            normalized_input: trace.normalized_input,
+            ranked_keywords: trace.ranked_keywords,
+            selected_rule: trace.selected_rule.map(|rule| TraceRule {
+                keyword: rule.keyword,
+                decomposition: rule.decomposition,
+                reassembly: rule.reassembly,
+            }),
+            source: match trace.source {
+                RuntimeTraceSource::Keyword => TraceSource::Keyword,
+                RuntimeTraceSource::Memory => TraceSource::Memory,
+                RuntimeTraceSource::None => TraceSource::None,
+            },
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Response: Carries historical output together with its trace.
+// -----------------------------------------------------------------------------
+
+/// One completed historical response and its selection trace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Response {
+    /// Historical response text.
+    pub text: String,
+    /// Mechanical rule-selection facts.
+    pub trace: Trace,
+}
 
 // -----------------------------------------------------------------------------
 // Session: Owns the mutable state of one DOCTOR conversation.
@@ -151,7 +267,7 @@ impl Session {
     /// # Errors
     ///
     /// Returns an input or bounded-machine error.
-    pub fn respond(&mut self, input: &str) -> Result<String, Error> {
+    pub fn respond(&mut self, input: &str) -> Result<Response, Error> {
         validate_input(input)?;
         self.prepare_input()?;
 
@@ -165,7 +281,10 @@ impl Session {
         // Resume READ FORMAT with the stored resource handle.
         self.machine.provide_input(input_handle)?;
         self.is_waiting_for_input = false;
-        self.read_response()
+        let text = self.read_response()?;
+        let trace_state = self.machine.host().trace_state().clone();
+        let trace = trace_state.into();
+        Ok(Response { text, trace })
     }
 }
 

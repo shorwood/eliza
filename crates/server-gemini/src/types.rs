@@ -116,6 +116,10 @@ pub(super) enum ContentPart {
         /// Local speaker and style annotations.
         #[serde(alias = "speech_metadata")]
         speech_metadata: Option<ContentSpeechMetadata>,
+        /// Whether this model-authored text is a returned thought.
+        thought: Option<bool>,
+        /// Opaque signature returned with prior thought content.
+        thought_signature: Option<String>,
     },
     /// Inline image bytes.
     InlineData {
@@ -550,6 +554,15 @@ pub(super) enum GenerateOutputPart {
         /// Text carried by the part.
         text: String,
     },
+    /// Generated reasoning summary.
+    Thought {
+        /// Mechanical reasoning trace.
+        text: String,
+        /// Marks this part as thought content.
+        thought: bool,
+        /// Stable fixture signature over the complete trace.
+        thought_signature: String,
+    },
     /// Requested function invocation.
     FunctionCall {
         /// Function-call payload.
@@ -596,6 +609,9 @@ pub(super) struct GenerateUsage {
     pub(super) prompt_token_count: usize,
     /// Estimated tokens emitted by candidates.
     pub(super) candidates_token_count: usize,
+    /// Estimated tokens emitted as readable thoughts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) thoughts_token_count: Option<usize>,
     /// Combined input and candidate token count.
     pub(super) total_token_count: usize,
 }
@@ -605,7 +621,8 @@ impl From<chat::turn::Usage> for GenerateUsage {
         Self {
             prompt_token_count: usage.prompt,
             candidates_token_count: usage.completion,
-            total_token_count: usage.prompt + usage.completion,
+            thoughts_token_count: (usage.reasoning > 0).then_some(usage.reasoning),
+            total_token_count: usage.total,
         }
     }
 }
@@ -636,11 +653,19 @@ impl GenerateContentResponse {
                 },
             },
         };
+        let mut parts = response.reasoning.map_or_else(Vec::new, |reasoning| {
+            vec![GenerateOutputPart::Thought {
+                text: reasoning.text,
+                thought: true,
+                thought_signature: reasoning.signature,
+            }]
+        });
+        parts.push(part);
         Self {
             candidates: vec![GenerateCandidate {
                 content: GenerateOutputContent {
                     role: "model",
-                    parts: vec![part],
+                    parts,
                 },
                 finish_reason: Some(GenerateFinishReason::Stop),
                 index: 0,
@@ -744,6 +769,60 @@ pub(super) struct ResponseFormat {
 }
 
 // -----------------------------------------------------------------------------
+// Thinking: Defines native Gemini reasoning controls.
+// -----------------------------------------------------------------------------
+
+/// Named Gemini thinking level.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(super) enum ThinkingLevel {
+    /// Provider-selected level.
+    Unspecified,
+    /// Smallest supported thinking level.
+    Minimal,
+    /// Low thinking level.
+    Low,
+    /// Medium thinking level.
+    Medium,
+    /// High thinking level.
+    High,
+    /// Any level outside the current contract.
+    #[serde(other)]
+    Unsupported,
+}
+
+/// Gemini thought visibility and budget controls.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ThinkingConfig {
+    /// Whether returned thought summaries are readable.
+    include_thoughts: Option<bool>,
+    /// Dynamic (`-1`), disabled (`0`), or positive thinking budget.
+    thinking_budget: Option<i32>,
+    /// Named thinking level used instead of a numeric budget.
+    thinking_level: Option<ThinkingLevel>,
+}
+
+impl ThinkingConfig {
+    /// Validate syntax and report whether thoughts are readable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for conflicting or invalid controls.
+    fn should_include_reasoning(&self) -> Result<bool, GeminiError> {
+        if self.thinking_budget.is_some() && self.thinking_level.is_some() {
+            Err(GeminiError::ConflictingThinkingControls)
+        } else if self.thinking_budget.is_some_and(|budget| budget < -1) {
+            Err(GeminiError::InvalidThinkingBudget)
+        } else if matches!(self.thinking_level, Some(ThinkingLevel::Unsupported)) {
+            Err(GeminiError::UnsupportedThinkingLevel)
+        } else {
+            Ok(self.include_thoughts.unwrap_or(false))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // GenerateConfig: Compiles request-wide generation controls.
 // -----------------------------------------------------------------------------
 
@@ -761,9 +840,28 @@ pub(super) struct GenerateConfig {
     response_json_schema: Option<chat::json::JsonObject>,
     /// Voice and speaker controls for audio output.
     pub(super) speech_config: Option<SpeechConfig>,
+    /// Native thought visibility and budget controls.
+    thinking_config: Option<ThinkingConfig>,
+    /// Maximum generated tokens accepted as a compatibility control.
+    max_output_tokens: Option<usize>,
 }
 
 impl GenerateConfig {
+    /// Validate generation limits and return thought visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for zero output limits or invalid thought controls.
+    pub(super) fn should_include_reasoning(&self) -> Result<bool, GeminiError> {
+        if self.max_output_tokens == Some(0) {
+            Err(GeminiError::InvalidMaxOutputTokens)
+        } else if let Some(config) = &self.thinking_config {
+            config.should_include_reasoning()
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Report whether an audio request contains any text-format controls.
     pub(super) fn has_text_format_controls(&self) -> bool {
         self.response_format
@@ -820,6 +918,8 @@ impl TryFrom<GenerateConfig> for chat::structured_output::StructuredOutput {
     type Error = GeminiError;
 
     fn try_from(config: GenerateConfig) -> Result<Self, Self::Error> {
+        config.should_include_reasoning()?;
+
         // Image formatting belongs exclusively to the image-generation path.
         if config
             .response_format

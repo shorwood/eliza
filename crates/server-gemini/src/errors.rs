@@ -53,6 +53,22 @@ pub(super) enum GeminiError {
     )]
     #[diagnostic(code(eliza::gemini::conflicting_response_formats))]
     ConflictingResponseFormats,
+    /// Numeric and named thinking controls were combined.
+    #[error("thinkingBudget and thinkingLevel cannot be combined")]
+    #[diagnostic(code(eliza::gemini::conflicting_thinking_controls))]
+    ConflictingThinkingControls,
+    /// A thinking budget was below Gemini's dynamic-budget sentinel.
+    #[error("thinkingBudget must be -1 or nonnegative")]
+    #[diagnostic(code(eliza::gemini::invalid_thinking_budget))]
+    InvalidThinkingBudget,
+    /// A named thinking level was outside the current contract.
+    #[error("unsupported thinkingLevel")]
+    #[diagnostic(code(eliza::gemini::unsupported_thinking_level))]
+    UnsupportedThinkingLevel,
+    /// The requested output-token limit was zero.
+    #[error("maxOutputTokens must be positive")]
+    #[diagnostic(code(eliza::gemini::invalid_max_output_tokens))]
+    InvalidMaxOutputTokens,
     /// A current Gemini embedding control cannot be honored locally.
     #[error("unsupported embedding control `{param}`")]
     #[diagnostic(code(eliza::gemini::unsupported_embedding_control))]
@@ -278,6 +294,10 @@ impl ProblemDetails for GeminiError {
             Self::MissingEmbeddingRequests => Some("requests"),
             Self::ConflictingEmbeddingDimensions => Some("outputDimensionality"),
             Self::ConflictingResponseFormats
+            | Self::ConflictingThinkingControls
+            | Self::InvalidThinkingBudget
+            | Self::UnsupportedThinkingLevel
+            | Self::InvalidMaxOutputTokens
             | Self::TextFormatForAudio
             | Self::SpeechControlsUnsupported => Some("generationConfig"),
             Self::ImageFormatForText | Self::ImageFormatForAudio => {

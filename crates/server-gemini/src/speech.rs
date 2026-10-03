@@ -166,6 +166,7 @@ impl SpeechVoice {
             ContentPart::Text {
                 text,
                 speech_metadata,
+                ..
             } => Ok((text, speech_metadata)),
             _ => Err(GeminiError::SpeechTextOnly),
         }?;
@@ -262,6 +263,7 @@ fn speech_response_unary(
     let usage = GenerateUsage {
         prompt_token_count: prompt_tokens,
         candidates_token_count: completion,
+        thoughts_token_count: None,
         total_token_count: prompt_tokens + completion,
     };
     let data = base64::engine::general_purpose::STANDARD.encode(audio.bytes);
@@ -301,6 +303,7 @@ fn speech_response_record(
     let usage_metadata = completion.map(|completion| GenerateUsage {
         prompt_token_count: usage.prompt_tokens,
         candidates_token_count: completion,
+        thoughts_token_count: None,
         total_token_count: usage.prompt_tokens + completion,
     });
     Ok(speech_response_content(

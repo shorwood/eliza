@@ -29,10 +29,11 @@ impl TryFrom<ChatRequest> for chat::turn::Request {
             .transpose()?
             .unwrap_or_default();
 
-        // Reject requests for a hidden reasoning trace.
-        if payload.think.is_some() {
-            return Err(OllamaError::ReasoningUnsupported);
-        }
+        let include_reasoning = payload
+            .think
+            .map(super::types::ChatThink::should_enable)
+            .transpose()?
+            .unwrap_or(false);
 
         // Separate instructions from replayable conversation turns.
         let mut system = Vec::new();
@@ -57,7 +58,12 @@ impl TryFrom<ChatRequest> for chat::turn::Request {
                     turns.push(chat::turn::Turn::user_with_images(content, images));
                 }
                 MessageRole::Assistant => {
-                    assistant_lower(content, message.tool_calls, &mut turns)?;
+                    assistant_history_lower(
+                        message.thinking,
+                        content,
+                        message.tool_calls,
+                        &mut turns,
+                    )?;
                 }
                 MessageRole::Tool => turns.push(chat::turn::Turn::ToolResult(content)),
                 // Unknown provider roles cannot be replayed safely.
@@ -73,14 +79,30 @@ impl TryFrom<ChatRequest> for chat::turn::Request {
             .transpose()?
             .unwrap_or_default();
 
-        Ok(chat::turn::Request::new(
-            system,
-            turns,
-            tools,
-            tool_choice,
-            output_format,
-        ))
+        let request = chat::turn::Request::new(system, turns, tools, tool_choice, output_format);
+        Ok(if include_reasoning {
+            request.with_reasoning()
+        } else {
+            request
+        })
     }
+}
+
+/// Lower prior thinking and visible assistant output in wire order.
+///
+/// # Errors
+///
+/// Returns [`OllamaError`] when a prior tool call is malformed.
+fn assistant_history_lower(
+    thinking: Option<String>,
+    content: String,
+    tool_calls: Option<Vec<ToolCall>>,
+    turns: &mut Vec<chat::turn::Turn>,
+) -> Result<(), OllamaError> {
+    if let Some(thinking) = thinking {
+        turns.push(chat::turn::Turn::Assistant(thinking));
+    }
+    assistant_lower(content, tool_calls, turns)
 }
 
 // -----------------------------------------------------------------------------
@@ -129,6 +151,7 @@ fn stream_records_text(model: &ModelId, text: &str) -> Vec<ChatResponse> {
             message: ChatOutputMessage {
                 role: "assistant",
                 content: chunk,
+                thinking: None,
                 tool_calls: Vec::new(),
             },
             is_done: false,
@@ -145,7 +168,33 @@ fn stream_records_text(model: &ModelId, text: &str) -> Vec<ChatResponse> {
 
 /// Render all NDJSON records for one completed neutral response.
 fn stream_records(model: &ModelId, response: &chat::turn::Response) -> Vec<ChatResponse> {
-    let mut records = match &response.output {
+    let mut records = response
+        .reasoning
+        .as_ref()
+        .map_or_else(Vec::new, |reasoning| {
+            stream_chunks(&reasoning.text)
+                .into_iter()
+                .map(|chunk| ChatResponse {
+                    model: model.clone(),
+                    created_at: CREATED_AT,
+                    message: ChatOutputMessage {
+                        role: "assistant",
+                        content: String::new(),
+                        thinking: Some(chunk),
+                        tool_calls: Vec::new(),
+                    },
+                    is_done: false,
+                    done_reason: None,
+                    total_duration: None,
+                    load_duration: None,
+                    prompt_eval_count: None,
+                    prompt_eval_duration: None,
+                    eval_count: None,
+                    eval_duration: None,
+                })
+                .collect()
+        });
+    records.extend(match &response.output {
         chat::turn::Output::Text(text) => stream_records_text(model, text),
         chat::turn::Output::ToolCall(_) => vec![ChatResponse {
             model: model.clone(),
@@ -160,13 +209,14 @@ fn stream_records(model: &ModelId, response: &chat::turn::Response) -> Vec<ChatR
             eval_count: None,
             eval_duration: None,
         }],
-    };
+    });
     records.push(ChatResponse {
         model: model.clone(),
         created_at: CREATED_AT,
         message: ChatOutputMessage {
             role: "assistant",
             content: String::new(),
+            thinking: None,
             tool_calls: Vec::new(),
         },
         is_done: true,
@@ -175,7 +225,7 @@ fn stream_records(model: &ModelId, response: &chat::turn::Response) -> Vec<ChatR
         load_duration: Some(0),
         prompt_eval_count: Some(response.usage.prompt),
         prompt_eval_duration: Some(0),
-        eval_count: Some(response.usage.completion),
+        eval_count: Some(response.usage.completion + response.usage.reasoning),
         eval_duration: Some(0),
     });
     records

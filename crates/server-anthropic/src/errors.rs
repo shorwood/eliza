@@ -24,6 +24,31 @@ pub(super) enum AnthropicError {
         image::errors::Error,
     ),
 
+    /// The requested output-token limit was zero.
+    #[error("max_tokens must be positive")]
+    #[diagnostic(code(eliza::anthropic::invalid_max_tokens))]
+    InvalidMaxTokens,
+    /// Explicit thinking used less than Anthropic's minimum budget.
+    #[error("thinking budget_tokens must be at least 1024")]
+    #[diagnostic(code(eliza::anthropic::invalid_thinking_budget))]
+    InvalidThinkingBudget,
+    /// Explicit thinking consumed the entire output-token allowance.
+    #[error("thinking budget_tokens must be less than max_tokens")]
+    #[diagnostic(code(eliza::anthropic::thinking_budget_too_large))]
+    ThinkingBudgetTooLarge,
+    /// The requested thinking mode was outside the current contract.
+    #[error("unsupported thinking type")]
+    #[diagnostic(code(eliza::anthropic::unsupported_thinking_mode))]
+    UnsupportedThinkingMode,
+    /// The requested thinking visibility was outside the current contract.
+    #[error("unsupported thinking display")]
+    #[diagnostic(code(eliza::anthropic::unsupported_thinking_display))]
+    UnsupportedThinkingDisplay,
+    /// The requested effort was outside the current contract.
+    #[error("unsupported effort")]
+    #[diagnostic(code(eliza::anthropic::unsupported_effort))]
+    UnsupportedEffort,
+
     /// A structured-output control omitted its schema.
     #[error("invalid output format: schema is required")]
     #[diagnostic(code(eliza::anthropic::invalid_output_format))]
@@ -111,6 +136,9 @@ impl ProblemDetails for AnthropicError {
             },
             Self::UnsupportedOutputFormat
             | Self::UnsupportedOutputSchema { .. }
+            | Self::UnsupportedThinkingMode
+            | Self::UnsupportedThinkingDisplay
+            | Self::UnsupportedEffort
             | Self::UnsupportedToolChoice
             | Self::UnsupportedRole
             | Self::UnsupportedSystemBlock
@@ -123,6 +151,12 @@ impl ProblemDetails for AnthropicError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::InvalidMaxTokens => Some("max_tokens"),
+            Self::InvalidThinkingBudget
+            | Self::ThinkingBudgetTooLarge
+            | Self::UnsupportedThinkingMode
+            | Self::UnsupportedThinkingDisplay => Some("thinking"),
+            Self::UnsupportedEffort => Some("output_config.effort"),
             Self::InvalidOutputFormat
             | Self::InvalidOutputSchema { .. }
             | Self::UnsupportedOutputFormat
