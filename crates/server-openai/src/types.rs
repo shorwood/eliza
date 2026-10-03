@@ -605,17 +605,10 @@ pub(super) enum ResponsesRequestInputReasoningSummary {
     Unsupported,
 }
 
-/// One structured item accepted by the Responses API.
+/// Non-message Responses input item identified by its `type` field.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum ResponsesRequestInputItem {
-    /// Conversation message.
-    Message {
-        /// Message author role.
-        role: ResponsesRequestRole,
-        /// Message payload.
-        content: ResponsesRequestContent,
-    },
+pub(super) enum ResponsesRequestInputTypedItem {
     /// Function invocation from a prior model response.
     FunctionCall {
         /// Requested function name.
@@ -638,6 +631,25 @@ pub(super) enum ResponsesRequestInputItem {
     /// Any input-item kind outside the supported subset.
     #[serde(other)]
     Unsupported,
+}
+
+/// One structured item accepted by the Responses API.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub(super) enum ResponsesRequestInputItem {
+    /// Conversation message, with or without the optional `type` field.
+    Message {
+        /// Message author role.
+        role: ResponsesRequestRole,
+        /// Message payload.
+        content: ResponsesRequestContent,
+    },
+    /// Input item identified by a required `type` field.
+    Typed {
+        /// Function, tool-result, or reasoning item.
+        #[serde(flatten)]
+        item: ResponsesRequestInputTypedItem,
+    },
 }
 
 /// Shorthand text or structured items accepted as Responses input.

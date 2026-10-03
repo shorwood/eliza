@@ -750,6 +750,7 @@ dependencies = [
  "anyhow",
  "futures-util",
  "rig-core",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
