@@ -3,7 +3,6 @@ Content-Type: application/json
 {
   "model": "eliza-1966",
   "input": [{
-    "type": "message",
     "role": "user",
     "content": [{"type": "input_text", "text": "I am sad"}]
   }]
