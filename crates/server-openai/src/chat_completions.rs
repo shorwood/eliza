@@ -29,6 +29,9 @@ impl TryFrom<ChatRequest> for chat::turn::Request {
     type Error = OpenAiError;
 
     fn try_from(payload: ChatRequest) -> Result<Self, Self::Error> {
+        if let Some(effort) = payload.reasoning_effort {
+            effort.validate()?;
+        }
         let output_format = payload
             .response_format
             .map(TryInto::try_into)

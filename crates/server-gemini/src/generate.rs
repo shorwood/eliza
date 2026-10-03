@@ -159,6 +159,14 @@ impl TryFrom<GenerateContentRequest> for chat::turn::Request {
     type Error = GeminiError;
 
     fn try_from(payload: GenerateContentRequest) -> Result<Self, Self::Error> {
+        // Validate thought controls before lowering transcript content.
+        let include_reasoning = payload
+            .generation_config
+            .as_ref()
+            .map(super::types::GenerateConfig::should_include_reasoning)
+            .transpose()?
+            .unwrap_or(false);
+
         // Compile generation formatting before consuming transcript controls.
         let output_format = payload
             .generation_config
@@ -189,13 +197,12 @@ impl TryFrom<GenerateContentRequest> for chat::turn::Request {
             .transpose()?
             .unwrap_or_default();
 
-        Ok(chat::turn::Request::new(
-            system,
-            turns,
-            tools,
-            tool_choice,
-            output_format,
-        ))
+        let request = chat::turn::Request::new(system, turns, tools, tool_choice, output_format);
+        Ok(if include_reasoning {
+            request.with_reasoning()
+        } else {
+            request
+        })
     }
 }
 
@@ -338,8 +345,21 @@ fn user_parts_lower(
 }
 
 // -----------------------------------------------------------------------------
-// ModelPartsLower: Lowers model text and function calls in source order.
+// Model: Lowers model text and function calls in source order.
 // -----------------------------------------------------------------------------
+
+/// Preserve readable and opaque thought material in replay history.
+fn model_text_history(
+    text: String,
+    thought: Option<bool>,
+    thought_signature: Option<String>,
+) -> String {
+    if thought.unwrap_or(false) {
+        thought_signature.map_or(text.clone(), |signature| format!("{text} {signature}"))
+    } else {
+        text
+    }
+}
 
 /// Lower model-authored parts into neutral assistant and tool-call turns.
 ///
@@ -353,7 +373,15 @@ fn model_parts_lower(
 ) -> Result<(), GeminiError> {
     for part in parts {
         match part {
-            ContentPart::Text { text, .. } => turns.push(chat::turn::Turn::Assistant(text)),
+            ContentPart::Text {
+                text,
+                thought,
+                thought_signature,
+                ..
+            } => {
+                let history = model_text_history(text, thought, thought_signature);
+                turns.push(chat::turn::Turn::Assistant(history));
+            }
             ContentPart::FunctionCall { function_call } => {
                 turns.push(function_call.try_into()?);
             }
@@ -444,7 +472,31 @@ fn stream_records(
     model: &ModelId,
     response: &chat::turn::Response,
 ) -> Vec<GenerateContentResponse> {
-    match &response.output {
+    let mut records = response
+        .reasoning
+        .as_ref()
+        .map_or_else(Vec::new, |reasoning| {
+            stream_chunks(&reasoning.text)
+                .into_iter()
+                .map(|chunk| GenerateContentResponse {
+                    candidates: vec![GenerateCandidate {
+                        content: GenerateOutputContent {
+                            role: "model",
+                            parts: vec![GenerateOutputPart::Thought {
+                                text: chunk,
+                                thought: true,
+                                thought_signature: reasoning.signature.clone(),
+                            }],
+                        },
+                        finish_reason: None,
+                        index: 0,
+                    }],
+                    model_version: model.clone(),
+                    usage_metadata: None,
+                })
+                .collect()
+        });
+    records.extend(match &response.output {
         chat::turn::Output::Text(text) => stream_records_text(model, response, text),
         chat::turn::Output::ToolCall(call) => vec![GenerateContentResponse {
             candidates: vec![GenerateCandidate {
@@ -464,7 +516,8 @@ fn stream_records(
             model_version: model.clone(),
             usage_metadata: Some(response.usage.into()),
         }],
-    }
+    });
+    records
 }
 
 // -----------------------------------------------------------------------------

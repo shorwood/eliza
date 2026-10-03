@@ -27,6 +27,19 @@ pub(super) enum OpenAiError {
         image::errors::Error,
     ),
 
+    /// The requested reasoning effort was outside the current contract.
+    #[error("unsupported reasoning effort")]
+    #[diagnostic(code(eliza::openai::unsupported_reasoning_effort))]
+    UnsupportedReasoningEffort,
+    /// The requested reasoning summary mode was outside the current contract.
+    #[error("unsupported reasoning summary")]
+    #[diagnostic(code(eliza::openai::unsupported_reasoning_summary))]
+    UnsupportedReasoningSummary,
+    /// The requested output-token limit was zero.
+    #[error("max_output_tokens must be positive")]
+    #[diagnostic(code(eliza::openai::invalid_max_output_tokens))]
+    InvalidMaxOutputTokens,
+
     /// Image generation selected a model other than the fixed fixture.
     #[error("image generation requires model `eliza-retro-image`")]
     #[diagnostic(code(eliza::openai::image_generation_model_required))]
@@ -224,6 +237,8 @@ impl ProblemDetails for OpenAiError {
                 image::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
             },
             Self::UnsupportedEmbeddingEncoding
+            | Self::UnsupportedReasoningEffort
+            | Self::UnsupportedReasoningSummary
             | Self::UnsupportedImageOutputFormat { .. }
             | Self::UnsupportedImageSize
             | Self::UnsupportedImageControl { .. }
@@ -247,6 +262,9 @@ impl ProblemDetails for OpenAiError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::UnsupportedReasoningEffort => Some("reasoning.effort"),
+            Self::UnsupportedReasoningSummary => Some("reasoning.summary"),
+            Self::InvalidMaxOutputTokens => Some("max_output_tokens"),
             Self::EmbeddingModelRequired
             | Self::ImageGenerationModelRequired
             | Self::SpeechModelRequired => Some("model"),

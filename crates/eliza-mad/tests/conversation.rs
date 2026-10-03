@@ -1,4 +1,4 @@
-use eliza_mad::engine::{Doctor, ErrorKind};
+use eliza_mad::engine::{Doctor, ErrorKind, TraceRule, TraceSource};
 
 // -----------------------------------------------------------------------------
 // ReproducesThe1966CacmConversation: Pins the published exchange sequence.
@@ -70,7 +70,13 @@ fn reproduces_the_1966_cacm_conversation() {
     let doctor = Doctor::compile().unwrap();
     let mut session = doctor.session().unwrap();
     for (input, expected) in exchanges {
-        assert_eq!(session.respond(input).unwrap(), expected, "input: {input}");
+        let response = session.respond(input).unwrap();
+        assert_eq!(response.text, expected, "input: {input}");
+        if input != "BULLIES." {
+            continue;
+        }
+        assert_eq!(response.trace.source, TraceSource::Memory);
+        assert_eq!(response.trace.selected_rule, None);
     }
 }
 
@@ -96,4 +102,49 @@ fn enforces_the_historical_record_contract() {
         session.respond(&"A".repeat(73)).unwrap_err().kind(),
         ErrorKind::Input
     );
+}
+
+// -----------------------------------------------------------------------------
+// ReportsMechanicalReasoning: Pins facts captured at native selection points.
+// -----------------------------------------------------------------------------
+
+/// Reports final linked and `PRE` rules, `NONE`, and memory without inference.
+///
+/// # Panics
+///
+/// Panics when compilation, execution, or trace capture changes.
+#[test]
+fn reports_mechanical_reasoning() {
+    let doctor = Doctor::compile().unwrap();
+
+    let mut direct = doctor.session().unwrap();
+    let response = direct.respond("I NEED HELP").unwrap();
+    assert_eq!(response.trace.normalized_input, ["YOU", "NEED", "HELP"]);
+    assert_eq!(response.trace.ranked_keywords, ["I"]);
+    assert_eq!(response.trace.source, TraceSource::Keyword);
+    assert_eq!(
+        response.trace.selected_rule,
+        Some(TraceRule {
+            keyword: "I".to_owned(),
+            decomposition: 0,
+            reassembly: 0,
+        })
+    );
+    assert_eq!(
+        response.trace.to_string(),
+        "NORMALIZED INPUT: YOU NEED HELP\nRANKED KEYWORDS: I\nSELECTED RULE: I/0/0\nRESPONSE SOURCE: KEYWORD"
+    );
+
+    let mut linked = doctor.session().unwrap();
+    let linked = linked.respond("MEN ARE ALL ALIKE").unwrap().trace;
+    assert_eq!(linked.selected_rule.unwrap().keyword, "DIT");
+
+    let mut pre = doctor.session().unwrap();
+    let pre = pre.respond("I'M SAD").unwrap().trace;
+    assert_eq!(pre.selected_rule.unwrap().keyword, "I");
+
+    let mut none = doctor.session().unwrap();
+    let none = none.respond("BANANAS").unwrap().trace;
+    assert_eq!(none.source, TraceSource::None);
+    assert_eq!(none.selected_rule.unwrap().keyword, "NONE");
 }
