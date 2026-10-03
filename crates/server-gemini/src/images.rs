@@ -149,6 +149,7 @@ fn image_prompt(contents: Option<Vec<super::types::Content>>) -> Result<String, 
             ContentPart::Text {
                 text,
                 speech_metadata: None,
+                ..
             } => Ok(text),
             ContentPart::Text {
                 speech_metadata: Some(_),
@@ -274,6 +275,7 @@ impl CompletedImage {
             None => GenerateUsage {
                 prompt_token_count: self.image.prompt_tokens,
                 candidates_token_count: 0,
+                thoughts_token_count: None,
                 total_token_count: self.image.prompt_tokens,
             },
         };

@@ -6,10 +6,50 @@ use mad::machine::Host;
 use mad::word::Word;
 use slip::arena::{Arena, ArenaError, Datum, ListHandle};
 use slip::bcd::{BcdError, BcdWord};
-use slip::pattern::{AssemblyError, MatchError, assemble, match_pattern};
+use slip::pattern::{AssemblyError, AssemblyItem, MatchError, assemble, match_pattern};
 use thiserror::Error;
 
 use crate::script::{KeywordRule, Reassembly, Script};
+
+// -----------------------------------------------------------------------------
+// Trace: Records the mechanical path that produced one response.
+// -----------------------------------------------------------------------------
+
+/// Final rule coordinates selected during one turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TraceRule {
+    /// Canonical keyword whose rule produced the response.
+    pub(crate) keyword: String,
+    /// Zero-based decomposition position.
+    pub(crate) decomposition: usize,
+    /// Zero-based reassembly position.
+    pub(crate) reassembly: usize,
+}
+
+/// Mechanical response source selected during one turn.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum TraceSource {
+    /// A ranked keyword rule produced the response.
+    Keyword,
+    /// A queued memory produced the response.
+    Memory,
+    /// The script's `NONE` rule or historical fallback produced the response.
+    #[default]
+    None,
+}
+
+/// Mutable trace facts captured directly by native operations.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TraceState {
+    /// Canonical input words after substitutions and delimiter handling.
+    pub(crate) normalized_input: Vec<String>,
+    /// Keywords in the order the driver will inspect them.
+    pub(crate) ranked_keywords: Vec<String>,
+    /// Final rule that assembled response text.
+    pub(crate) selected_rule: Option<TraceRule>,
+    /// Branch that produced the response.
+    pub(crate) source: TraceSource,
+}
 
 // -----------------------------------------------------------------------------
 // Resource: Stores values referenced by MAD machine words.
@@ -207,6 +247,8 @@ pub(crate) struct ElizaHost {
     resources: Vec<Resource>,
     /// Parsed DOCTOR rules and mutable reassembly counters.
     script: Script,
+    /// Mechanical facts captured for the current turn.
+    trace: TraceState,
 }
 
 impl ElizaHost {
@@ -290,6 +332,11 @@ impl ElizaHost {
         value.checked_sub(1).ok_or(NativeError::ResourceHandle)
     }
 
+    /// Borrow the mechanical facts captured for the current turn.
+    pub(crate) fn trace_state(&self) -> &TraceState {
+        &self.trace
+    }
+
     /// Allocate one resource and return its one-based MAD handle.
     ///
     /// # Errors
@@ -338,6 +385,7 @@ impl ElizaHost {
             memories: VecDeque::new(),
             resources: Vec::new(),
             script,
+            trace: TraceState::default(),
         };
         host.input = host.allocate(Resource::Text(String::new()))?;
         for keyword in host.script.rules.keys().cloned().collect::<Vec<_>>() {
@@ -459,6 +507,7 @@ impl ElizaHost {
     ///
     /// Returns an error if the stable input handle is invalid.
     pub(crate) fn store_input(&mut self, input: &str) -> Result<Word, NativeError> {
+        self.trace = TraceState::default();
         let input_handle = self.input;
         *self.resource_mut(input_handle)? = Resource::Text(input.to_owned());
         Ok(input_handle)
@@ -515,6 +564,28 @@ impl ElizaHost {
         }
     }
 
+    /// Assemble and record the final rule-selected response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when assembly or resource allocation fails.
+    fn complete_rule(
+        &mut self,
+        rule: TraceRule,
+        items: &[AssemblyItem],
+        captures: &[Vec<String>],
+    ) -> Result<i64, NativeError> {
+        let result = assemble(items, captures)?;
+        self.last_result = self.allocate(Resource::Words(result))?;
+        self.trace.source = if rule.keyword == "NONE" {
+            TraceSource::None
+        } else {
+            TraceSource::Keyword
+        };
+        self.trace.selected_rule = Some(rule);
+        Ok(Self::ACTION_COMPLETE)
+    }
+
     /// Apply the selected keyword rule to a tokenized input resource.
     ///
     /// # Errors
@@ -552,7 +623,7 @@ impl ElizaHost {
             return Ok(0);
         };
 
-        let reassembly = {
+        let (reassembly, reassembly_index) = {
             let rule = self.script.rules.get_mut(keyword).ok_or_else(|| {
                 NativeError::SelectedRuleMissing {
                     keyword: keyword.to_owned(),
@@ -563,14 +634,20 @@ impl ElizaHost {
                     index: decomposition_index,
                 },
             )?;
+            let reassembly_index = decomposition.next_reassembly;
             let reassembly = decomposition
                 .reassemblies
-                .get(decomposition.next_reassembly)
+                .get(reassembly_index)
                 .cloned()
                 .ok_or(NativeError::SelectedReassemblyMissing)?;
             decomposition.next_reassembly =
                 (decomposition.next_reassembly + 1) % decomposition.reassemblies.len();
-            reassembly
+            (reassembly, reassembly_index)
+        };
+        let selected_rule = TraceRule {
+            keyword: keyword.to_owned(),
+            decomposition: decomposition_index,
+            reassembly: reassembly_index,
         };
 
         match reassembly {
@@ -585,16 +662,27 @@ impl ElizaHost {
                 self.last_target = self.intern(&link)?;
                 Ok(Self::ACTION_LINK)
             }
-            Reassembly::Words { items } => {
-                let result = assemble(&items, &captures)?;
-                self.last_result = self.allocate(Resource::Words(result))?;
-                Ok(Self::ACTION_COMPLETE)
-            }
+            Reassembly::Words { items } => self.complete_rule(selected_rule, &items, &captures),
         }
     }
 }
 
 impl ElizaHost {
+    /// Pop and mark one queued memory response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue is empty or allocation fails.
+    fn pop_memory(&mut self) -> Result<Word, NativeError> {
+        let memory = self
+            .memories
+            .pop_front()
+            .ok_or(NativeError::EmptyMemoryQueue)?;
+        self.trace.selected_rule = None;
+        self.trace.source = TraceSource::Memory;
+        self.allocate(Resource::Words(memory))
+    }
+
     /// Dispatch memory-queue native functions.
     ///
     /// # Errors
@@ -619,11 +707,7 @@ impl ElizaHost {
             }
             "MEMPOP" => {
                 Self::exact_arity(arguments, 0)?;
-                let memory = self
-                    .memories
-                    .pop_front()
-                    .ok_or(NativeError::EmptyMemoryQueue)?;
-                self.allocate(Resource::Words(memory))
+                self.pop_memory()
             }
             _ => Err(NativeError::UnknownFunction {
                 name: name.to_owned(),
@@ -639,13 +723,17 @@ impl ElizaHost {
     fn drop_to(&mut self, arguments: &[Word]) -> Result<Word, NativeError> {
         Self::exact_arity(arguments, 2)?;
         let count = Self::one_based(arguments[1])?;
-        let words = self.words_mut(arguments[0])?;
+        let normalized = {
+            let words = self.words_mut(arguments[0])?;
 
-        // The removed prefix must fit in the word list.
-        if count > words.len() {
-            return Err(NativeError::DropPosition);
-        }
-        words.drain(..count);
+            // The removed prefix must fit in the word list.
+            if count > words.len() {
+                return Err(NativeError::DropPosition);
+            }
+            words.drain(..count);
+            words.clone()
+        };
+        self.trace.normalized_input = normalized;
         Ok(arguments[0])
     }
 
@@ -688,12 +776,17 @@ impl ElizaHost {
     fn push(&mut self, arguments: &[Word], end: KeyListEnd) -> Result<Word, NativeError> {
         Self::exact_arity(arguments, 2)?;
         let list = self.list(arguments[0])?;
+        let keyword = self.text(arguments[1])?.to_owned();
         let datum = Datum::Word(arguments[1].raw());
         let result = match end {
             KeyListEnd::Back => self.arena.push_back(list, datum),
             KeyListEnd::Front => self.arena.push_front(list, datum),
         };
         result?;
+        match end {
+            KeyListEnd::Back => self.trace.ranked_keywords.push(keyword),
+            KeyListEnd::Front => self.trace.ranked_keywords.insert(0, keyword),
+        }
         Ok(arguments[0])
     }
 
@@ -741,6 +834,7 @@ impl ElizaHost {
             .get_mut(index)
             .ok_or(NativeError::SetPosition)?;
         *slot = replacement;
+        self.trace.normalized_input = self.words(arguments[0])?.to_vec();
         Ok(arguments[0])
     }
 
@@ -824,13 +918,17 @@ impl ElizaHost {
     fn truncate_words(&mut self, arguments: &[Word]) -> Result<Word, NativeError> {
         Self::exact_arity(arguments, 2)?;
         let position = Self::one_based(arguments[1])? - 1;
-        let words = self.words_mut(arguments[0])?;
+        let normalized = {
+            let words = self.words_mut(arguments[0])?;
 
-        // The truncation boundary may equal but not exceed the list length.
-        if position > words.len() {
-            return Err(NativeError::TruncatePosition);
-        }
-        words.truncate(position);
+            // The truncation boundary may equal but not exceed the list length.
+            if position > words.len() {
+                return Err(NativeError::TruncatePosition);
+            }
+            words.truncate(position);
+            words.clone()
+        };
+        self.trace.normalized_input = normalized;
         Ok(arguments[0])
     }
 
@@ -862,6 +960,7 @@ impl ElizaHost {
             "TOKEN" => {
                 Self::exact_arity(arguments, 1)?;
                 let words = Self::tokenize(self.text(arguments[0])?);
+                self.trace.normalized_input.clone_from(&words);
                 self.allocate(Resource::Words(words))
             }
             "TRUNC" => self.truncate_words(arguments),

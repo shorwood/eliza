@@ -18,10 +18,11 @@ use uuid::Uuid;
 
 use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
 use super::types::{
-    AssistantRole, ResponsesRequest, ResponsesRequestContent, ResponsesRequestContentPart,
-    ResponsesRequestInput, ResponsesRequestInputItem, ResponsesRequestRole,
-    ResponsesRequestToolOutput, ResponsesResponse, ResponsesResponseIds, ResponsesResponseOutput,
-    ResponsesResponseProgress, ResponsesResponseStatus, ResponsesResponseStreamEvent,
+    AssistantRole, ResponsesReasoningSummary, ResponsesRequest, ResponsesRequestContent,
+    ResponsesRequestContentPart, ResponsesRequestInput, ResponsesRequestInputItem,
+    ResponsesRequestInputReasoningSummary, ResponsesRequestRole, ResponsesRequestToolOutput,
+    ResponsesResponse, ResponsesResponseIds, ResponsesResponseOutput, ResponsesResponseProgress,
+    ResponsesResponseStatus, ResponsesResponseStreamEvent,
 };
 use crate::context::AppState;
 
@@ -29,6 +30,7 @@ impl TryFrom<ResponsesRequest> for chat::turn::Request {
     type Error = OpenAiError;
 
     fn try_from(payload: ResponsesRequest) -> Result<Self, Self::Error> {
+        let include_reasoning = payload.should_include_reasoning()?;
         let output_format = payload
             .text
             .and_then(|config| config.format)
@@ -51,13 +53,12 @@ impl TryFrom<ResponsesRequest> for chat::turn::Request {
             .transpose()?
             .unwrap_or_default();
 
-        Ok(chat::turn::Request::new(
-            system,
-            turns,
-            tools,
-            tool_choice,
-            output_format,
-        ))
+        let request = chat::turn::Request::new(system, turns, tools, tool_choice, output_format);
+        Ok(if include_reasoning {
+            request.with_reasoning()
+        } else {
+            request
+        })
     }
 }
 
@@ -97,6 +98,34 @@ fn lower_message_item(
     Ok(())
 }
 
+/// Extract readable text from a supported prior summary part.
+fn lower_reasoning_summary_text(part: ResponsesRequestInputReasoningSummary) -> Option<String> {
+    match part {
+        ResponsesRequestInputReasoningSummary::SummaryText { text } => Some(text),
+        ResponsesRequestInputReasoningSummary::Unsupported => None,
+    }
+}
+
+/// Preserve readable and opaque reasoning material in replay history.
+fn lower_reasoning_item(
+    summary: Option<Vec<ResponsesRequestInputReasoningSummary>>,
+    encrypted_content: Option<String>,
+    turns: &mut Vec<chat::turn::Turn>,
+) {
+    let parts = summary.unwrap_or_default();
+    let mut history = parts
+        .into_iter()
+        .filter_map(lower_reasoning_summary_text)
+        .collect::<Vec<_>>();
+    history.extend(encrypted_content);
+
+    // Empty reasoning items do not add a transcript turn.
+    if history.is_empty() {
+        return;
+    }
+    turns.push(chat::turn::Turn::Assistant(history.join(" ")));
+}
+
 /// Lower one typed Responses input item.
 ///
 /// # Errors
@@ -127,6 +156,10 @@ fn lower_item(
                 ResponsesRequestToolOutput::Object(object) => object.serialized(),
             }));
         }
+        ResponsesRequestInputItem::Reasoning {
+            summary,
+            encrypted_content,
+        } => lower_reasoning_item(summary, encrypted_content, turns),
         // Unknown item types cannot be represented by the neutral contract.
         ResponsesRequestInputItem::Unsupported => return Err(OpenAiError::UnsupportedInputItem),
     }
@@ -308,6 +341,8 @@ struct ResponseContext {
     item_id: String,
     /// Function call identifier.
     call_id: String,
+    /// Reasoning output-item identifier when a summary was requested.
+    reasoning_id: Option<String>,
     /// Final typed output item.
     final_output: ResponsesResponseOutput,
     /// Complete terminal response envelope.
@@ -334,9 +369,28 @@ impl ResponseContext {
             chat::turn::Output::Text(text) => text.clone(),
             chat::turn::Output::ToolCall(_) => String::new(),
         };
+        let reasoning_id = response
+            .reasoning
+            .as_ref()
+            .map(|_| format!("rs_{}", Uuid::now_v7().simple()));
+        let mut outputs = response
+            .reasoning
+            .as_ref()
+            .map_or_else(Vec::new, |reasoning| {
+                vec![ResponsesResponseOutput::Reasoning {
+                    id: reasoning_id.clone().unwrap_or_default(),
+                    status: ResponsesResponseStatus::Completed,
+                    summary: vec![ResponsesReasoningSummary::SummaryText {
+                        text: reasoning.text.clone(),
+                    }],
+                    encrypted_content: reasoning.signature.clone(),
+                }]
+            });
+        outputs.push(output.clone());
         Self {
             item_id,
             call_id,
+            reasoning_id,
             final_output: output.clone(),
             envelope: ResponsesResponse {
                 id: format!("resp_{}", Uuid::now_v7().simple()),
@@ -346,7 +400,7 @@ impl ResponseContext {
                 error: None,
                 incomplete_details: None,
                 model,
-                output: vec![output],
+                output: outputs,
                 output_text,
                 usage: response.usage.into(),
             },
@@ -387,11 +441,11 @@ impl ResponseStream {
     }
 
     /// Append text item, delta, and completion events.
-    fn push_text(&mut self, text: &str) -> Result<(), EncodingError> {
+    fn push_text(&mut self, output_index: usize, text: &str) -> Result<(), EncodingError> {
         let sequence_number = self.next_sequence();
         self.push(&ResponsesResponseStreamEvent::OutputItemAdded {
             sequence_number,
-            output_index: 0,
+            output_index,
             item: ResponsesResponseOutput::Message {
                 id: self.context.item_id.clone(),
                 status: ResponsesResponseStatus::InProgress,
@@ -404,7 +458,7 @@ impl ResponseStream {
             self.push(&ResponsesResponseStreamEvent::OutputTextDelta {
                 sequence_number,
                 item_id: self.context.item_id.clone(),
-                output_index: 0,
+                output_index,
                 content_index: 0,
                 delta: chunk,
             })?;
@@ -413,18 +467,22 @@ impl ResponseStream {
         self.push(&ResponsesResponseStreamEvent::OutputTextDone {
             sequence_number,
             item_id: self.context.item_id.clone(),
-            output_index: 0,
+            output_index,
             content_index: 0,
             text: text.to_owned(),
         })
     }
 
     /// Append function item, argument delta, and completion events.
-    fn push_tool(&mut self, call: &chat::turn::FunctionCall) -> Result<(), EncodingError> {
+    fn push_tool(
+        &mut self,
+        output_index: usize,
+        call: &chat::turn::FunctionCall,
+    ) -> Result<(), EncodingError> {
         let sequence_number = self.next_sequence();
         self.push(&ResponsesResponseStreamEvent::OutputItemAdded {
             sequence_number,
-            output_index: 0,
+            output_index,
             item: ResponsesResponseOutput::FunctionCall {
                 id: self.context.item_id.clone(),
                 call_id: self.context.call_id.clone(),
@@ -438,7 +496,7 @@ impl ResponseStream {
         self.push(&ResponsesResponseStreamEvent::FunctionArgumentsDelta {
             sequence_number,
             item_id: self.context.item_id.clone(),
-            output_index: 0,
+            output_index,
             call_id: self.context.call_id.clone(),
             delta: arguments.clone(),
         })?;
@@ -446,7 +504,7 @@ impl ResponseStream {
         self.push(&ResponsesResponseStreamEvent::FunctionArgumentsDone {
             sequence_number,
             item_id: self.context.item_id.clone(),
-            output_index: 0,
+            output_index,
             call_id: self.context.call_id.clone(),
             name: call.name.clone(),
             arguments,
@@ -454,11 +512,81 @@ impl ResponseStream {
     }
 
     /// Append output-specific events.
-    fn push_output(&mut self, output: &chat::turn::Output) -> Result<(), EncodingError> {
+    fn push_output(
+        &mut self,
+        output_index: usize,
+        output: &chat::turn::Output,
+    ) -> Result<(), EncodingError> {
         match output {
-            chat::turn::Output::Text(text) => self.push_text(text),
-            chat::turn::Output::ToolCall(call) => self.push_tool(call),
+            chat::turn::Output::Text(text) => self.push_text(output_index, text),
+            chat::turn::Output::ToolCall(call) => self.push_tool(output_index, call),
         }
+    }
+
+    /// Append a complete native reasoning-summary lifecycle.
+    fn push_reasoning(&mut self, reasoning: &chat::turn::Reasoning) -> Result<(), EncodingError> {
+        let item_id = self.context.reasoning_id.clone().unwrap_or_default();
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::OutputItemAdded {
+            sequence_number,
+            output_index: 0,
+            item: ResponsesResponseOutput::Reasoning {
+                id: item_id.clone(),
+                status: ResponsesResponseStatus::InProgress,
+                summary: Vec::new(),
+                encrypted_content: reasoning.signature.clone(),
+            },
+        })?;
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::ReasoningSummaryPartAdded {
+            sequence_number,
+            item_id: item_id.clone(),
+            output_index: 0,
+            summary_index: 0,
+            part: ResponsesReasoningSummary::SummaryText {
+                text: String::new(),
+            },
+        })?;
+        for chunk in stream_chunks(&reasoning.text) {
+            let sequence_number = self.next_sequence();
+            self.push(&ResponsesResponseStreamEvent::ReasoningSummaryTextDelta {
+                sequence_number,
+                item_id: item_id.clone(),
+                output_index: 0,
+                summary_index: 0,
+                delta: chunk,
+            })?;
+        }
+        let summary = ResponsesReasoningSummary::SummaryText {
+            text: reasoning.text.clone(),
+        };
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::ReasoningSummaryTextDone {
+            sequence_number,
+            item_id: item_id.clone(),
+            output_index: 0,
+            summary_index: 0,
+            text: reasoning.text.clone(),
+        })?;
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::ReasoningSummaryPartDone {
+            sequence_number,
+            item_id: item_id.clone(),
+            output_index: 0,
+            summary_index: 0,
+            part: summary.clone(),
+        })?;
+        let sequence_number = self.next_sequence();
+        self.push(&ResponsesResponseStreamEvent::OutputItemDone {
+            sequence_number,
+            output_index: 0,
+            item: ResponsesResponseOutput::Reasoning {
+                id: item_id,
+                status: ResponsesResponseStatus::Completed,
+                summary: vec![summary],
+                encrypted_content: reasoning.signature.clone(),
+            },
+        })
     }
 
     /// Render the complete SSE sequence for one neutral response.
@@ -489,7 +617,11 @@ impl ResponseStream {
                 incomplete_details: None,
             },
         })?;
-        stream.push_output(&response.output)?;
+        if let Some(reasoning) = &response.reasoning {
+            stream.push_reasoning(reasoning)?;
+        }
+        let output_index = usize::from(response.reasoning.is_some());
+        stream.push_output(output_index, &response.output)?;
         let output_done_sequence = stream.next_sequence();
         let completed_sequence = stream.next_sequence();
         let Self {
@@ -499,7 +631,7 @@ impl ResponseStream {
         } = stream;
         events.push(json_event(&ResponsesResponseStreamEvent::OutputItemDone {
             sequence_number: output_done_sequence,
-            output_index: 0,
+            output_index,
             item: context.final_output,
         })?);
         events.push(json_event(&ResponsesResponseStreamEvent::Completed {

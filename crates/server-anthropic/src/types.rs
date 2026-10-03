@@ -77,6 +77,18 @@ pub(super) enum MessageContentBlock {
         /// Returned tool content.
         content: Option<ToolResultContent>,
     },
+    /// Prior readable thinking returned by the model.
+    Thinking {
+        /// Readable thinking summary.
+        thinking: String,
+        /// Opaque signature returned with the summary.
+        signature: Option<String>,
+    },
+    /// Prior opaque thinking retained for replay compatibility.
+    RedactedThinking {
+        /// Opaque provider payload.
+        data: String,
+    },
     /// Any block kind outside the supported subset.
     #[serde(other)]
     Unsupported,
@@ -277,22 +289,156 @@ impl TryFrom<OutputFormat> for chat::structured_output::StructuredOutput {
     }
 }
 
+/// Current Anthropic effort levels.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum OutputEffort {
+    /// Low effort.
+    Low,
+    /// Medium effort.
+    Medium,
+    /// High effort.
+    High,
+    /// Extra-high effort.
+    Xhigh,
+    /// Maximum effort.
+    Max,
+    /// Any effort outside the current contract.
+    #[serde(other)]
+    Unsupported,
+}
+
 /// Anthropic response-output controls.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct OutputConfig {
     /// Optional schema format for direct assistant text.
     format: Option<OutputFormat>,
+    /// Requested response effort, accepted without changing ELIZA.
+    effort: Option<OutputEffort>,
 }
 
 impl TryFrom<OutputConfig> for chat::structured_output::StructuredOutput {
     type Error = AnthropicError;
 
     fn try_from(config: OutputConfig) -> Result<Self, Self::Error> {
-        Ok(config
-            .format
-            .map(TryInto::try_into)
-            .transpose()?
-            .unwrap_or_default())
+        if matches!(config.effort, Some(OutputEffort::Unsupported)) {
+            Err(AnthropicError::UnsupportedEffort)
+        } else {
+            Ok(config
+                .format
+                .map(TryInto::try_into)
+                .transpose()?
+                .unwrap_or_default())
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Thinking: Defines native Anthropic reasoning controls.
+// -----------------------------------------------------------------------------
+
+/// Visibility requested for returned thinking.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ThinkingDisplay {
+    /// Return a readable summary.
+    Summarized,
+    /// Omit thinking from the response.
+    Omitted,
+    /// Any display mode outside the current contract.
+    #[serde(other)]
+    Unsupported,
+}
+
+/// Smallest explicit thinking budget accepted by Anthropic.
+const MIN_THINKING_BUDGET_TOKENS: usize = 1024;
+
+/// Resolve readable visibility for a supported thinking mode.
+///
+/// # Errors
+///
+/// Returns a typed error when the display mode is unsupported.
+fn is_thinking_display_visible(display: Option<ThinkingDisplay>) -> Result<bool, AnthropicError> {
+    match display {
+        None | Some(ThinkingDisplay::Summarized) => Ok(true),
+        Some(ThinkingDisplay::Omitted) => Ok(false),
+        Some(ThinkingDisplay::Unsupported) => Err(AnthropicError::UnsupportedThinkingDisplay),
+    }
+}
+
+/// Validate an explicit thinking budget against Anthropic's bounds.
+///
+/// # Errors
+///
+/// Returns a typed error when the budget is too small or reaches the output limit.
+fn validate_thinking_budget(
+    budget_tokens: usize,
+    max_tokens: Option<usize>,
+) -> Result<(), AnthropicError> {
+    if budget_tokens < MIN_THINKING_BUDGET_TOKENS {
+        Err(AnthropicError::InvalidThinkingBudget)
+    } else if max_tokens.is_some_and(|maximum| budget_tokens >= maximum) {
+        Err(AnthropicError::ThinkingBudgetTooLarge)
+    } else {
+        Ok(())
+    }
+}
+
+/// Validate explicit thinking and resolve its response visibility.
+///
+/// # Errors
+///
+/// Returns a typed error for an invalid budget or display mode.
+fn should_include_enabled_thinking(
+    budget_tokens: usize,
+    max_tokens: Option<usize>,
+    display: Option<ThinkingDisplay>,
+) -> Result<bool, AnthropicError> {
+    validate_thinking_budget(budget_tokens, max_tokens)?;
+    is_thinking_display_visible(display)
+}
+
+/// Anthropic thinking mode.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum Thinking {
+    /// Explicit thinking with a required budget.
+    Enabled {
+        /// Requested thinking budget.
+        budget_tokens: usize,
+        /// Returned thinking visibility.
+        display: Option<ThinkingDisplay>,
+    },
+    /// Provider-selected adaptive thinking.
+    Adaptive {
+        /// Returned thinking visibility.
+        display: Option<ThinkingDisplay>,
+    },
+    /// Disable thinking.
+    Disabled,
+    /// Limit thinking to tool boundaries; no readable trace is returned here.
+    BetweenTools,
+    /// Any thinking mode outside the current contract.
+    #[serde(other)]
+    Unsupported,
+}
+
+impl Thinking {
+    /// Validate thinking controls and report readable visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for invalid budgets or modes.
+    fn should_include_reasoning(&self, max_tokens: Option<usize>) -> Result<bool, AnthropicError> {
+        match *self {
+            Self::Enabled {
+                budget_tokens,
+                display,
+            } => should_include_enabled_thinking(budget_tokens, max_tokens, display),
+            Self::Adaptive { display } => is_thinking_display_visible(display),
+            Self::Disabled | Self::BetweenTools => Ok(false),
+            Self::Unsupported => Err(AnthropicError::UnsupportedThinkingMode),
+        }
     }
 }
 
@@ -327,6 +473,27 @@ pub(super) struct MessagesRequest {
     pub(super) tool_choice: Option<ToolChoice>,
     /// Optional direct-output schema controls.
     pub(super) output_config: Option<OutputConfig>,
+    /// Native thinking controls.
+    thinking: Option<Thinking>,
+    /// Maximum output tokens accepted as a compatibility limit.
+    max_tokens: Option<usize>,
+}
+
+impl MessagesRequest {
+    /// Validate output limits and return readable-thinking visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for invalid thinking or token controls.
+    pub(super) fn should_include_reasoning(&self) -> Result<bool, AnthropicError> {
+        if self.max_tokens == Some(0) {
+            Err(AnthropicError::InvalidMaxTokens)
+        } else if let Some(thinking) = &self.thinking {
+            thinking.should_include_reasoning(self.max_tokens)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 /// Reason the Anthropic response stopped generating.
@@ -356,6 +523,14 @@ pub(super) enum MessagesOutputBlock {
         name: String,
         /// Arguments supplied to the tool.
         input: chat::json::JsonObject,
+    },
+    /// Readable thinking returned before the answer.
+    Thinking {
+        /// Mechanical trace summary.
+        thinking: String,
+        /// Stable fixture signature over the trace.
+        #[serde(skip_serializing_if = "String::is_empty")]
+        signature: String,
     },
 }
 
@@ -401,7 +576,7 @@ impl From<chat::turn::Usage> for MessagesUsage {
     fn from(usage: chat::turn::Usage) -> Self {
         Self {
             input_tokens: usage.prompt,
-            output_tokens: usage.completion,
+            output_tokens: usage.completion + usage.reasoning,
         }
     }
 }
@@ -435,15 +610,28 @@ impl MessagesResponse {
             chat::turn::Output::Text(_) => MessagesStopReason::EndTurn,
             chat::turn::Output::ToolCall(_) => MessagesStopReason::ToolUse,
         };
+        let mut content = response
+            .reasoning
+            .as_ref()
+            .map_or_else(Vec::new, |reasoning| {
+                vec![MessagesOutputBlock::Thinking {
+                    thinking: reasoning.text.clone(),
+                    signature: reasoning.signature.clone(),
+                }]
+            });
+        content.push(MessagesOutputBlock::from(&response.output));
         Self {
             id: format!("msg_{}", Uuid::now_v7().simple()),
             kind: "message",
             role: "assistant",
             model,
-            content: vec![MessagesOutputBlock::from(&response.output)],
+            content,
             stop_reason,
             stop_sequence: None,
-            usage: response.usage.into(),
+            usage: MessagesUsage {
+                input_tokens: response.usage.prompt,
+                output_tokens: response.usage.completion + response.usage.reasoning,
+            },
         }
     }
 }
@@ -479,14 +667,28 @@ pub(super) struct StreamMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum StreamDelta {
     /// Text appended to an assistant block.
-    TextDelta {
+    #[serde(rename = "text_delta")]
+    Text {
         /// Newly emitted text.
         text: String,
     },
     /// JSON appended to a tool-use input block.
-    InputJsonDelta {
+    #[serde(rename = "input_json_delta")]
+    InputJson {
         /// Newly emitted JSON fragment.
         partial_json: String,
+    },
+    /// Text appended to a thinking block.
+    #[serde(rename = "thinking_delta")]
+    Thinking {
+        /// Newly emitted thinking text.
+        thinking: String,
+    },
+    /// Signature appended after thinking text.
+    #[serde(rename = "signature_delta")]
+    Signature {
+        /// Stable fixture signature.
+        signature: String,
     },
 }
 
