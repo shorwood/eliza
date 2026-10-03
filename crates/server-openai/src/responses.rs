@@ -20,9 +20,9 @@ use super::errors::{OpenAiError, OpenAiFailureResponse, OpenAiRejection};
 use super::types::{
     AssistantRole, ResponsesReasoningSummary, ResponsesRequest, ResponsesRequestContent,
     ResponsesRequestContentPart, ResponsesRequestInput, ResponsesRequestInputItem,
-    ResponsesRequestInputReasoningSummary, ResponsesRequestRole, ResponsesRequestToolOutput,
-    ResponsesResponse, ResponsesResponseIds, ResponsesResponseOutput, ResponsesResponseProgress,
-    ResponsesResponseStatus, ResponsesResponseStreamEvent,
+    ResponsesRequestInputReasoningSummary, ResponsesRequestInputTypedItem, ResponsesRequestRole,
+    ResponsesRequestToolOutput, ResponsesResponse, ResponsesResponseIds, ResponsesResponseOutput,
+    ResponsesResponseProgress, ResponsesResponseStatus, ResponsesResponseStreamEvent,
 };
 use crate::context::AppState;
 
@@ -126,6 +126,40 @@ fn lower_reasoning_item(
     turns.push(chat::turn::Turn::Assistant(history.join(" ")));
 }
 
+/// Lower one typed non-message Responses input item.
+///
+/// # Errors
+///
+/// Returns [`OpenAiError`] when the item is unsupported or incomplete.
+fn lower_typed_item(
+    item: ResponsesRequestInputTypedItem,
+    turns: &mut Vec<chat::turn::Turn>,
+) -> Result<(), OpenAiError> {
+    match item {
+        ResponsesRequestInputTypedItem::FunctionCall { name, arguments } => {
+            let name = required_name(name, "input.name")?;
+            let arguments = arguments.ok_or(OpenAiError::MissingFunctionCallArguments)?;
+            turns.push(chat::turn::Turn::ToolCall(chat::turn::FunctionCall {
+                name,
+                arguments: arguments.into_object("input.arguments")?,
+            }));
+        }
+        ResponsesRequestInputTypedItem::FunctionCallOutput { output } => {
+            let output = output.ok_or(OpenAiError::MissingFunctionOutput)?;
+            turns.push(chat::turn::Turn::ToolResult(match output {
+                ResponsesRequestToolOutput::Text(text) => text,
+                ResponsesRequestToolOutput::Object(object) => object.serialized(),
+            }));
+        }
+        ResponsesRequestInputTypedItem::Reasoning {
+            summary,
+            encrypted_content,
+        } => lower_reasoning_item(summary, encrypted_content, turns),
+        ResponsesRequestInputTypedItem::Unsupported => Err(OpenAiError::UnsupportedInputItem)?,
+    }
+    Ok(())
+}
+
 /// Lower one typed Responses input item.
 ///
 /// # Errors
@@ -141,27 +175,7 @@ fn lower_item(
         ResponsesRequestInputItem::Message { role, content } => {
             lower_message_item(role, content, system, turns)?;
         }
-        ResponsesRequestInputItem::FunctionCall { name, arguments } => {
-            let name = required_name(name, "input.name")?;
-            let arguments = arguments.ok_or(OpenAiError::MissingFunctionCallArguments)?;
-            turns.push(chat::turn::Turn::ToolCall(chat::turn::FunctionCall {
-                name,
-                arguments: arguments.into_object("input.arguments")?,
-            }));
-        }
-        ResponsesRequestInputItem::FunctionCallOutput { output } => {
-            let output = output.ok_or(OpenAiError::MissingFunctionOutput)?;
-            turns.push(chat::turn::Turn::ToolResult(match output {
-                ResponsesRequestToolOutput::Text(text) => text,
-                ResponsesRequestToolOutput::Object(object) => object.serialized(),
-            }));
-        }
-        ResponsesRequestInputItem::Reasoning {
-            summary,
-            encrypted_content,
-        } => lower_reasoning_item(summary, encrypted_content, turns),
-        // Unknown item types cannot be represented by the neutral contract.
-        ResponsesRequestInputItem::Unsupported => return Err(OpenAiError::UnsupportedInputItem),
+        ResponsesRequestInputItem::Typed { item } => lower_typed_item(item, turns)?,
     }
     Ok(())
 }
