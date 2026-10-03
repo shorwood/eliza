@@ -446,6 +446,8 @@ pub(crate) struct ChatRequest {
     pub(super) tool_choice: Option<ChatToolChoice>,
     /// Optional plain-text, JSON-object, or JSON-Schema output control.
     pub(super) response_format: Option<ChatRequestResponseFormat>,
+    /// Reasoning effort accepted for native compatibility without trace output.
+    pub(super) reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Validate and compile Chat Completions' nested schema payload.
@@ -589,6 +591,20 @@ pub(super) enum ResponsesRequestRole {
 // ResponsesRequestInput: Defines structured and shorthand input.
 // -----------------------------------------------------------------------------
 
+/// One prior reasoning summary part accepted in Responses history.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum ResponsesRequestInputReasoningSummary {
+    /// Readable summary text.
+    SummaryText {
+        /// Summary payload.
+        text: String,
+    },
+    /// Any summary part outside the current contract.
+    #[serde(other)]
+    Unsupported,
+}
+
 /// One structured item accepted by the Responses API.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -611,6 +627,13 @@ pub(super) enum ResponsesRequestInputItem {
     FunctionCallOutput {
         /// Returned function value.
         output: Option<ResponsesRequestToolOutput>,
+    },
+    /// Prior reasoning output returned unchanged by a client.
+    Reasoning {
+        /// Prior readable summary parts.
+        summary: Option<Vec<ResponsesRequestInputReasoningSummary>>,
+        /// Prior opaque reasoning token.
+        encrypted_content: Option<String>,
     },
     /// Any input-item kind outside the supported subset.
     #[serde(other)]
@@ -860,6 +883,99 @@ pub(super) struct ResponsesRequestTextConfig {
 }
 
 // -----------------------------------------------------------------------------
+// Reasoning: Defines native reasoning request values.
+// -----------------------------------------------------------------------------
+
+/// `OpenAI` reasoning effort values accepted by current native APIs.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum ReasoningEffort {
+    /// Disable reasoning effort.
+    None,
+    /// Minimal effort.
+    Minimal,
+    /// Low effort.
+    Low,
+    /// Medium effort.
+    Medium,
+    /// High effort.
+    High,
+    /// Extra-high effort.
+    Xhigh,
+    /// Maximum effort.
+    Max,
+    /// Any effort outside the current contract.
+    #[serde(other)]
+    Unsupported,
+}
+
+impl ReasoningEffort {
+    /// Reject values outside the current native enum.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed compatibility error for unknown effort values.
+    pub(super) fn validate(self) -> Result<(), OpenAiError> {
+        if matches!(self, Self::Unsupported) {
+            Err(OpenAiError::UnsupportedReasoningEffort)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// `OpenAI` readable-summary modes.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum ReasoningSummary {
+    /// Provider-selected summary detail.
+    Auto,
+    /// Concise summary.
+    Concise,
+    /// Detailed summary.
+    Detailed,
+    /// Any summary mode outside the current contract.
+    #[serde(other)]
+    Unsupported,
+}
+
+// -----------------------------------------------------------------------------
+// ResponsesReasoningConfig: Defines Responses API reasoning controls.
+// -----------------------------------------------------------------------------
+
+/// Responses reasoning configuration.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct ResponsesReasoningConfig {
+    /// Requested effort, accepted without changing ELIZA.
+    effort: Option<ReasoningEffort>,
+    /// Current readable-summary selector.
+    summary: Option<ReasoningSummary>,
+    /// Deprecated readable-summary alias.
+    generate_summary: Option<ReasoningSummary>,
+}
+
+impl ResponsesReasoningConfig {
+    /// Validate controls and report whether a summary is readable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for unknown effort or summary values.
+    fn should_include_reasoning(&self) -> Result<bool, OpenAiError> {
+        if let Some(effort) = self.effort {
+            effort.validate()?;
+        }
+
+        let unsupported_summary = matches!(self.summary, Some(ReasoningSummary::Unsupported))
+            || matches!(self.generate_summary, Some(ReasoningSummary::Unsupported));
+        if unsupported_summary {
+            Err(OpenAiError::UnsupportedReasoningSummary)
+        } else {
+            Ok(self.summary.is_some() || self.generate_summary.is_some())
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // ResponsesRequest: Defines the request envelope.
 // -----------------------------------------------------------------------------
 
@@ -881,6 +997,27 @@ pub(super) struct ResponsesRequest {
     pub(super) tool_choice: Option<ResponsesRequestToolChoice>,
     /// Requested text-output controls.
     pub(super) text: Option<ResponsesRequestTextConfig>,
+    /// Native reasoning controls.
+    reasoning: Option<ResponsesReasoningConfig>,
+    /// Maximum output-token allowance accepted for compatibility.
+    max_output_tokens: Option<usize>,
+}
+
+impl ResponsesRequest {
+    /// Validate generation limits and return summary visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for invalid reasoning or output-token controls.
+    pub(super) fn should_include_reasoning(&self) -> Result<bool, OpenAiError> {
+        if self.max_output_tokens == Some(0) {
+            Err(OpenAiError::InvalidMaxOutputTokens)
+        } else if let Some(reasoning) = &self.reasoning {
+            reasoning.should_include_reasoning()
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1120,7 +1257,7 @@ pub(super) struct ChatStreamChunk<'a> {
 }
 
 // -----------------------------------------------------------------------------
-// ResponsesResponse: Defines complete and streaming Responses API output.
+// Responses: Defines complete and streaming Responses API output.
 // -----------------------------------------------------------------------------
 
 /// Lifecycle state of a Responses API response or output item.
@@ -1174,10 +1311,32 @@ impl From<&str> for ResponsesResponseText {
     }
 }
 
+/// One readable summary part inside a reasoning output item.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum ResponsesReasoningSummary {
+    /// Readable mechanical summary text.
+    SummaryText {
+        /// Summary payload.
+        text: String,
+    },
+}
+
 /// One output item emitted by the Responses API.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ResponsesResponseOutput {
+    /// Readable reasoning summary requested by the client.
+    Reasoning {
+        /// Provider-shaped output-item identifier.
+        id: String,
+        /// Current item lifecycle state.
+        status: ResponsesResponseStatus,
+        /// Ordered readable summary parts.
+        summary: Vec<ResponsesReasoningSummary>,
+        /// Stable opaque fixture token over the trace.
+        encrypted_content: String,
+    },
     /// Assistant text message.
     Message {
         /// Provider-shaped output-item identifier.
@@ -1266,9 +1425,9 @@ impl From<chat::turn::Usage> for ResponsesResponseUsage {
         Self {
             input_tokens: usage.prompt,
             input_tokens_details: ResponsesResponseInputTokenDetails { cached_tokens: 0 },
-            output_tokens: usage.completion,
+            output_tokens: usage.completion + usage.reasoning,
             output_tokens_details: ResponsesResponseOutputTokenDetails {
-                reasoning_tokens: 0,
+                reasoning_tokens: usage.reasoning,
             },
             total_tokens: usage.total,
         }
@@ -1342,6 +1501,62 @@ pub(super) enum ResponsesResponseStreamEvent {
         output_index: usize,
         /// Initial output item.
         item: ResponsesResponseOutput,
+    },
+    /// Opens one reasoning summary part.
+    #[serde(rename = "response.reasoning_summary_part.added")]
+    ReasoningSummaryPartAdded {
+        /// Monotonic position in the event stream.
+        sequence_number: usize,
+        /// Reasoning output-item identifier.
+        item_id: String,
+        /// Zero-based output-item position.
+        output_index: usize,
+        /// Zero-based summary-part position.
+        summary_index: usize,
+        /// Empty summary part opened by this event.
+        part: ResponsesReasoningSummary,
+    },
+    /// Appends text to one reasoning summary.
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ReasoningSummaryTextDelta {
+        /// Monotonic position in the event stream.
+        sequence_number: usize,
+        /// Reasoning output-item identifier.
+        item_id: String,
+        /// Zero-based output-item position.
+        output_index: usize,
+        /// Zero-based summary-part position.
+        summary_index: usize,
+        /// Newly emitted summary text.
+        delta: String,
+    },
+    /// Completes the text of one reasoning summary.
+    #[serde(rename = "response.reasoning_summary_text.done")]
+    ReasoningSummaryTextDone {
+        /// Monotonic position in the event stream.
+        sequence_number: usize,
+        /// Reasoning output-item identifier.
+        item_id: String,
+        /// Zero-based output-item position.
+        output_index: usize,
+        /// Zero-based summary-part position.
+        summary_index: usize,
+        /// Complete summary text.
+        text: String,
+    },
+    /// Completes one reasoning summary part.
+    #[serde(rename = "response.reasoning_summary_part.done")]
+    ReasoningSummaryPartDone {
+        /// Monotonic position in the event stream.
+        sequence_number: usize,
+        /// Reasoning output-item identifier.
+        item_id: String,
+        /// Zero-based output-item position.
+        output_index: usize,
+        /// Zero-based summary-part position.
+        summary_index: usize,
+        /// Completed summary part.
+        part: ResponsesReasoningSummary,
     },
     /// Appends generated text to a message item.
     #[serde(rename = "response.output_text.delta")]

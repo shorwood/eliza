@@ -1,6 +1,9 @@
 //! Provider-neutral conversation execution.
 use std::num::NonZeroUsize;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+use eliza_mad::engine::{Trace, TraceSource};
 use eliza_modality_image as image;
 
 use crate::eliza::{doctor, input_record};
@@ -14,6 +17,16 @@ use crate::structured_output::StructuredOutput;
 
 /// Text returned after a client submits a tool result.
 const TOOL_COMPLETE_TEXT: &str = "TOOL CALL COMPLETE";
+
+// -----------------------------------------------------------------------------
+// Fnv: Defines the stable fixture-signature algorithm.
+// -----------------------------------------------------------------------------
+
+/// Standard 64-bit FNV-1a offset basis.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Standard 64-bit FNV-1a prime.
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 // -----------------------------------------------------------------------------
 // FunctionTool: Retains one offered function definition.
@@ -273,6 +286,65 @@ pub enum Output {
 }
 
 // -----------------------------------------------------------------------------
+// Completion: Couples canonical output with its mechanical trace.
+// -----------------------------------------------------------------------------
+
+/// Output and trace selected by one execution path.
+struct Completion {
+    /// Canonical assistant output.
+    output: Output,
+    /// Mechanical facts that produced the output.
+    trace: Trace,
+}
+
+impl Completion {
+    /// Build one tool-sourced completion from canonical output and provider text.
+    fn for_tool(output: Output, text: &str) -> Self {
+        let normalized_input = input_record(text)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        Self {
+            output,
+            trace: Trace {
+                normalized_input,
+                ranked_keywords: Vec::new(),
+                selected_rule: None,
+                source: TraceSource::Tool,
+            },
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Reasoning: Carries one requested mechanical trace and fixture signature.
+// -----------------------------------------------------------------------------
+
+/// Provider-neutral readable reasoning summary.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Reasoning {
+    /// Stable rendered trace.
+    pub text: String,
+    /// Non-cryptographic fixture token over the exact trace bytes.
+    pub signature: String,
+}
+
+impl From<&Trace> for Reasoning {
+    fn from(trace: &Trace) -> Self {
+        let text = trace.to_string();
+        let mut hash = FNV_OFFSET;
+        for byte in text.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        Self {
+            signature: STANDARD.encode(hash.to_be_bytes()),
+            text,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Request: Validates and executes normalized provider input.
 // -----------------------------------------------------------------------------
 
@@ -289,6 +361,8 @@ pub struct Request {
     tool_choice: ToolChoice,
     /// Compiled text-response formatting applied after generation.
     output_format: StructuredOutput,
+    /// Whether the caller requested a readable mechanical trace.
+    should_include_reasoning: bool,
 }
 
 impl Request {
@@ -307,6 +381,7 @@ impl Request {
             tools,
             tool_choice,
             output_format,
+            should_include_reasoning: false,
         }
     }
 
@@ -330,6 +405,13 @@ impl Request {
             return;
         }
         *text = format!("{}\n{text}", lines.join("\n"));
+    }
+
+    /// Request a readable mechanical trace with the completion.
+    #[must_use]
+    pub fn with_reasoning(mut self) -> Self {
+        self.should_include_reasoning = true;
+        self
     }
 
     /// Approximate tokens across instructions, history, and tool definitions.
@@ -378,7 +460,10 @@ impl Request {
     /// # Errors
     ///
     /// Returns a rejection when the history has no ordinary user message.
-    fn replay_eliza(&self, analyses: &[Vec<image::analysis::Analysis>]) -> Result<String, Error> {
+    fn replay_eliza(
+        &self,
+        analyses: &[Vec<image::analysis::Analysis>],
+    ) -> Result<eliza_mad::engine::Response, Error> {
         let mut session = doctor()?.session()?;
         let mut output = None;
         for (turn, turn_analyses) in self.turns.iter().zip(analyses) {
@@ -518,14 +603,20 @@ impl Request {
         &self,
         text: &str,
         analyses: &[Vec<image::analysis::Analysis>],
-    ) -> Result<Output, Error> {
+    ) -> Result<Completion, Error> {
         match FunctionCall::parse_directive(text)? {
             Some(call) => {
                 self.validate_tool_call(&call)?;
-                Ok(Output::ToolCall(call))
+                Ok(Completion::for_tool(Output::ToolCall(call), text))
             }
             None if self.tool_choice.should_require_call() => Err(Error::RequiredToolDirective),
-            None => Ok(Output::Text(self.replay_eliza(analyses)?)),
+            None => {
+                let response = self.replay_eliza(analyses)?;
+                Ok(Completion {
+                    output: Output::Text(response.text),
+                    trace: response.trace,
+                })
+            }
         }
     }
 
@@ -549,44 +640,58 @@ impl Request {
         };
 
         // Execute either a verified tool result or a new user request.
-        let (mut output, is_ordinary) = match latest.turn {
-            Turn::ToolResult(_) => {
+        let mut completion = match latest.turn {
+            Turn::ToolResult(text) => {
                 self.validate_tool_result(latest.index)?;
-                (Output::Text(TOOL_COMPLETE_TEXT.to_owned()), false)
+                Completion::for_tool(Output::Text(TOOL_COMPLETE_TEXT.to_owned()), text)
             }
             Turn::User { text, .. } => {
                 let text = Self::user_text(text, &analyses[latest.index]);
-                let output = self.complete_user(&text, &analyses)?;
-                let is_ordinary = matches!(output, Output::Text(_));
-                (output, is_ordinary)
+                self.complete_user(&text, &analyses)?
             }
             Turn::Assistant(_) | Turn::ToolCall(_) => unreachable!(),
         };
+        let is_ordinary = matches!(latest.turn, Turn::User { .. })
+            && matches!(completion.output, Output::Text(_));
 
         // Image analyses decorate ordinary ELIZA text, never tool traffic.
-        if is_ordinary && let Output::Text(text) = &mut output {
+        if is_ordinary && let Output::Text(text) = &mut completion.output {
             Self::prefix_analyses(text, &analyses);
         }
 
         // Structured formatting applies only after final text is available.
-        if let Output::Text(text) = &mut output {
+        if let Output::Text(text) = &mut completion.output {
             *text = self.output_format.render(std::mem::take(text));
         }
 
+        // Account independently for provider-visible prompt, answer, and trace.
         let prompt = self.prompt_tokens(&analyses);
-        let completion = match &output {
+        let completion_tokens = match &completion.output {
             Output::Text(text) => text.split_whitespace().count(),
             Output::ToolCall(call) => call.token_count(),
         };
 
+        // Render and count the trace only when the caller requested it.
+        let reasoning = self
+            .should_include_reasoning
+            .then(|| Reasoning::from(&completion.trace));
+        let reasoning_tokens = reasoning
+            .as_ref()
+            .map_or(0, |reasoning| reasoning.text.split_whitespace().count());
+
         // Combine prompt and completion accounting into wire-neutral usage.
         let usage = Usage {
             prompt,
-            completion,
-            total: prompt + completion,
+            completion: completion_tokens,
+            reasoning: reasoning_tokens,
+            total: prompt + completion_tokens + reasoning_tokens,
         };
 
-        Ok(Response { output, usage })
+        Ok(Response {
+            output: completion.output,
+            reasoning,
+            usage,
+        })
     }
 }
 
@@ -601,7 +706,9 @@ pub struct Usage {
     pub prompt: usize,
     /// Approximate output token count.
     pub completion: usize,
-    /// Prompt plus completion tokens.
+    /// Approximate readable-reasoning token count.
+    pub reasoning: usize,
+    /// Prompt plus completion and reasoning tokens.
     pub total: usize,
 }
 
@@ -614,6 +721,8 @@ pub struct Usage {
 pub struct Response {
     /// Text or function call selected by the shared executor.
     pub output: Output,
+    /// Requested mechanical trace, absent when the caller did not opt in.
+    pub reasoning: Option<Reasoning>,
     /// Approximate token usage.
     pub usage: Usage,
 }
@@ -709,6 +818,55 @@ mod tests {
                 .unwrap();
 
         assert!(matches!(response.output, Output::Text(_)));
+        assert_eq!(response.reasoning, None);
+        assert_eq!(response.usage.reasoning, 0);
+    }
+
+    #[test]
+    fn it_should_return_a_stable_requested_trace_without_changing_the_answer() {
+        let response =
+            it_should_fixture_request(vec![Turn::from("I am sad".to_owned())], ToolChoice::Auto)
+                .with_reasoning()
+                .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+                .unwrap();
+
+        assert_eq!(
+            response.output,
+            Output::Text("I AM SORRY TO HEAR YOU ARE SAD".to_owned())
+        );
+        assert_eq!(
+            response.reasoning,
+            Some(Reasoning {
+                text: "NORMALIZED INPUT: YOU ARE SAD\nRANKED KEYWORDS: I AM\nSELECTED RULE: I/1/0\nRESPONSE SOURCE: KEYWORD".to_owned(),
+                signature: "hJ1c6IwuPTM=".to_owned(),
+            })
+        );
+        assert_eq!(
+            response.usage,
+            Usage {
+                prompt: 12,
+                completion: 8,
+                reasoning: 15,
+                total: 35,
+            }
+        );
+    }
+
+    #[test]
+    fn it_should_trace_tool_output_as_tool_sourced() {
+        let response = it_should_fixture_request(
+            vec![Turn::from("@tool echo {}".to_owned())],
+            ToolChoice::Auto,
+        )
+        .with_reasoning()
+        .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+        .unwrap();
+        let reasoning = response.reasoning.unwrap();
+
+        assert_eq!(
+            reasoning.text,
+            "NORMALIZED INPUT: TOOL ECHO\nRANKED KEYWORDS: -\nSELECTED RULE: -\nRESPONSE SOURCE: TOOL"
+        );
     }
 
     #[test]

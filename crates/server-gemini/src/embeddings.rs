@@ -205,6 +205,7 @@ fn gemini_validation_content_text(content: Option<Content>) -> Result<String, Ge
             ContentPart::Text {
                 text: part,
                 speech_metadata,
+                ..
             } => {
                 drop(speech_metadata);
                 text.push(part);

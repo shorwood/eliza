@@ -54,10 +54,10 @@ pub(super) enum OllamaError {
         #[source]
         source: chat::structured_output::StructuredOutputError,
     },
-    /// The request enabled unsupported reasoning output.
-    #[error("reasoning output is not supported")]
-    #[diagnostic(code(eliza::ollama::reasoning_unsupported))]
-    ReasoningUnsupported,
+    /// A named thinking level was blank.
+    #[error("think level must not be blank")]
+    #[diagnostic(code(eliza::ollama::invalid_think))]
+    InvalidThink,
     /// A message used a role outside Ollama's supported subset.
     #[error("unsupported Ollama role")]
     #[diagnostic(code(eliza::ollama::unsupported_role))]
@@ -119,7 +119,6 @@ impl ProblemDetails for OllamaError {
             Self::UnsupportedEmbeddingInput
             | Self::UnsupportedResponseFormat
             | Self::UnsupportedResponseSchema { .. }
-            | Self::ReasoningUnsupported
             | Self::UnsupportedRole
             | Self::UnsupportedToolCallKind { .. }
             | Self::UnsupportedToolDefinition => ProblemClass::UnsupportedRequest,
@@ -135,7 +134,7 @@ impl ProblemDetails for OllamaError {
             Self::InvalidResponseSchema { .. }
             | Self::UnsupportedResponseFormat
             | Self::UnsupportedResponseSchema { .. } => Some("format"),
-            Self::ReasoningUnsupported => Some("think"),
+            Self::InvalidThink => Some("think"),
             Self::UnsupportedRole => Some("messages.role"),
             Self::UnsupportedToolCallKind { param }
             | Self::MissingToolCallFunction { param }

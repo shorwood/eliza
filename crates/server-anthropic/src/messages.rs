@@ -28,6 +28,8 @@ impl TryFrom<MessagesRequest> for chat::turn::Request {
     type Error = AnthropicError;
 
     fn try_from(payload: MessagesRequest) -> Result<Self, Self::Error> {
+        let include_reasoning = payload.should_include_reasoning()?;
+
         // Compile output controls independently from transcript content.
         let output_format = payload
             .output_config
@@ -57,13 +59,12 @@ impl TryFrom<MessagesRequest> for chat::turn::Request {
             .transpose()?
             .unwrap_or_default();
 
-        Ok(chat::turn::Request::new(
-            system,
-            turns,
-            tools,
-            tool_choice,
-            output_format,
-        ))
+        let request = chat::turn::Request::new(system, turns, tools, tool_choice, output_format);
+        Ok(if include_reasoning {
+            request.with_reasoning()
+        } else {
+            request
+        })
     }
 }
 
@@ -82,6 +83,8 @@ fn system_block_text(block: MessageContentBlock) -> Result<String, AnthropicErro
         MessageContentBlock::Image { .. }
         | MessageContentBlock::ToolUse { .. }
         | MessageContentBlock::ToolResult { .. }
+        | MessageContentBlock::Thinking { .. }
+        | MessageContentBlock::RedactedThinking { .. }
         | MessageContentBlock::Unsupported => Err(AnthropicError::UnsupportedSystemBlock),
     }
 }
@@ -194,7 +197,10 @@ fn user_content_lower(
                 turns.push(chat::turn::Turn::ToolResult(tool_result_text(content)?));
             }
             // User messages cannot originate assistant tool calls.
-            MessageContentBlock::ToolUse { .. } | MessageContentBlock::Unsupported => {
+            MessageContentBlock::ToolUse { .. }
+            | MessageContentBlock::Thinking { .. }
+            | MessageContentBlock::RedactedThinking { .. }
+            | MessageContentBlock::Unsupported => {
                 return Err(AnthropicError::UnsupportedUserBlock);
             }
         }
@@ -240,6 +246,18 @@ fn assistant_blocks_lower(
                 turns.push(chat::turn::Turn::ToolCall(assistant_tool_call(
                     name, input,
                 )?));
+            }
+            MessageContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                let history = signature.map_or(thinking.clone(), |signature| {
+                    format!("{thinking} {signature}")
+                });
+                turns.push(chat::turn::Turn::Assistant(history));
+            }
+            MessageContentBlock::RedactedThinking { data } => {
+                turns.push(chat::turn::Turn::Assistant(data));
             }
             // Assistant messages cannot contain client tool results.
             MessageContentBlock::Image { .. }
@@ -335,11 +353,11 @@ impl MessageEvents {
     }
 
     /// Append all text chunks for one streaming response.
-    fn push_text(&mut self, text: &str) -> Result<(), EncodingError> {
+    fn push_text(&mut self, index: usize, text: &str) -> Result<(), EncodingError> {
         for chunk in stream_chunks(text) {
             let event = StreamEvent::ContentBlockDelta {
-                index: 0,
-                delta: StreamDelta::TextDelta { text: chunk },
+                index,
+                delta: StreamDelta::Text { text: chunk },
             };
             self.push("content_block_delta", &event)?;
         }
@@ -347,10 +365,14 @@ impl MessageEvents {
     }
 
     /// Append the JSON delta for one tool call.
-    fn push_tool_call(&mut self, call: &chat::turn::FunctionCall) -> Result<(), EncodingError> {
+    fn push_tool_call(
+        &mut self,
+        index: usize,
+        call: &chat::turn::FunctionCall,
+    ) -> Result<(), EncodingError> {
         let event = StreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: StreamDelta::InputJsonDelta {
+            index,
+            delta: StreamDelta::InputJson {
                 partial_json: call.arguments.serialized(),
             },
         };
@@ -360,18 +382,55 @@ impl MessageEvents {
     /// Append output-specific deltas and return the terminal stop reason.
     fn push_output(
         &mut self,
+        index: usize,
         output: &chat::turn::Output,
     ) -> Result<MessagesStopReason, EncodingError> {
         match output {
             chat::turn::Output::Text(text) => {
-                self.push_text(text)?;
+                self.push_text(index, text)?;
                 Ok(MessagesStopReason::EndTurn)
             }
             chat::turn::Output::ToolCall(call) => {
-                self.push_tool_call(call)?;
+                self.push_tool_call(index, call)?;
                 Ok(MessagesStopReason::ToolUse)
             }
         }
+    }
+
+    /// Append one native thinking block before answer output.
+    fn push_reasoning(&mut self, reasoning: &chat::turn::Reasoning) -> Result<(), EncodingError> {
+        self.push(
+            "content_block_start",
+            &StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: MessagesOutputBlock::Thinking {
+                    thinking: String::new(),
+                    signature: String::new(),
+                },
+            },
+        )?;
+        for chunk in stream_chunks(&reasoning.text) {
+            self.push(
+                "content_block_delta",
+                &StreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: StreamDelta::Thinking { thinking: chunk },
+                },
+            )?;
+        }
+        self.push(
+            "content_block_delta",
+            &StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: StreamDelta::Signature {
+                    signature: reasoning.signature.clone(),
+                },
+            },
+        )?;
+        self.push(
+            "content_block_stop",
+            &StreamEvent::ContentBlockStop { index: 0 },
+        )
     }
 
     /// Render the complete streaming sequence for one response.
@@ -402,17 +461,24 @@ impl MessageEvents {
                 },
             },
         )?;
+        let mut output_index = 0;
+        if let Some(reasoning) = &response.reasoning {
+            events.push_reasoning(reasoning)?;
+            output_index = 1;
+        }
         events.push(
             "content_block_start",
             &StreamEvent::ContentBlockStart {
-                index: 0,
+                index: output_index,
                 content_block: MessagesOutputBlock::empty_for(&response.output),
             },
         )?;
-        let stop_reason = events.push_output(&response.output)?;
+        let stop_reason = events.push_output(output_index, &response.output)?;
         events.push(
             "content_block_stop",
-            &StreamEvent::ContentBlockStop { index: 0 },
+            &StreamEvent::ContentBlockStop {
+                index: output_index,
+            },
         )?;
         events.push(
             "message_delta",
@@ -422,7 +488,7 @@ impl MessageEvents {
                     stop_sequence: None,
                 },
                 usage: StreamOutputUsage {
-                    output_tokens: response.usage.completion,
+                    output_tokens: response.usage.completion + response.usage.reasoning,
                 },
             },
         )?;

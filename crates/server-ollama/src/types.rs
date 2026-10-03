@@ -347,6 +347,34 @@ pub(super) struct ChatMessage {
     pub(super) images: Option<Vec<String>>,
     /// Tool calls requested by an assistant message.
     pub(super) tool_calls: Option<Vec<ToolCall>>,
+    /// Prior model thinking retained for limits and replay compatibility.
+    pub(super) thinking: Option<String>,
+}
+
+/// Ollama reasoning selector accepted as a boolean or named level.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+#[allow(rlib::undocumented_items)]
+pub(super) enum ChatThink {
+    /// Enable or disable thinking directly.
+    Boolean(bool),
+    /// Provider-defined named thinking level.
+    Level(String),
+}
+
+impl ChatThink {
+    /// Resolve whether this selector requests readable thinking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a named level is blank.
+    pub(super) fn should_enable(self) -> Result<bool, OllamaError> {
+        match self {
+            Self::Boolean(enabled) => Ok(enabled),
+            Self::Level(level) if !level.trim().is_empty() => Ok(true),
+            Self::Level(_) => Err(OllamaError::InvalidThink),
+        }
+    }
 }
 
 /// Ollama chat request accepted by the adapter.
@@ -365,8 +393,8 @@ pub(super) struct ChatRequest {
     pub(super) tool_choice: Option<ToolChoice>,
     /// Optional structured-output request.
     pub(super) format: Option<OutputFormat>,
-    /// Whether reasoning output was requested.
-    pub(super) think: Option<bool>,
+    /// Whether reasoning output was requested, optionally with a named level.
+    pub(super) think: Option<ChatThink>,
 }
 
 /// Function payload emitted inside an Ollama tool call.
@@ -395,6 +423,9 @@ pub(super) struct ChatOutputMessage {
     pub(super) role: &'static str,
     /// Generated text, empty for tool calls.
     pub(super) content: String,
+    /// Generated readable thinking when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) thinking: Option<String>,
     /// Generated tool calls.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) tool_calls: Vec<ChatOutputToolCall>,
@@ -406,6 +437,7 @@ impl From<&chat::turn::Output> for ChatOutputMessage {
             chat::turn::Output::Text(text) => Self {
                 role: "assistant",
                 content: text.clone(),
+                thinking: None,
                 tool_calls: Vec::new(),
             },
             chat::turn::Output::ToolCall(call) => call.into(),
@@ -426,6 +458,7 @@ impl From<&chat::turn::FunctionCall> for ChatOutputMessage {
         Self {
             role: "assistant",
             content: String::new(),
+            thinking: None,
             tool_calls: vec![tool_call],
         }
     }
@@ -467,6 +500,12 @@ pub(super) struct ChatResponse {
 }
 
 impl ChatResponse {
+    /// Attach readable thinking to a complete unary message.
+    fn with_reasoning(mut self, reasoning: Option<&chat::turn::Reasoning>) -> Self {
+        self.message.thinking = reasoning.map(|reasoning| reasoning.text.clone());
+        self
+    }
+
     /// Attach the provider-owned model identity to one canonical result.
     pub(super) fn from_compat(model: ModelId, response: &chat::turn::Response) -> Self {
         Self {
@@ -479,9 +518,10 @@ impl ChatResponse {
             load_duration: Some(0),
             prompt_eval_count: Some(response.usage.prompt),
             prompt_eval_duration: Some(0),
-            eval_count: Some(response.usage.completion),
+            eval_count: Some(response.usage.completion + response.usage.reasoning),
             eval_duration: Some(0),
         }
+        .with_reasoning(response.reasoning.as_ref())
     }
 }
 
