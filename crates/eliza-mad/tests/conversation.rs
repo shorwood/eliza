@@ -137,14 +137,37 @@ fn reports_mechanical_reasoning() {
 
     let mut linked = doctor.session().unwrap();
     let linked = linked.respond("MEN ARE ALL ALIKE").unwrap().trace;
-    assert_eq!(linked.selected_rule.unwrap().keyword, "DIT");
+    assert_eq!(linked.source, TraceSource::Keyword);
+    assert_eq!(
+        linked.selected_rule,
+        Some(TraceRule {
+            keyword: "DIT".to_owned(),
+            decomposition: 0,
+            reassembly: 0,
+        })
+    );
 
     let mut pre = doctor.session().unwrap();
     let pre = pre.respond("I'M SAD").unwrap().trace;
-    assert_eq!(pre.selected_rule.unwrap().keyword, "I");
+    assert_eq!(pre.source, TraceSource::Keyword);
+    assert_eq!(
+        pre.selected_rule,
+        Some(TraceRule {
+            keyword: "I".to_owned(),
+            decomposition: 1,
+            reassembly: 0,
+        })
+    );
 
     let mut none = doctor.session().unwrap();
     let none = none.respond("BANANAS").unwrap().trace;
     assert_eq!(none.source, TraceSource::None);
-    assert_eq!(none.selected_rule.unwrap().keyword, "NONE");
+    assert_eq!(
+        none.selected_rule,
+        Some(TraceRule {
+            keyword: "NONE".to_owned(),
+            decomposition: 0,
+            reassembly: 0,
+        })
+    );
 }
