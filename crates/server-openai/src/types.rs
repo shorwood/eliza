@@ -915,9 +915,9 @@ impl ReasoningEffort {
     /// # Errors
     ///
     /// Returns a typed compatibility error for unknown effort values.
-    pub(super) fn validate(self) -> Result<(), OpenAiError> {
+    pub(super) fn validate(self, param: &'static str) -> Result<(), OpenAiError> {
         if matches!(self, Self::Unsupported) {
-            Err(OpenAiError::UnsupportedReasoningEffort)
+            Err(OpenAiError::UnsupportedReasoningEffort { param })
         } else {
             Ok(())
         }
@@ -962,13 +962,17 @@ impl ResponsesReasoningConfig {
     /// Returns a typed error for unknown effort or summary values.
     fn should_include_reasoning(&self) -> Result<bool, OpenAiError> {
         if let Some(effort) = self.effort {
-            effort.validate()?;
+            effort.validate("reasoning.effort")?;
         }
 
-        let unsupported_summary = matches!(self.summary, Some(ReasoningSummary::Unsupported))
-            || matches!(self.generate_summary, Some(ReasoningSummary::Unsupported));
-        if unsupported_summary {
-            Err(OpenAiError::UnsupportedReasoningSummary)
+        if matches!(self.summary, Some(ReasoningSummary::Unsupported)) {
+            Err(OpenAiError::UnsupportedReasoningSummary {
+                param: "reasoning.summary",
+            })
+        } else if matches!(self.generate_summary, Some(ReasoningSummary::Unsupported)) {
+            Err(OpenAiError::UnsupportedReasoningSummary {
+                param: "reasoning.generate_summary",
+            })
         } else {
             Ok(self.summary.is_some() || self.generate_summary.is_some())
         }
