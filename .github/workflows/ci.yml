@@ -18,3 +18,5 @@ jobs:
         run: nix develop --command just ok
       - name: Check flake
         run: nix flake check
+      - name: Benchmark smoke
+        run: nix develop --command just bench-smoke
