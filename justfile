@@ -3,6 +3,18 @@ fmt:
     hurlfmt --in-place crates/cli/tests/http/public/*.hurl crates/cli/tests/http/auth/*.hurl
     nixfmt flake.nix nix/*.nix
 
+bench-generation *args:
+    cargo bench -p eliza-benches --bench generation --bench completion --bench speech --locked -- {{args}}
+
+bench-e2e *args:
+    cargo build --release -p eliza-cli --bin eliza --locked
+    cargo build --release -p eliza-benches --bin eliza-bench --locked
+    target/release/eliza-bench {{args}}
+
+bench-smoke:
+    just bench-generation --test
+    just bench-e2e --smoke
+
 chat:
     sh examples/open-webui/run.sh
 
