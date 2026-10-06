@@ -28,6 +28,7 @@ rustPlatform.buildRustPackage {
       (projectRoot + "/Cargo.toml")
       (projectRoot + "/Cargo.lock")
       (projectRoot + "/crates")
+      (projectRoot + "/benches")
       (projectRoot + "/examples/rust-rig")
     ];
   };

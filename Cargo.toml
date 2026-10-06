@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "examples/rust-rig"]
+members = ["crates/*", "examples/rust-rig", "benches"]
 default-members = ["crates/cli"]
 
 [workspace.package]
