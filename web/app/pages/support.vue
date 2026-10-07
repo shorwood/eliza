@@ -1,5 +1,18 @@
 <script setup lang="ts">
+import type { AccountState } from '../../shared/types/billing'
 useSeoMeta({ title: 'Support ELIZA', robots: 'noindex, nofollow' })
+const { data: state } = await useFetch<AccountState>('/account/state')
+const busy = ref(false)
+const message = ref('')
+async function checkout() {
+  busy.value = true
+  try {
+    const response = await $fetch<{ url: string }>('/billing/checkout', { method: 'POST' })
+    location.assign(response.url)
+  }
+  catch { message.value = 'Checkout is unavailable. If you already subscribed, manage billing from your account.' }
+  finally { busy.value = false }
+}
 </script>
 
 <template>
@@ -14,7 +27,14 @@ useSeoMeta({ title: 'Support ELIZA', robots: 'noindex, nofollow' })
       <li>Team keys with rotation and account access.</li>
       <li>The same API capabilities as public access.</li>
     </ul>
-    <div class="availability-note">
+    <div v-if="state?.available" class="availability-note">
+      <h2>Test checkout</h2>
+      <p>Test mode only. This does not grant hosted API access. No real payment can be taken.</p>
+      <button v-if="state.account" :disabled="busy" @click="checkout">Open test checkout</button>
+      <a v-else href="/account">Sign in to test checkout →</a>
+      <p role="status">{{ message }}</p>
+    </div>
+    <div v-else class="availability-note">
       <h2>Subscriptions are not open yet</h2>
       <p>These benefits are planned. Checkout and account access will open after billing and protected capacity are ready. This page cannot take a payment.</p>
       <button type="button" disabled>Checkout unavailable</button>

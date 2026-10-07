@@ -1,9 +1,10 @@
 # Nuxt site and public documentation
 
 `app/` contains the Nuxt landing, rendered docs, support/account preview, and
-terms/privacy publication notes. `content/docs/` contains public Markdown;
+terms/privacy publication notes. `server/billing/` implements test-mode accounts,
+subscriptions and team keys; see [BILLING.md](BILLING.md). `content/docs/` contains public Markdown;
 `public/examples/` contains independent SDK/CI examples. Hosting and billing are
-separate implementation slices; no checkout or login is operational yet.
+separate implementation slices; live payments and hosted key admission are disabled.
 
 ```sh
 pnpm --dir web install --frozen-lockfile
@@ -11,6 +12,9 @@ pnpm --dir web dev
 pnpm --dir web check
 pnpm --dir web build
 pnpm --dir web exec playwright install chromium
+# Disposable PostgreSQL database; see BILLING.md for setup.
+export TEST_DATABASE_URL=postgres://postgres:local-test-only@127.0.0.1:18879/eliza_test
+pnpm --dir web test:billing
 pnpm --dir web test
 ```
 
@@ -28,9 +32,10 @@ Public pages are SSR/prerendered. Repository Markdown is converted and sanitized
 at build time, with links rewritten to rendered routes and raw `.md` downloads.
 Do not build and run the dev server concurrently in the same `.nuxt` directory.
 Support/account pages remain dynamic, `private, no-store`, and `noindex`; they
-collect no email/key and ignore purported activation state in query parameters.
-Passwordless sessions, CSRF protection, real checkout/portal, key management,
-and confirmed/pending/error billing states follow with the billing slice.
+collect no email/key while billing is disabled and ignore purported activation
+state in query parameters. Enabling private test billing opens passwordless
+sessions, checkout/portal and key management. Account and subscription state comes
+from PostgreSQL; checkout redirects cannot assert payment success.
 
 Set public configuration before the production build (and consistently at runtime):
 
@@ -44,7 +49,8 @@ Set public configuration before the production build (and consistently at runtim
 
 There is no landing-page link, footer promotion, or sitemap entry for `/support`.
 Rate-limit errors will supply its URL when admission is implemented. Direct support
-access shows the $5 plan and clearly disabled checkout. No generation request is
+access shows the $5 plan and disabled checkout by default, or explicitly labeled
+test checkout when configured. No generation request is
 sent by browsing pages or changing providers.
 
 ## Public assets

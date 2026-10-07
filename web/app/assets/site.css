@@ -3,7 +3,13 @@
 body { margin: 0; }
 a { color: var(--accent); text-underline-offset: 4px; }
 a:hover { text-decoration-thickness: 2px; }
-button, select { font: inherit; }
+button, select, input { font: inherit; }
+input { display: block; width: 100%; padding: 10px; margin: 6px 0 16px; border: 1px solid var(--line); border-radius: 4px; background: white; }
+.secret-key { display: block; overflow-wrap: anywhere; margin-bottom: 16px; }
+.key-list { list-style: none; padding: 0; }
+.key-list li { padding: 18px 0; border-bottom: 1px solid var(--line); }
+.key-list small, .key-list span { display: block; overflow-wrap: anywhere; }
+.key-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
 button { padding: 9px 13px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); cursor: pointer; }
 button:disabled { cursor: not-allowed; color: var(--muted); background: var(--paper); }
 :focus-visible { outline: 3px solid #b36c29; outline-offset: 4px; }
