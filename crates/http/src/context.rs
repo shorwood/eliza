@@ -8,7 +8,7 @@ use miette::Diagnostic;
 use thiserror::Error;
 
 use crate::model::ModelId;
-use crate::problem::{ProblemClass, ProblemDetails};
+use crate::problem::{ApiError, ProblemClass};
 
 // -----------------------------------------------------------------------------
 // ApiKey: Validates and redacts the shared provider credential.
@@ -83,7 +83,7 @@ pub enum AuthenticationError {
     Failed,
 }
 
-impl ProblemDetails for AuthenticationError {
+impl ApiError for AuthenticationError {
     fn class(&self) -> ProblemClass {
         ProblemClass::Authentication
     }
@@ -140,6 +140,8 @@ pub struct RouteConfig {
     pub stream_delay_ms: u64,
     /// Shared request-size and replay bounds.
     pub limits: RequestLimits,
+    /// Maximum simultaneous speech jobs, shared across provider routes.
+    pub speech_workers: NonZeroUsize,
 }
 
 impl RouteConfig {
@@ -156,7 +158,15 @@ impl RouteConfig {
             api_key,
             stream_delay_ms,
             limits,
+            speech_workers: NonZeroUsize::MIN.saturating_add(1),
         }
+    }
+
+    /// Set the shared speech concurrency limit.
+    #[must_use]
+    pub const fn with_speech_workers(mut self, workers: NonZeroUsize) -> Self {
+        self.speech_workers = workers;
+        self
     }
 
     /// Check provider authentication headers against this route configuration.

@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+http-body = "1.0"
 aide = { version = "0.15.1", features = ["axum", "scalar"] }
 axum = "0.8.9"
 eliza-http = { path = "../http" }

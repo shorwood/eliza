@@ -117,6 +117,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Gemini models")
                 .tag("gemini")
                 .response::<200, Json<GeminiModelListResponse>>()
+                .response::<429, Json<GeminiFailureResponse>>()
+                .response::<503, Json<GeminiFailureResponse>>()
                 .default_response::<Json<GeminiFailureResponse>>()
         }),
     )

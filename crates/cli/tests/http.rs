@@ -1,5 +1,8 @@
 //! Runs the Hurl HTTP contracts against a compiled ELIZA server.
 
+#[path = "support/hosted.rs"]
+mod hosted;
+
 use std::io::Write as _;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
@@ -49,6 +52,16 @@ impl TestServer {
     ///
     /// Returns an I/O error when the port, process, or readiness probe fails.
     fn spawn(extra_args: &[&str]) -> io::Result<Self> {
+        Self::spawn_with_env(extra_args, &std::collections::HashMap::new())
+    }
+
+    /// Start one isolated server with process-local fixture secrets.
+    /// # Errors
+    /// Returns process or listener startup failures.
+    fn spawn_with_env(
+        extra_args: &[&str],
+        environment: &std::collections::HashMap<&str, &str>,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let address = listener.local_addr()?;
         drop(listener);
@@ -58,6 +71,7 @@ impl TestServer {
         command.args(["serve", "--bind"]);
         command.arg(address.to_string());
         command.args(extra_args);
+        command.envs(environment);
         command.stdout(Stdio::null());
         command.stderr(Stdio::inherit());
 

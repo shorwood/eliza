@@ -6,7 +6,7 @@
 mod chat;
 mod context;
 mod embeddings;
-mod errors;
+pub mod errors;
 mod models;
 pub mod router;
 mod types;

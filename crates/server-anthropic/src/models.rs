@@ -58,6 +58,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Anthropic models")
                 .tag("anthropic")
                 .response::<200, Json<ModelListResponse>>()
+                .response::<429, Json<AnthropicFailureResponse>>()
+                .response::<503, Json<AnthropicFailureResponse>>()
                 .default_response::<Json<AnthropicFailureResponse>>()
         }),
     )

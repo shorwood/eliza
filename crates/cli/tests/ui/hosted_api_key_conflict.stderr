@@ -1,0 +1,5 @@
+error: the argument '--api-key <KEY>' cannot be used with '--hosted-config <PATH>'
+
+Usage: eliza serve --api-key <KEY>
+
+For more information, try '--help'.
