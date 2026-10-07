@@ -83,12 +83,18 @@ impl WorkKinds {
     }
 
     /// Estimate only valid embedding dimensions; native DTOs retain their own invalid-input errors.
-    fn embedding_bytes(value: &Value) -> Option<usize> {
+    fn embedding_bytes(path: &str, value: &Value) -> Option<usize> {
         let default = eliza_modality_embedding::engine::MODEL_DEFAULT_DIMENSIONS;
-        let requested = value
-            .get("dimensions")
-            .or_else(|| value.get("outputDimensionality"))
-            .or_else(|| value.pointer("/embedContentConfig/outputDimensionality"));
+        let is_native_gemini =
+            path.ends_with("embedContent") || path.ends_with("batchEmbedContents");
+        let requested = if is_native_gemini {
+            value
+                .get("outputDimensionality")
+                .filter(|value| !value.is_null())
+                .or_else(|| value.pointer("/embedContentConfig/outputDimensionality"))
+        } else {
+            value.get("dimensions")
+        };
 
         // Interpret dimensions without overriding native validation errors.
         let dimensions = requested.and_then(Value::as_i64).unwrap_or(default);
@@ -104,10 +110,14 @@ impl WorkKinds {
         };
 
         // Bound the requested vector batch independently of input string sizes.
-        let count = value
-            .get("input")
-            .and_then(Value::as_array)
-            .map_or(1, Vec::len);
+        let count = if is_native_gemini {
+            1
+        } else {
+            value
+                .get("input")
+                .and_then(Value::as_array)
+                .map_or(1, Vec::len)
+        };
         let vectors = count.saturating_mul(dimensions);
         Some(vectors.saturating_mul(WORK_POLICY_FLOAT_BYTES))
     }
@@ -123,13 +133,18 @@ impl WorkKinds {
             return None;
         }
 
+        // Unknown request fields cannot replace another provider's native input contract.
+        if !path.ends_with("batchEmbedContents") {
+            return Self::embedding_bytes(path, value);
+        }
+
         // Unary requests and native batch elements share the same estimate.
         let Some(requests) = value.get("requests").and_then(Value::as_array) else {
-            return Self::embedding_bytes(value);
+            return Self::embedding_bytes(path, value);
         };
         let mut total = 0usize;
         for request in requests {
-            total = total.saturating_add(Self::embedding_bytes(request)?);
+            total = total.saturating_add(Self::embedding_bytes(path, request)?);
         }
         Some(total)
     }
@@ -540,3 +555,11 @@ impl http_body::Body for WorkBody {
         self.receiver.poll_recv(cx)
     }
 }
+
+// -----------------------------------------------------------------------------
+// Tests: Exercises provider-specific preflight before allocation.
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+#[path = "work_tests.rs"]
+mod tests;
