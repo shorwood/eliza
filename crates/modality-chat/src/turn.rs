@@ -746,6 +746,9 @@ mod tests {
     use super::*;
     use crate::structured_output::StructuredOutput;
 
+    /// Historical terminal width used by truncation/accounting fixtures.
+    const TERMINAL_COLUMNS: usize = 72;
+
     /// Return the function definition offered by fixture tests.
     fn it_should_fixture_tool() -> FunctionTool {
         FunctionTool::new(
@@ -850,6 +853,43 @@ mod tests {
                 total: 35,
             }
         );
+    }
+
+    #[test]
+    fn it_should_account_for_input_after_the_terminal_record() {
+        let prefix = "I am sad ";
+        let record = format!("{prefix}{}", "a".repeat(TERMINAL_COLUMNS - prefix.len()));
+        assert_eq!(record.len(), TERMINAL_COLUMNS);
+        let input = format!("{record} tail extra 😀");
+        let actual = input.chars().count();
+        let build = |text: &str| {
+            it_should_build_request(
+                vec![Turn::from(text.to_owned())],
+                Vec::new(),
+                ToolChoice::Auto,
+                StructuredOutput::default(),
+            )
+            .with_reasoning()
+        };
+        let error = build(&input)
+            .complete(NonZeroUsize::new(actual - 1).unwrap(), NonZeroUsize::MAX)
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::InputTooLarge { actual: count, limit }
+            if count == actual && limit == actual - 1)
+        );
+        let response = build(&input)
+            .complete(NonZeroUsize::new(actual).unwrap(), NonZeroUsize::MAX)
+            .unwrap();
+        let reference = build(&record)
+            .complete(NonZeroUsize::MAX, NonZeroUsize::MAX)
+            .unwrap();
+        assert_eq!(response.output, reference.output);
+        assert_eq!(response.reasoning, reference.reasoning);
+        assert_eq!(response.usage.prompt, reference.usage.prompt + 3);
+        assert_eq!(response.usage.completion, reference.usage.completion);
+        assert_eq!(response.usage.reasoning, reference.usage.reasoning);
+        assert_eq!(response.usage.total, reference.usage.total + 3);
     }
 
     #[test]
