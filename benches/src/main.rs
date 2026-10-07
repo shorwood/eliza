@@ -254,10 +254,22 @@ impl Options {
                 "siblings":read(PathBuf::from(format!("{prefix}/topology/thread_siblings_list")))
             }))
         }).collect::<std::collections::BTreeMap<_, _>>();
+        let origin_commit = self
+            .server_commit
+            .clone()
+            .unwrap_or_else(|| version(&["git", "rev-parse", "HEAD"]));
+        let binary = self
+            .server_binary
+            .clone()
+            .unwrap_or_else(|| root.join("target/release/eliza"));
+        let binary_path = binary.to_string_lossy();
+        let origin_lockfile = format!("{origin_commit}:Cargo.lock");
         save(
             &output.join("metadata.json"),
             &json!({"commit":version(&["git","rev-parse","HEAD"]),
-        "server_commit":self.server_commit.as_ref().map_or_else(|| version(&["git","rev-parse","HEAD"]), Clone::clone),
+        "server_commit":origin_commit,
+        "server_sha256":version(&["sha256sum", &binary_path]),
+        "server_lockfile":version(&["git", "show", &origin_lockfile]),
         "hosted_policy":self.hosted_config.clone().map(read),
         "supporter_percent":self.supporter_percent, "public_identities":self.public_identities,
         "read_delay_ms":self.read_delay_ms, "upload_delay_ms":self.upload_delay_ms,
