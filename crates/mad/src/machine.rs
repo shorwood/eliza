@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -88,7 +89,7 @@ pub struct Machine<H> {
     /// Destination awaiting a supplied input word.
     pending_input: Option<Place>,
     /// Immutable linked instructions and labels.
-    program: Program,
+    program: Arc<Program>,
     /// Index of the next instruction.
     program_counter: usize,
     /// Scalar storage keyed by canonical name.
@@ -96,9 +97,11 @@ pub struct Machine<H> {
 }
 
 impl<H: Host> Machine<H> {
-    /// Create a machine at the first linked statement.
+    /// Create a machine at the first linked statement from an owned or shared
+    /// program. Each machine initializes independent variable and array storage.
     #[must_use]
-    pub fn new(program: Program, host: H) -> Self {
+    pub fn new(program: impl Into<Arc<Program>>, host: H) -> Self {
+        let program = program.into();
         let arrays = program
             .arrays
             .iter()
@@ -753,6 +756,8 @@ impl RuntimeError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use thiserror::Error;
 
     use super::{Host, Machine, RunState, Word};
@@ -830,5 +835,39 @@ mod tests {
             machine.run(100).unwrap(),
             RunState::OutputWord(Word::from_i64(10))
         );
+    }
+
+    /// Sharing a program leaves machine storage and suspension independent.
+    ///
+    /// # Panics
+    /// Panics if linking, execution, or machine isolation changes.
+    #[test]
+    fn shared_program_keeps_machine_state_independent() {
+        let source = concat!(
+            "            DIMENSION A(1)\n",
+            "            READ FORMAT TEXT,A(1)\n",
+            "            RESULT=DOUBLE.(A(1))\n",
+            "            PRINT FORMAT TEXT,RESULT\n",
+            "            EXIT.\n",
+        );
+        let module = SourceModule::parse("shared", source).unwrap();
+        let program = Arc::new(Program::link(&[module]).unwrap());
+        let mut first = Machine::new(Arc::clone(&program), TestHost);
+        let mut second = Machine::new(program, TestHost);
+        assert!(Arc::ptr_eq(&first.program, &second.program));
+        assert_eq!(first.run(100).unwrap(), RunState::NeedsInput);
+        assert_eq!(second.run(100).unwrap(), RunState::NeedsInput);
+        first.provide_input(Word::from_i64(6)).unwrap();
+        second.provide_input(Word::from_i64(9)).unwrap();
+        assert_eq!(
+            first.run(100).unwrap(),
+            RunState::OutputWord(Word::from_i64(12))
+        );
+        assert_eq!(
+            second.run(100).unwrap(),
+            RunState::OutputWord(Word::from_i64(18))
+        );
+        assert_eq!(first.run(100).unwrap(), RunState::Halted);
+        assert_eq!(second.run(100).unwrap(), RunState::Halted);
     }
 }

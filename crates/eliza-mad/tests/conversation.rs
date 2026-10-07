@@ -1,6 +1,42 @@
 use eliza_mad::engine::{Doctor, ErrorKind, TraceRule, TraceSource};
 
 // -----------------------------------------------------------------------------
+// InterleavedSessionsMatchIndependentConversations: Pins session independence.
+// -----------------------------------------------------------------------------
+
+/// Interleaved conversations match independently compiled reference sessions.
+///
+/// # Panics
+/// Panics if any response or trace depends on another conversation.
+#[test]
+fn interleaved_sessions_match_independent_conversations() {
+    let mut first_inputs = vec!["I NEED HELP"; 6];
+    first_inputs.extend(["MY BOYFRIEND MADE ME COME HERE", "BANANAS", "BULLIES"]);
+    let mut second_inputs = vec!["I DREAMT ABOUT MY MOTHER"; 11];
+    second_inputs.extend(["I'M SAD", "MEN ARE ALL ALIKE", "BANANAS"]);
+    let expected = |inputs: &[&str]| {
+        let doctor = Doctor::compile().unwrap();
+        let mut session = doctor.session().unwrap();
+        inputs
+            .iter()
+            .map(|input| session.respond(input).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let first_expected = expected(&first_inputs);
+    let second_expected = expected(&second_inputs);
+    let doctor = Doctor::compile().unwrap();
+    let mut first = doctor.session().unwrap();
+    let mut second = doctor.session().unwrap();
+    for (index, input) in second_inputs.iter().enumerate() {
+        assert_eq!(second.respond(input).unwrap(), second_expected[index]);
+        let Some(input) = first_inputs.get(index) else {
+            continue;
+        };
+        assert_eq!(first.respond(input).unwrap(), first_expected[index]);
+    }
+}
+
+// -----------------------------------------------------------------------------
 // ReproducesThe1966CacmConversation: Pins the published exchange sequence.
 // -----------------------------------------------------------------------------
 
