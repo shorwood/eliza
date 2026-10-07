@@ -105,6 +105,23 @@ pub struct Tier {
     pub concurrency: usize,
 }
 
+impl Tier {
+    /// Select one independent modality allowance.
+    fn allowance(&self, modality: Modality) -> Allowance {
+        let credential = Allowance {
+            per_minute: POLICY_COLD_PER_MINUTE,
+            burst: POLICY_COLD_BURST,
+        };
+        match modality {
+            Modality::Text => self.text,
+            Modality::Speech => self.speech,
+            Modality::Image => self.image,
+            Modality::Discovery => self.discovery,
+            Modality::Credential => credential,
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // HostedConfig: Validates explicit deployment policy.
 // -----------------------------------------------------------------------------
@@ -191,7 +208,15 @@ impl HostedConfig {
         ];
 
         // Require finite deadlines and an authenticated ingress configuration.
-        if deadlines.contains(&0) || self.output_bytes == 0 || self.trusted_peers.is_empty() {
+        let invalid_deadline = deadlines.iter().any(|seconds| {
+            *seconds == 0
+                || Instant::now()
+                    .checked_add(Duration::from_secs(*seconds))
+                    .is_none()
+        });
+
+        // Reject unsupported clock bounds before any listener or watchdog is created.
+        if invalid_deadline || self.output_bytes == 0 || self.trusted_peers.is_empty() {
             return Err("invalid hosted request, buffer, timeout or ingress bounds");
         }
 
@@ -415,6 +440,29 @@ struct Bucket {
     updated: Instant,
 }
 
+impl Bucket {
+    /// Charge one monotonic token or report the rounded-up refill delay.
+    ///
+    /// # Errors
+    /// Returns the minimum whole seconds before one token becomes available.
+    fn charge(&mut self, rate: Allowance) -> Result<(), u64> {
+        let now = Instant::now();
+        let refill = now.duration_since(self.updated).as_secs_f64() * f64::from(rate.per_minute)
+            / POLICY_MINUTE_SECONDS;
+        self.tokens = (self.tokens + refill).min(f64::from(rate.burst));
+        self.updated = now;
+
+        // Refuse depleted balances without resetting their refill clock.
+        if self.tokens < 1.0 {
+            let retry =
+                ((1.0 - self.tokens) * POLICY_MINUTE_SECONDS / f64::from(rate.per_minute)).ceil();
+            return Err(Duration::from_secs_f64(retry).as_secs().max(1));
+        }
+        self.tokens -= 1.0;
+        Ok(())
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Identity: Retains caller accounting through active work.
 // -----------------------------------------------------------------------------
@@ -429,6 +477,23 @@ struct Identity {
     touched: Instant,
     /// Whether the identity has a confirmed paid entitlement.
     is_supporter: bool,
+}
+
+impl Identity {
+    /// Charge one modality without changing response concurrency.
+    ///
+    /// # Errors
+    /// Returns seconds until a depleted allowance refills.
+    fn charge(&mut self, modality: Modality, rate: Allowance) -> Result<(), u64> {
+        let now = Instant::now();
+        let bucket = self.buckets.entry(modality).or_insert(Bucket {
+            tokens: f64::from(rate.burst),
+            updated: now,
+        });
+        bucket.charge(rate)?;
+        self.touched = now;
+        Ok(())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1102,18 +1167,16 @@ impl Hosted {
         NativeError::admission(ProblemClass::RateLimit, message, Some(seconds))
     }
 
-    /// Charge a caller's allowance and claim its response slot without queuing.
+    /// Charge additional inline-image work without counting a second HTTP response.
     ///
     /// # Errors
-    /// Returns personal rate limits or bounded-state saturation.
-    pub fn admit(&self, caller: &Caller, modality: Modality) -> Result<IdentityLease, NativeError> {
+    /// Returns the caller's image allowance failure or shared bounded-state overload.
+    pub fn charge(&self, caller: &Caller, modality: Modality) -> Result<(), NativeError> {
         let mut identities = self
             .identities
             .lock()
             .map_err(|_| NativeError::unavailable())?;
         identities.ensure(caller)?;
-
-        // Select the shared account or anonymous modality policy.
         let entry = identities
             .entries
             .get_mut(&caller.identity)
@@ -1123,58 +1186,55 @@ impl Hosted {
         } else {
             &self.config.public
         };
+        entry
+            .charge(modality, tier.allowance(modality))
+            .map_err(|seconds| self.limit_error(caller, modality, seconds))
+    }
 
-        // Select the modality allowance shared across provider routes.
-        let credential_rate = Allowance {
-            per_minute: POLICY_COLD_PER_MINUTE,
-            burst: POLICY_COLD_BURST,
+    /// Claim only caller response concurrency before reading an upload.
+    ///
+    /// # Errors
+    /// Returns a genuine personal concurrency failure or bounded-state overload.
+    pub fn begin(&self, caller: &Caller, modality: Modality) -> Result<IdentityLease, NativeError> {
+        let mut identities = self
+            .identities
+            .lock()
+            .map_err(|_| NativeError::unavailable())?;
+        identities.ensure(caller)?;
+
+        // Retain this caller's existing state while claiming response ownership.
+        let entry = identities
+            .entries
+            .get_mut(&caller.identity)
+            .ok_or_else(NativeError::unavailable)?;
+
+        // Select the concurrency limit for this resolved caller class.
+        let tier = if caller.is_supporter {
+            &self.config.supporter
+        } else {
+            &self.config.public
         };
 
-        // Map the native request to its configured caller allowance.
-        let rate = match modality {
-            Modality::Text => tier.text,
-            Modality::Speech => tier.speech,
-            Modality::Image => tier.image,
-            Modality::Discovery => tier.discovery,
-            Modality::Credential => credential_rate,
-        };
-
-        // Reject before accepting work or changing authoritative access.
+        // Concurrency counts actual HTTP responses, including admitted uploads.
         if entry.inflight >= tier.concurrency {
             return Err(self.limit_error(caller, modality, 1));
         }
-
-        // Refill only the selected modality using monotonic elapsed time.
-        let now = Instant::now();
-        let bucket = entry.buckets.entry(modality).or_insert(Bucket {
-            tokens: f64::from(rate.burst),
-            updated: now,
-        });
-
-        // Apply a monotonic refill bounded by the configured burst.
-        bucket.tokens = (bucket.tokens
-            + now.duration_since(bucket.updated).as_secs_f64() * f64::from(rate.per_minute)
-                / POLICY_MINUTE_SECONDS)
-            .min(f64::from(rate.burst));
-        bucket.updated = now;
-
-        // A depleted caller must wait for refill; shared capacity is not sold here.
-        if bucket.tokens < 1.0 {
-            let retry = Duration::from_secs_f64(
-                ((1.0 - bucket.tokens) * POLICY_MINUTE_SECONDS / f64::from(rate.per_minute)).ceil(),
-            )
-            .as_secs();
-            return Err(self.limit_error(caller, modality, retry.max(1)));
-        }
-
-        // Commit the allowance and concurrency charge together.
-        bucket.tokens -= 1.0;
         entry.inflight += 1;
-        entry.touched = now;
+        entry.touched = Instant::now();
         Ok(IdentityLease {
             identities: Arc::clone(&self.identities),
             identity: caller.identity.clone(),
         })
+    }
+
+    /// Own response admission with one modality charge.
+    ///
+    /// # Errors
+    /// Returns personal concurrency, rate or bounded-state failures.
+    pub fn admit(&self, caller: &Caller, modality: Modality) -> Result<IdentityLease, NativeError> {
+        let lease = self.begin(caller, modality)?;
+        self.charge(caller, modality)?;
+        Ok(lease)
     }
 
     /// Resolve one key under the end-to-end deadline.
