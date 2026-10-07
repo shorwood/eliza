@@ -333,9 +333,20 @@ impl ImageTransport {
         composition: ImageComposition,
     ) -> Self {
         // Only the dedicated image model may enter this provider path.
-        if model.as_str() != image::generation::MODEL_ID {
+        if !state
+            .config
+            .models
+            .images
+            .has_model(&model, image::generation::MODEL_ID)
+        {
             return Self::Rejected(GeminiRejection::from_error(
-                &GeminiError::ImageGenerationModelRequired,
+                &GeminiError::ImageGenerationModelRequired {
+                    expected: state
+                        .config
+                        .models
+                        .images
+                        .expected(image::generation::MODEL_ID),
+                },
             ));
         }
 
