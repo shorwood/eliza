@@ -5,6 +5,7 @@ use std::sync::{Condvar, Mutex};
 use axum::Extension;
 use eliza_http::hosted::{AccessTier, HostedConfig, HostedSecrets};
 use futures_util::StreamExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tower::ServiceExt as _;
 
 use super::*;
@@ -299,4 +300,76 @@ async fn admission_test_deadline_interrupts_real_socket() {
     server.abort();
     let is_client_timeout = error.is_timeout();
     assert!(!is_client_timeout);
+}
+
+/// Fill origin write buffers with finite output so the client can stop reading.
+fn admission_test_large_response() -> std::future::Ready<Body> {
+    std::future::ready(Body::from(vec![0; 32 * 1024 * 1024]))
+}
+
+/// Absolute socket cancellation releases delivery and actual work under write backpressure.
+#[tokio::test]
+async fn admission_test_deadline_releases_backpressured_work() {
+    let mut config: HostedConfig =
+        serde_json::from_str(include_str!("../../../config/hosted-staging.json")).unwrap();
+    config.response_seconds = 1;
+    config.idle_seconds = ADMISSION_TEST_SECONDS * 2;
+    let hosted = Arc::new(
+        Hosted::new(
+            config,
+            HostedSecrets {
+                ingress_secret: ADMISSION_TEST_INGRESS.into(),
+                entitlement_secret: ADMISSION_TEST_ENTITLEMENT.into(),
+            },
+        )
+        .unwrap(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let listener = crate::connection::OriginListener::new(listener, Some(hosted.config()));
+    let router = axum::Router::new()
+        .route(
+            "/openai/v1/chat/completions",
+            axum::routing::post(admission_test_large_response),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&hosted),
+            Admission::handle,
+        ));
+    let server = tokio::spawn(async move {
+        let service = router.into_make_service_with_connect_info::<crate::connection::Peer>();
+        let served = axum::serve(listener, service).await;
+        served.unwrap();
+    });
+    let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    let request = format!(
+        "POST /openai/v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nx-eliza-ingress-token: {ADMISSION_TEST_INGRESS}\r\nx-eliza-client-ip: 192.0.2.3\r\nContent-Length: 2\r\nContent-Type: application/json\r\n\r\n{{}}"
+    );
+    socket.write_all(request.as_bytes()).await.unwrap();
+    let mut first = [0; 16];
+    socket.read_exact(&mut first).await.unwrap();
+    assert!(first.starts_with(b"HTTP/1.1 200"));
+    let released = tokio::time::timeout(Duration::from_secs(ADMISSION_TEST_SECONDS), async {
+        loop {
+            if let Ok(response) = hosted.responses.acquire(AccessTier::Public, 48) {
+                break response;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let work = tokio::time::timeout(Duration::from_secs(ADMISSION_TEST_SECONDS), async {
+        loop {
+            if let Ok(cpu) = hosted.cpu.acquire(AccessTier::Public, 3) {
+                break cpu;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop((released, work, socket));
+    server.abort();
+    assert_eq!(first[0], b'H');
 }
