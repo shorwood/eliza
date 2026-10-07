@@ -1,0 +1,27 @@
+export default defineNuxtConfig({
+  compatibilityDate: '2026-10-07',
+  modules: ['@nuxt/eslint'],
+  css: ['~/assets/site.css'],
+  dir: { public: 'generated/public' },
+  devtools: { enabled: false },
+  runtimeConfig: {
+    public: {
+      apiRoot: 'http://127.0.0.1:8787',
+      siteUrl: '',
+      statusUrl: '',
+      serviceLive: false,
+    },
+  },
+  routeRules: {
+    '/': { prerender: true },
+    '/docs/**': { prerender: true },
+    '/terms': { prerender: true },
+    '/privacy': { prerender: true },
+    '/support': { prerender: false, headers: { 'Cache-Control': 'private, no-store' } },
+    '/account': { prerender: false, headers: { 'Cache-Control': 'private, no-store' } },
+    '/account/**': { headers: { 'Cache-Control': 'private, no-store' } },
+    '/billing/**': { headers: { 'Cache-Control': 'private, no-store' } },
+  },
+  nitro: { prerender: { crawlLinks: true, routes: ['/docs'], failOnError: true } },
+  app: { head: { htmlAttrs: { lang: 'en' }, title: 'ELIZA · API fixture' } },
+})

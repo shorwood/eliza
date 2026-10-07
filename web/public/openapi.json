@@ -1,0 +1,6821 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ELIZA Compatibility Server",
+    "summary": "Classic ELIZA served through provider-compatible HTTP APIs.",
+    "description": "A standalone ELIZA server exposing OpenAI, Anthropic, Gemini, and Ollama-compatible endpoints.\nDevelopment documentation preview; hosted access is not live yet.",
+    "license": {
+      "name": "MIT License",
+      "identifier": "MIT"
+    },
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "Liveness response returned by the system health route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openai/v1/models": {
+      "get": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "OpenAI models",
+        "responses": {
+          "200": {
+            "description": "`OpenAI` model-list response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "`OpenAI` top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openai/v1/chat/completions": {
+      "post": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "OpenAI chat completion",
+        "requestBody": {
+          "description": "Chat Completions request accepted by the adapter.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete Chat Completions response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "`OpenAI` top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openai/v1/embeddings": {
+      "post": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "OpenAI embeddings",
+        "requestBody": {
+          "description": "OpenAI-compatible embeddings request.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAiEmbeddingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete `OpenAI` embedding response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiEmbeddingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "`OpenAI` top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openai/v1/images/generations": {
+      "post": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "OpenAI image generation",
+        "requestBody": {
+          "description": "OpenAI-compatible image-generation request.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageGenerationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete `OpenAI` image-generation response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageGenerationResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "`OpenAI` top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openai/v1/responses": {
+      "post": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "OpenAI response",
+        "requestBody": {
+          "description": "Responses API request accepted by the adapter.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResponsesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete Responses API response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponsesResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "`OpenAI` top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openai/v1/audio/speech": {
+      "post": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "OpenAI text to speech",
+        "requestBody": {
+          "description": "OpenAI-compatible speech request payload.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "byte stream",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "default": {
+            "description": "`OpenAI` top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anthropic/v1/models": {
+      "get": {
+        "tags": [
+          "anthropic"
+        ],
+        "summary": "Anthropic models",
+        "responses": {
+          "200": {
+            "description": "Anthropic model-list response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelListResponse2"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Anthropic top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anthropic/v1/messages": {
+      "post": {
+        "tags": [
+          "anthropic"
+        ],
+        "summary": "Anthropic message",
+        "requestBody": {
+          "description": "Anthropic Messages request accepted by the adapter.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete Anthropic Messages response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagesResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Anthropic top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gemini/v1beta/models": {
+      "get": {
+        "tags": [
+          "gemini"
+        ],
+        "summary": "Gemini models",
+        "responses": {
+          "200": {
+            "description": "Gemini model-list response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiModelListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Gemini top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gemini/v1beta/models/fnv-embed:embedContent": {
+      "post": {
+        "tags": [
+          "gemini"
+        ],
+        "summary": "Gemini embedding",
+        "requestBody": {
+          "description": "One Gemini `embedContent` request, also reused inside batches.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeminiEmbedContentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Native Gemini single embedding response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiEmbedContentResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Gemini top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gemini/v1beta/models/fnv-embed:batchEmbedContents": {
+      "post": {
+        "tags": [
+          "gemini"
+        ],
+        "summary": "Gemini batch embeddings",
+        "requestBody": {
+          "description": "Native Gemini synchronous batch request.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeminiBatchEmbedContentsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Native Gemini batch embedding response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiBatchEmbedContentsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Gemini top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gemini/v1beta/models/{model_action}": {
+      "post": {
+        "tags": [
+          "gemini"
+        ],
+        "summary": "Gemini content",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "alt",
+            "description": "Requested streaming envelope.",
+            "schema": {
+              "description": "Requested streaming envelope.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/GenerateStreamFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "style": "form"
+          }
+        ],
+        "requestBody": {
+          "description": "Gemini generate-content request accepted by the adapter.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateContentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete or incremental Gemini generation response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateContentResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Gemini top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gemini/v1beta/openai/chat/completions": {
+      "post": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "OpenAI-compatible chat completion",
+        "requestBody": {
+          "description": "Chat Completions request accepted by the adapter.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete Chat Completions response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "`OpenAI` top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gemini/v1beta/openai/embeddings": {
+      "post": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "OpenAI-compatible embeddings",
+        "requestBody": {
+          "description": "OpenAI-compatible embeddings request.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAiEmbeddingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete `OpenAI` embedding response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiEmbeddingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "`OpenAI` top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAiFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ollama/api/tags": {
+      "get": {
+        "tags": [
+          "ollama"
+        ],
+        "summary": "Ollama models",
+        "responses": {
+          "200": {
+            "description": "Ollama model-list response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelListResponse3"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ollama top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ollama/api/chat": {
+      "post": {
+        "tags": [
+          "ollama"
+        ],
+        "summary": "Ollama chat",
+        "requestBody": {
+          "description": "Ollama chat request accepted by the adapter.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest2"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Complete or incremental Ollama chat response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse2"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ollama top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ollama/api/embed": {
+      "post": {
+        "tags": [
+          "ollama"
+        ],
+        "summary": "Ollama embeddings",
+        "requestBody": {
+          "description": "Ollama embedding request.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OllamaEmbeddingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ollama embedding response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaEmbeddingResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ollama top-level failure envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaFailureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnthropicErrorKind": {
+        "description": "Anthropic's serialized error classification.",
+        "oneOf": [
+          {
+            "description": "Invalid or unsupported request input.",
+            "type": "string",
+            "const": "invalid_request_error"
+          },
+          {
+            "description": "Missing or invalid authentication.",
+            "type": "string",
+            "const": "authentication_error"
+          },
+          {
+            "description": "Request body exceeding the accepted limit.",
+            "type": "string",
+            "const": "request_too_large"
+          },
+          {
+            "description": "Internal server failure.",
+            "type": "string",
+            "const": "api_error"
+          }
+        ]
+      },
+      "AnthropicFailureBody": {
+        "description": "Nested Anthropic error payload.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Provider error classification.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AnthropicErrorKind"
+              }
+            ]
+          },
+          "message": {
+            "description": "Human-readable failure detail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "message"
+        ]
+      },
+      "AnthropicFailureResponse": {
+        "description": "Anthropic top-level failure envelope.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Envelope discriminator required by Anthropic clients.",
+            "type": "string"
+          },
+          "error": {
+            "description": "Provider-native error payload.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AnthropicFailureBody"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "error"
+        ]
+      },
+      "AssistantRole": {
+        "description": "Role emitted for assistant responses.",
+        "oneOf": [
+          {
+            "description": "Model-authored assistant output.",
+            "type": "string",
+            "const": "assistant"
+          }
+        ]
+      },
+      "ChatContent": {
+        "description": "Accepted wire shapes for Chat Completions message content.",
+        "anyOf": [
+          {
+            "description": "Shorthand plain-text content.",
+            "type": "string"
+          },
+          {
+            "description": "Structured content parts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatContentPart"
+            }
+          },
+          {
+            "description": "Unsupported structured content retained for classification.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      "ChatContentPart": {
+        "description": "One structured Chat Completions content part.",
+        "oneOf": [
+          {
+            "description": "Plain text content.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "description": "Text carried by the part.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "description": "User-provided image URL.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "image_url"
+              },
+              "image_url": {
+                "description": "URL and optional detail hint.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ChatImageUrl"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Any content-part kind outside the supported subset.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "ChatImageUrl": {
+        "description": "URL object nested inside a Chat Completions image part.",
+        "type": "object",
+        "properties": {
+          "detail": {
+            "description": "Accepted detail hint with no effect on deterministic sampling.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "description": "Data or HTTP(S) image URL.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ChatMessage": {
+        "description": "One inbound Ollama chat message.",
+        "type": "object",
+        "properties": {
+          "content": {
+            "description": "Optional message payload.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MessageContent2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "images": {
+            "description": "Inline standard-base64 images attached to a user message.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "role": {
+            "description": "Message author role.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessageRole2"
+              }
+            ]
+          },
+          "thinking": {
+            "description": "Prior model thinking retained for limits and replay compatibility.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_calls": {
+            "description": "Tool calls requested by an assistant message.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            }
+          }
+        },
+        "required": [
+          "role"
+        ]
+      },
+      "ChatOutputFunction": {
+        "description": "Function payload emitted inside an Ollama tool call.",
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "description": "Arguments supplied to the function.",
+            "type": "object",
+            "additionalProperties": true
+          },
+          "name": {
+            "description": "Requested function name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "arguments"
+        ]
+      },
+      "ChatOutputMessage": {
+        "description": "Assistant message emitted by the Ollama chat API.",
+        "type": "object",
+        "properties": {
+          "content": {
+            "description": "Generated text, empty for tool calls.",
+            "type": "string"
+          },
+          "role": {
+            "description": "Fixed assistant role.",
+            "type": "string"
+          },
+          "thinking": {
+            "description": "Generated readable thinking when requested.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_calls": {
+            "description": "Generated tool calls.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatOutputToolCall"
+            }
+          }
+        },
+        "required": [
+          "role",
+          "content",
+          "tool_calls"
+        ]
+      },
+      "ChatOutputToolCall": {
+        "description": "Tool call emitted by an Ollama assistant message.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Tool-kind discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind2"
+              }
+            ]
+          },
+          "function": {
+            "description": "Function invocation payload.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatOutputFunction"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "function"
+        ]
+      },
+      "ChatRequest": {
+        "description": "Chat Completions request accepted by the adapter.",
+        "type": "object",
+        "properties": {
+          "messages": {
+            "description": "Conversation history in request order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatRequestMessage"
+            }
+          },
+          "model": {
+            "description": "Requested model identifier.",
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "description": "Reasoning effort accepted for native compatibility without trace output.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "response_format": {
+            "description": "Optional plain-text, JSON-object, or JSON-Schema output control.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatRequestResponseFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stream": {
+            "description": "Whether to use the event-stream response shape.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "stream_options": {
+            "description": "Optional stream-specific controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatRequestStreamOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_choice": {
+            "description": "Tool-selection policy.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatToolChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "description": "Functions offered to the model.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ChatTool"
+            }
+          }
+        },
+        "required": [
+          "model",
+          "messages"
+        ]
+      },
+      "ChatRequest2": {
+        "description": "Ollama chat request accepted by the adapter.",
+        "type": "object",
+        "properties": {
+          "format": {
+            "description": "Optional structured-output request.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutputFormat2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "messages": {
+            "description": "Conversation history in request order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            }
+          },
+          "model": {
+            "description": "Requested model identifier.",
+            "type": "string"
+          },
+          "stream": {
+            "description": "Whether to use newline-delimited streaming responses.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "think": {
+            "description": "Whether reasoning output was requested, optionally with a named level.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatThink"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_choice": {
+            "description": "Tool-selection policy.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolChoice2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "description": "Functions offered to the model.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Tool2"
+            }
+          }
+        },
+        "required": [
+          "model",
+          "messages"
+        ]
+      },
+      "ChatRequestJsonSchema": {
+        "description": "Named JSON Schema payload nested inside Chat Completions formatting.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "Optional schema description accepted without changing local output.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Nonblank schema identity required by the `OpenAI` contract.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema": {
+            "description": "JSON Schema compiled into the local deterministic witness.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "strict": {
+            "description": "Strictness hint accepted as a no-op because local output is always exact.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "ChatRequestMessage": {
+        "description": "One inbound Chat Completions message.",
+        "type": "object",
+        "properties": {
+          "content": {
+            "description": "Optional message payload.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatContent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "description": "Message author role.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatRequestRole"
+              }
+            ]
+          },
+          "tool_calls": {
+            "description": "Tool calls requested by an assistant message.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ChatToolCall"
+            }
+          }
+        },
+        "required": [
+          "role"
+        ]
+      },
+      "ChatRequestResponseFormat": {
+        "description": "Text-output format requested from Chat Completions.",
+        "oneOf": [
+          {
+            "description": "Preserve normal plain-text output.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Wrap final text in the deterministic JSON object.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "json_object"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Conform final text to a supplied JSON Schema.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "json_schema"
+              },
+              "json_schema": {
+                "description": "Nested schema metadata and definition.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ChatRequestJsonSchema"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Any future or unknown output format.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "ChatRequestRole": {
+        "description": "Role attached to an inbound Chat Completions message.",
+        "oneOf": [
+          {
+            "description": "System instruction.",
+            "type": "string",
+            "const": "system"
+          },
+          {
+            "description": "Developer instruction.",
+            "type": "string",
+            "const": "developer"
+          },
+          {
+            "description": "Human-authored input.",
+            "type": "string",
+            "const": "user"
+          },
+          {
+            "description": "Model-authored output.",
+            "type": "string",
+            "const": "assistant"
+          },
+          {
+            "description": "Result from a prior tool call.",
+            "type": "string",
+            "const": "tool"
+          },
+          {
+            "description": "Any role outside the supported subset.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ChatRequestStreamOptions": {
+        "description": "Optional controls for Chat Completions streaming.",
+        "type": "object",
+        "properties": {
+          "include_usage": {
+            "description": "Whether the terminal stream chunk includes usage.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "ChatResponse": {
+        "description": "Complete Chat Completions response.",
+        "type": "object",
+        "properties": {
+          "choices": {
+            "description": "Generated choices.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatResponseChoice"
+            }
+          },
+          "created": {
+            "description": "Unix timestamp when the response was created.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "id": {
+            "description": "Provider-shaped completion identifier.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Model that produced the response.",
+            "type": "string"
+          },
+          "object": {
+            "description": "Wire object discriminator.",
+            "type": "string"
+          },
+          "usage": {
+            "description": "Request and response token counts.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatResponseUsage"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices",
+          "usage"
+        ]
+      },
+      "ChatResponse2": {
+        "description": "Complete or incremental Ollama chat response.",
+        "type": "object",
+        "properties": {
+          "created_at": {
+            "description": "Provider-compatible creation timestamp.",
+            "type": "string"
+          },
+          "done": {
+            "description": "Whether this is the terminal response chunk.",
+            "type": "boolean"
+          },
+          "done_reason": {
+            "description": "Reason generation completed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "eval_count": {
+            "description": "Estimated generated token count.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "eval_duration": {
+            "description": "Generation duration in nanoseconds.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "load_duration": {
+            "description": "Model-load duration in nanoseconds.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "message": {
+            "description": "Assistant output for this chunk.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatOutputMessage"
+              }
+            ]
+          },
+          "model": {
+            "description": "Model that produced the response.",
+            "type": "string"
+          },
+          "prompt_eval_count": {
+            "description": "Estimated prompt token count.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "prompt_eval_duration": {
+            "description": "Prompt evaluation duration in nanoseconds.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "total_duration": {
+            "description": "Total request duration in nanoseconds.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "model",
+          "created_at",
+          "message",
+          "done"
+        ]
+      },
+      "ChatResponseChoice": {
+        "description": "One choice in a Chat Completions response.",
+        "type": "object",
+        "properties": {
+          "finish_reason": {
+            "description": "Reason this choice stopped generating.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatResponseFinishReason"
+              }
+            ]
+          },
+          "index": {
+            "description": "Zero-based choice position.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "message": {
+            "description": "Generated assistant message.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatResponseMessage"
+              }
+            ]
+          }
+        },
+        "required": [
+          "index",
+          "message",
+          "finish_reason"
+        ]
+      },
+      "ChatResponseFinishReason": {
+        "description": "Reason a Chat Completions choice stopped generating.",
+        "oneOf": [
+          {
+            "description": "Text generation completed normally.",
+            "type": "string",
+            "const": "stop"
+          },
+          {
+            "description": "The assistant requested one or more tool calls.",
+            "type": "string",
+            "const": "tool_calls"
+          }
+        ]
+      },
+      "ChatResponseFunctionCall": {
+        "description": "Function payload emitted by a Chat Completions tool call.",
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "description": "Arguments encoded as JSON text.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Requested function name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "arguments"
+        ]
+      },
+      "ChatResponseMessage": {
+        "description": "Assistant message emitted by Chat Completions.",
+        "type": "object",
+        "properties": {
+          "content": {
+            "description": "Generated text, absent for tool calls.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "description": "Fixed assistant role.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AssistantRole"
+              }
+            ]
+          },
+          "tool_calls": {
+            "description": "Generated tool calls.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatResponseToolCall"
+            }
+          }
+        },
+        "required": [
+          "role",
+          "tool_calls"
+        ]
+      },
+      "ChatResponseToolCall": {
+        "description": "Tool call emitted by a Chat Completions response.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Tool-kind discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind"
+              }
+            ]
+          },
+          "function": {
+            "description": "Function invocation payload.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatResponseFunctionCall"
+              }
+            ]
+          },
+          "id": {
+            "description": "Provider-shaped tool-call identifier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "function"
+        ]
+      },
+      "ChatResponseUsage": {
+        "description": "Token counts serialized by Chat Completions.",
+        "type": "object",
+        "properties": {
+          "completion_tokens": {
+            "description": "Estimated tokens emitted by the response.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "prompt_tokens": {
+            "description": "Estimated tokens consumed by request input.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "total_tokens": {
+            "description": "Combined prompt and completion token count.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ]
+      },
+      "ChatThink": {
+        "description": "Ollama reasoning selector accepted as a boolean or named level.",
+        "anyOf": [
+          {
+            "description": "Enable or disable thinking directly.",
+            "type": "boolean"
+          },
+          {
+            "description": "Provider-defined named thinking level.",
+            "type": "string"
+          }
+        ]
+      },
+      "ChatTool": {
+        "description": "Tool declaration accepted by Chat Completions.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Tool-kind discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind"
+              }
+            ]
+          },
+          "function": {
+            "description": "Function definition for function tools.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatToolDefinition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "ChatToolCall": {
+        "description": "One Chat Completions tool call.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Tool-call discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind"
+              }
+            ]
+          },
+          "function": {
+            "description": "Function invocation payload.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatToolFunction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "ChatToolChoice": {
+        "description": "Named or mode-based Chat Completions tool-selection policy.",
+        "anyOf": [
+          {
+            "description": "General selection mode.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolChoiceMode"
+              }
+            ]
+          },
+          {
+            "description": "One required named function.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatToolNamedChoice"
+              }
+            ]
+          }
+        ]
+      },
+      "ChatToolDefinition": {
+        "description": "Function definition nested inside a Chat Completions tool.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "Optional human-readable function description.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Function name exposed to the model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parameters": {
+            "description": "JSON Schema describing accepted parameters.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "ChatToolFunction": {
+        "description": "Function invocation nested inside a Chat Completions tool call.",
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "description": "Arguments supplied to the function.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionArguments"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "description": "Function name requested by the model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ChatToolNamedChoice": {
+        "description": "Named Chat Completions tool-choice payload.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Tool-kind discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind"
+              }
+            ]
+          },
+          "function": {
+            "description": "Selected function.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatToolNamedFunction"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "function"
+        ]
+      },
+      "ChatToolNamedFunction": {
+        "description": "Function selector nested inside a named Chat Completions tool choice.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Selected function name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "Content": {
+        "description": "Gemini message-like content record.",
+        "type": "object",
+        "properties": {
+          "parts": {
+            "description": "Ordered content parts.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ContentPart"
+            }
+          },
+          "role": {
+            "description": "Author role, inferred as user when omitted where permitted.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContentRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ContentFileData": {
+        "description": "Provider-owned file nested inside a Gemini content part.",
+        "type": "object",
+        "properties": {
+          "fileUri": {
+            "description": "Provider file URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mimeType": {
+            "description": "Declared PNG or JPEG media type.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ContentFunctionCall": {
+        "description": "Function invocation embedded in a Gemini content part.",
+        "type": "object",
+        "properties": {
+          "args": {
+            "description": "Arguments supplied to the function.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "name": {
+            "description": "Function name requested by the model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ContentFunctionResponse": {
+        "description": "Function result embedded in a Gemini content part.",
+        "type": "object",
+        "properties": {
+          "response": {
+            "description": "Value returned by the function.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContentFunctionResponseValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ContentFunctionResponseValue": {
+        "description": "Accepted wire shapes for a Gemini function result.",
+        "anyOf": [
+          {
+            "description": "Plain-text function result.",
+            "type": "string"
+          },
+          {
+            "description": "Structured JSON function result.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      "ContentInlineData": {
+        "description": "Inline bytes nested inside a Gemini content part.",
+        "type": "object",
+        "properties": {
+          "data": {
+            "description": "Standard base64 payload.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mimeType": {
+            "description": "Declared PNG or JPEG media type.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ContentPart": {
+        "description": "One content part accepted by the Gemini adapter.",
+        "anyOf": [
+          {
+            "description": "Plain text, optionally annotated for speech synthesis.",
+            "type": "object",
+            "properties": {
+              "speechMetadata": {
+                "description": "Local speaker and style annotations.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ContentSpeechMetadata"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "text": {
+                "description": "Text carried by the part.",
+                "type": "string"
+              },
+              "thought": {
+                "description": "Whether this model-authored text is a returned thought.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "thoughtSignature": {
+                "description": "Opaque signature returned with prior thought content.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "description": "Inline image bytes.",
+            "type": "object",
+            "properties": {
+              "inlineData": {
+                "description": "Typed base64 payload.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ContentInlineData"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "inlineData"
+            ]
+          },
+          {
+            "description": "Provider-owned image file.",
+            "type": "object",
+            "properties": {
+              "fileData": {
+                "description": "Typed provider file reference.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ContentFileData"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "fileData"
+            ]
+          },
+          {
+            "description": "Model request to invoke a function.",
+            "type": "object",
+            "properties": {
+              "functionCall": {
+                "description": "Function invocation payload.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ContentFunctionCall"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "functionCall"
+            ]
+          },
+          {
+            "description": "Client-provided result from a prior function call.",
+            "type": "object",
+            "properties": {
+              "functionResponse": {
+                "description": "Function result payload.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ContentFunctionResponse"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "functionResponse"
+            ]
+          },
+          {
+            "description": "Any content part outside the supported subset.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      "ContentRole": {
+        "description": "Role attached to an inbound Gemini content record.",
+        "oneOf": [
+          {
+            "description": "Human-authored input.",
+            "type": "string",
+            "const": "user"
+          },
+          {
+            "description": "Model-authored output.",
+            "type": "string",
+            "const": "model"
+          },
+          {
+            "description": "Legacy function-result input.",
+            "type": "string",
+            "const": "function"
+          },
+          {
+            "description": "Any role outside the supported subset.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ContentSpeechMetadata": {
+        "description": "Per-part controls used by the local speech extension.",
+        "type": "object",
+        "properties": {
+          "speaker": {
+            "description": "Speaker label assigned to this text segment.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "style": {
+            "description": "Optional synthesis style assigned to this segment.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GeminiBatchEmbedContentsRequest": {
+        "description": "Native Gemini synchronous batch request.",
+        "type": "object",
+        "properties": {
+          "requests": {
+            "description": "Ordered embedding requests.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/GeminiEmbedContentRequest"
+            }
+          }
+        }
+      },
+      "GeminiBatchEmbedContentsResponse": {
+        "description": "Native Gemini batch embedding response.",
+        "type": "object",
+        "properties": {
+          "embeddings": {
+            "description": "Vectors in request order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GeminiContentEmbedding"
+            }
+          },
+          "usageMetadata": {
+            "description": "Approximate input usage across the batch.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GeminiEmbeddingUsage"
+              }
+            ]
+          }
+        },
+        "required": [
+          "embeddings",
+          "usageMetadata"
+        ]
+      },
+      "GeminiContentEmbedding": {
+        "description": "Gemini vector object.",
+        "type": "object",
+        "properties": {
+          "values": {
+            "description": "Embedding values.",
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          }
+        },
+        "required": [
+          "values"
+        ]
+      },
+      "GeminiEmbedContentRequest": {
+        "description": "One Gemini `embedContent` request, also reused inside batches.",
+        "type": "object",
+        "properties": {
+          "title": {
+            "description": "Legacy retrieval title accepted as a no-op.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "description": "Text content to embed.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Content"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "embedContentConfig": {
+            "description": "Current embedding controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GeminiEmbeddingConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "description": "Model resource named by the request URL.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outputDimensionality": {
+            "description": "Legacy requested vector size.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "taskType": {
+            "description": "Legacy task hint accepted as a no-op.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GeminiEmbedContentResponse": {
+        "description": "Native Gemini single embedding response.",
+        "type": "object",
+        "properties": {
+          "embedding": {
+            "description": "Generated embedding.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GeminiContentEmbedding"
+              }
+            ]
+          },
+          "usageMetadata": {
+            "description": "Approximate input usage.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GeminiEmbeddingUsage"
+              }
+            ]
+          }
+        },
+        "required": [
+          "embedding",
+          "usageMetadata"
+        ]
+      },
+      "GeminiEmbeddingConfig": {
+        "description": "Current Gemini embedding controls.",
+        "type": "object",
+        "properties": {
+          "title": {
+            "description": "Retrieval title accepted as a no-op.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "audioTrackExtraction": {
+            "description": "Audio extraction is unsupported when enabled.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "autoTruncate": {
+            "description": "Automatic truncation is unsupported when enabled.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "documentOcr": {
+            "description": "Document OCR is unsupported when enabled.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "outputDimensionality": {
+            "description": "Requested vector size.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "taskType": {
+            "description": "Task hint accepted as a no-op.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GeminiEmbeddingUsage": {
+        "description": "Gemini embedding usage metadata.",
+        "type": "object",
+        "properties": {
+          "promptTokenCount": {
+            "description": "Approximate tokens consumed by request text.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "promptTokenCount"
+        ]
+      },
+      "GeminiErrorStatus": {
+        "description": "Gemini's serialized error classification.",
+        "oneOf": [
+          {
+            "description": "Invalid or unsupported request input.",
+            "type": "string",
+            "const": "INVALID_ARGUMENT"
+          },
+          {
+            "description": "Missing or invalid authentication.",
+            "type": "string",
+            "const": "UNAUTHENTICATED"
+          },
+          {
+            "description": "Request body exceeding the accepted limit.",
+            "type": "string",
+            "const": "RESOURCE_EXHAUSTED"
+          },
+          {
+            "description": "Internal server failure.",
+            "type": "string",
+            "const": "INTERNAL"
+          }
+        ]
+      },
+      "GeminiFailureBody": {
+        "description": "Nested Gemini error payload.",
+        "type": "object",
+        "properties": {
+          "code": {
+            "description": "Numeric HTTP status.",
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          },
+          "message": {
+            "description": "Human-readable failure detail.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Provider error classification.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GeminiErrorStatus"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "status"
+        ]
+      },
+      "GeminiFailureResponse": {
+        "description": "Gemini top-level failure envelope.",
+        "type": "object",
+        "properties": {
+          "error": {
+            "description": "Provider-native error payload.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GeminiFailureBody"
+              }
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "GeminiModel": {
+        "description": "Gemini model-catalog entry.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "Human-readable model description.",
+            "type": "string"
+          },
+          "displayName": {
+            "description": "Human-readable model label.",
+            "type": "string"
+          },
+          "inputTokenLimit": {
+            "description": "Maximum accepted input tokens.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "name": {
+            "description": "Resource name used by Gemini clients.",
+            "type": "string"
+          },
+          "outputTokenLimit": {
+            "description": "Maximum emitted output tokens.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "supportedGenerationMethods": {
+            "description": "Generation action names accepted for this model.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "description": "Provider-compatible model version.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "displayName",
+          "description",
+          "supportedGenerationMethods",
+          "inputTokenLimit",
+          "outputTokenLimit"
+        ]
+      },
+      "GeminiModelListResponse": {
+        "description": "Gemini model-list response.",
+        "type": "object",
+        "properties": {
+          "models": {
+            "description": "Available models.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GeminiModel"
+            }
+          }
+        },
+        "required": [
+          "models"
+        ]
+      },
+      "GenerateCandidate": {
+        "description": "One Gemini generation candidate.",
+        "type": "object",
+        "properties": {
+          "content": {
+            "description": "Generated candidate content.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GenerateOutputContent"
+              }
+            ]
+          },
+          "finishReason": {
+            "description": "Completion reason, omitted while streaming is active.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerateFinishReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "index": {
+            "description": "Zero-based candidate position.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "content",
+          "index"
+        ]
+      },
+      "GenerateConfig": {
+        "description": "Gemini generation controls used by text, speech, and image requests.",
+        "type": "object",
+        "properties": {
+          "maxOutputTokens": {
+            "description": "Maximum generated tokens accepted as a compatibility control.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "responseFormat": {
+            "description": "Requested response wire format.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponseFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "responseJsonSchema": {
+            "description": "Legacy JSON Schema paired with `responseMimeType`.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "responseMimeType": {
+            "description": "Legacy text response MIME type.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegacyTextResponseMimeType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "responseModalities": {
+            "description": "Requested response modalities.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/GenerateResponseModality"
+            }
+          },
+          "speechConfig": {
+            "description": "Voice and speaker controls for audio output.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thinkingConfig": {
+            "description": "Native thought visibility and budget controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThinkingConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "GenerateContentRequest": {
+        "description": "Gemini generate-content request accepted by the adapter.",
+        "type": "object",
+        "properties": {
+          "contents": {
+            "description": "Conversation content in request order.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Content"
+            }
+          },
+          "generationConfig": {
+            "description": "Text or speech generation controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerateConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "systemInstruction": {
+            "description": "Optional system instruction.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Content"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "toolConfig": {
+            "description": "Function-selection policy.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "description": "Functions offered to the model.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ToolGroup"
+            }
+          }
+        }
+      },
+      "GenerateContentResponse": {
+        "description": "Complete or incremental Gemini generation response.",
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "description": "Generated candidates.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GenerateCandidate"
+            }
+          },
+          "modelVersion": {
+            "description": "Model that produced the response.",
+            "type": "string"
+          },
+          "usageMetadata": {
+            "description": "Token usage, omitted from non-terminal stream chunks.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerateUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "candidates",
+          "modelVersion"
+        ]
+      },
+      "GenerateFinishReason": {
+        "description": "Reason a Gemini candidate stopped generating.",
+        "oneOf": [
+          {
+            "description": "Generation completed normally.",
+            "type": "string",
+            "const": "STOP"
+          }
+        ]
+      },
+      "GenerateFunctionCall": {
+        "description": "Function call emitted by a Gemini candidate.",
+        "type": "object",
+        "properties": {
+          "args": {
+            "description": "Arguments supplied to the function.",
+            "type": "object",
+            "additionalProperties": true
+          },
+          "id": {
+            "description": "Provider-shaped call identifier.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Requested function name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "args"
+        ]
+      },
+      "GenerateInlineData": {
+        "description": "Base64-encoded binary data emitted by Gemini generation.",
+        "type": "object",
+        "properties": {
+          "data": {
+            "description": "Base64-encoded payload.",
+            "type": "string"
+          },
+          "mimeType": {
+            "description": "Media type describing the encoded bytes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mimeType",
+          "data"
+        ]
+      },
+      "GenerateOutputContent": {
+        "description": "Model-authored content emitted by a Gemini candidate.",
+        "type": "object",
+        "properties": {
+          "parts": {
+            "description": "Generated content parts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GenerateOutputPart"
+            }
+          },
+          "role": {
+            "description": "Fixed model role.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "parts"
+        ]
+      },
+      "GenerateOutputPart": {
+        "description": "One output part emitted by a Gemini candidate.",
+        "anyOf": [
+          {
+            "description": "Generated text.",
+            "type": "object",
+            "properties": {
+              "text": {
+                "description": "Text carried by the part.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "description": "Generated reasoning summary.",
+            "type": "object",
+            "properties": {
+              "text": {
+                "description": "Mechanical reasoning trace.",
+                "type": "string"
+              },
+              "thought": {
+                "description": "Marks this part as thought content.",
+                "type": "boolean"
+              },
+              "thoughtSignature": {
+                "description": "Stable fixture signature over the complete trace.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "thought",
+              "thoughtSignature"
+            ]
+          },
+          {
+            "description": "Requested function invocation.",
+            "type": "object",
+            "properties": {
+              "functionCall": {
+                "description": "Function-call payload.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerateFunctionCall"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "functionCall"
+            ]
+          },
+          {
+            "description": "Generated binary data.",
+            "type": "object",
+            "properties": {
+              "inlineData": {
+                "description": "Encoded data payload.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerateInlineData"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "inlineData"
+            ]
+          }
+        ]
+      },
+      "GenerateQuery": {
+        "description": "Query parameters accepted by the streaming generation action.",
+        "type": "object",
+        "properties": {
+          "alt": {
+            "description": "Requested streaming envelope.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerateStreamFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "GenerateResponseModality": {
+        "description": "Response modality requested from Gemini generation.",
+        "oneOf": [
+          {
+            "description": "Text generation.",
+            "type": "string",
+            "const": "TEXT"
+          },
+          {
+            "description": "Audio generation through the local speech model.",
+            "type": "string",
+            "const": "AUDIO"
+          },
+          {
+            "description": "PNG generation through the local image model.",
+            "type": "string",
+            "const": "IMAGE"
+          },
+          {
+            "description": "Any modality outside the supported subset.",
+            "type": "string",
+            "const": "UNSUPPORTED"
+          }
+        ]
+      },
+      "GenerateStreamFormat": {
+        "description": "Envelope used for streaming Gemini responses.",
+        "oneOf": [
+          {
+            "description": "Server-sent events.",
+            "type": "string",
+            "const": "sse"
+          },
+          {
+            "description": "Incrementally delivered JSON array.",
+            "type": "string",
+            "const": "json"
+          }
+        ]
+      },
+      "GenerateUsage": {
+        "description": "Token counts serialized by Gemini generation APIs.",
+        "type": "object",
+        "properties": {
+          "candidatesTokenCount": {
+            "description": "Estimated tokens emitted by candidates.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "promptTokenCount": {
+            "description": "Estimated tokens consumed by request input.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "thoughtsTokenCount": {
+            "description": "Estimated tokens emitted as readable thoughts.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "totalTokenCount": {
+            "description": "Combined input and candidate token count.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "promptTokenCount",
+          "candidatesTokenCount",
+          "totalTokenCount"
+        ]
+      },
+      "HealthResponse": {
+        "description": "Liveness response returned by the system health route.",
+        "type": "object",
+        "properties": {
+          "service": {
+            "description": "Service identifier used by local orchestration.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Stable health state for machine consumers.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "service"
+        ]
+      },
+      "ImageAspectRatio": {
+        "description": "Aspect ratio accepted by the bounded image fixture.",
+        "oneOf": [
+          {
+            "description": "Square output and default.",
+            "type": "string",
+            "const": "1:1"
+          },
+          {
+            "description": "Landscape output.",
+            "type": "string",
+            "const": "3:2"
+          },
+          {
+            "description": "Portrait output.",
+            "type": "string",
+            "const": "2:3"
+          },
+          {
+            "description": "Any ratio outside the fixed subset.",
+            "type": "string",
+            "const": "Unsupported"
+          }
+        ]
+      },
+      "ImageDetail": {
+        "description": "Documented `OpenAI` image-detail hint accepted as a deterministic no-op.",
+        "oneOf": [
+          {
+            "description": "Let the provider choose detail automatically.",
+            "type": "string",
+            "const": "auto"
+          },
+          {
+            "description": "Request low image detail.",
+            "type": "string",
+            "const": "low"
+          },
+          {
+            "description": "Request high image detail.",
+            "type": "string",
+            "const": "high"
+          },
+          {
+            "description": "Request original image detail.",
+            "type": "string",
+            "const": "original"
+          }
+        ]
+      },
+      "ImageGenerationData": {
+        "description": "One generated image in an `OpenAI` response.",
+        "type": "object",
+        "properties": {
+          "b64_json": {
+            "description": "Standard-base64 PNG bytes.",
+            "type": "string"
+          },
+          "revised_prompt": {
+            "description": "Whitespace-normalized prompt used by the fixture.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "b64_json",
+          "revised_prompt"
+        ]
+      },
+      "ImageGenerationRequest": {
+        "description": "OpenAI-compatible image-generation request.",
+        "type": "object",
+        "properties": {
+          "background": {
+            "description": "Unsupported background control."
+          },
+          "model": {
+            "description": "Optional model, defaulting to the fixed local image model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "moderation": {
+            "description": "Unsupported moderation control."
+          },
+          "n": {
+            "description": "Number of ordered variations.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "output_compression": {
+            "description": "Unsupported lossy-output compression control."
+          },
+          "output_format": {
+            "description": "Current image encoding control.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageOutputFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "partial_images": {
+            "description": "Unsupported progressive-image count."
+          },
+          "prompt": {
+            "description": "Text selecting the deterministic procedural output.",
+            "type": "string"
+          },
+          "quality": {
+            "description": "Unsupported quality control."
+          },
+          "response_format": {
+            "description": "Deprecated response representation control.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageResponseFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size": {
+            "description": "Requested fixed dimensions.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageSize"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stream": {
+            "description": "Unsupported streaming selector."
+          },
+          "style": {
+            "description": "Unsupported legacy style control."
+          },
+          "user": {
+            "description": "End-user metadata accepted as a documented no-op.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "prompt"
+        ]
+      },
+      "ImageGenerationResponse": {
+        "description": "Complete `OpenAI` image-generation response.",
+        "type": "object",
+        "properties": {
+          "created": {
+            "description": "Unix time at response construction.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "data": {
+            "description": "Generated images in variation order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageGenerationData"
+            }
+          },
+          "output_format": {
+            "description": "Fixed generated encoding.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Generated dimensions.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "created",
+          "data",
+          "output_format",
+          "size"
+        ]
+      },
+      "ImageOutputFormat": {
+        "description": "Current image encoding selector.",
+        "oneOf": [
+          {
+            "description": "Portable Network Graphics.",
+            "type": "string",
+            "const": "png"
+          },
+          {
+            "description": "JPEG output is deliberately not implemented.",
+            "type": "string",
+            "const": "jpeg"
+          },
+          {
+            "description": "WebP output is deliberately not implemented.",
+            "type": "string",
+            "const": "webp"
+          },
+          {
+            "description": "Future or unknown output format.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ImageResponseFormat": {
+        "description": "Deprecated image response selector retained for older clients.",
+        "oneOf": [
+          {
+            "description": "Base64 JSON field.",
+            "type": "string",
+            "const": "b64_json"
+          },
+          {
+            "description": "Hosted URL output, which would require storage.",
+            "type": "string",
+            "const": "url"
+          },
+          {
+            "description": "Future or unknown response shape.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ImageResponseFormat2": {
+        "description": "Gemini image-generation format properties.",
+        "type": "object",
+        "properties": {
+          "aspectRatio": {
+            "description": "Fixed output aspect ratio.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageAspectRatio"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "imageSize": {
+            "description": "Fixed one-kilopixel size class.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageSize2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ImageSize": {
+        "description": "Output dimensions accepted by the bounded fixture.",
+        "oneOf": [
+          {
+            "description": "256-by-256 square.",
+            "type": "string",
+            "const": "256x256"
+          },
+          {
+            "description": "512-by-512 square.",
+            "type": "string",
+            "const": "512x512"
+          },
+          {
+            "description": "1024-by-1024 square and default.",
+            "type": "string",
+            "const": "1024x1024"
+          },
+          {
+            "description": "1536-by-1024 landscape image.",
+            "type": "string",
+            "const": "1536x1024"
+          },
+          {
+            "description": "1024-by-1536 portrait image.",
+            "type": "string",
+            "const": "1024x1536"
+          },
+          {
+            "description": "Unknown or currently unsupported dimensions.",
+            "type": "string",
+            "const": "Unsupported"
+          }
+        ]
+      },
+      "ImageSize2": {
+        "description": "Image-size class accepted by the bounded image fixture.",
+        "oneOf": [
+          {
+            "description": "Gemini's default one-kilopixel size class.",
+            "type": "string",
+            "const": "1K"
+          },
+          {
+            "description": "Any size class outside the fixed subset.",
+            "type": "string",
+            "const": "Unsupported"
+          }
+        ]
+      },
+      "LegacyTextResponseMimeType": {
+        "description": "MIME type accepted by Gemini's legacy text response-format control.",
+        "oneOf": [
+          {
+            "description": "Deterministic JSON text.",
+            "type": "string",
+            "const": "application/json"
+          },
+          {
+            "description": "Ordinary ELIZA text.",
+            "type": "string",
+            "const": "text/plain"
+          },
+          {
+            "description": "Any future or unknown MIME type.",
+            "type": "string",
+            "const": "Unsupported"
+          }
+        ]
+      },
+      "MessageContent": {
+        "description": "Text or structured blocks accepted as message content.",
+        "anyOf": [
+          {
+            "description": "Shorthand plain-text content.",
+            "type": "string"
+          },
+          {
+            "description": "Structured message blocks.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessageContentBlock"
+            }
+          }
+        ]
+      },
+      "MessageContent2": {
+        "description": "Text or structured JSON accepted as Ollama message content.",
+        "anyOf": [
+          {
+            "description": "Plain-text content.",
+            "type": "string"
+          },
+          {
+            "description": "Structured content serialized as JSON text during lowering.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      "MessageContentBlock": {
+        "description": "One structured block from an Anthropic message.",
+        "oneOf": [
+          {
+            "description": "Plain text content.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "description": "Text carried by the block.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "description": "User-provided image content.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "image"
+              },
+              "source": {
+                "description": "Inline, URL, or provider-file source.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MessageImageSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Model request to invoke a tool.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "tool_use"
+              },
+              "input": {
+                "description": "Arguments supplied to the tool.",
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": true
+              },
+              "name": {
+                "description": "Requested tool name.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Client-provided result from a prior tool call.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "tool_result"
+              },
+              "content": {
+                "description": "Returned tool content.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolResultContent"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Prior readable thinking returned by the model.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "thinking"
+              },
+              "signature": {
+                "description": "Opaque signature returned with the summary.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "thinking": {
+                "description": "Readable thinking summary.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "thinking"
+            ]
+          },
+          {
+            "description": "Prior opaque thinking retained for replay compatibility.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "redacted_thinking"
+              },
+              "data": {
+                "description": "Opaque provider payload.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ]
+          },
+          {
+            "description": "Any block kind outside the supported subset.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "MessageImageSource": {
+        "description": "One source accepted by an Anthropic image block.",
+        "oneOf": [
+          {
+            "description": "Inline standard base64 with a declared media type.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "base64"
+              },
+              "data": {
+                "description": "Standard base64 payload.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "media_type": {
+                "description": "Declared PNG or JPEG media type.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Data or HTTP(S) URL.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "url"
+              },
+              "url": {
+                "description": "Image location.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Provider-owned uploaded file.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "file"
+              },
+              "file_id": {
+                "description": "Provider file identifier.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Any image-source kind outside the supported subset.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "MessageRole": {
+        "description": "Role attached to an inbound Anthropic message.",
+        "oneOf": [
+          {
+            "description": "Human-authored input.",
+            "type": "string",
+            "const": "user"
+          },
+          {
+            "description": "Model-authored output.",
+            "type": "string",
+            "const": "assistant"
+          },
+          {
+            "description": "Any role outside the supported subset.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "MessageRole2": {
+        "description": "Role attached to an inbound Ollama message.",
+        "oneOf": [
+          {
+            "description": "System instruction.",
+            "type": "string",
+            "const": "system"
+          },
+          {
+            "description": "Human-authored input.",
+            "type": "string",
+            "const": "user"
+          },
+          {
+            "description": "Model-authored output.",
+            "type": "string",
+            "const": "assistant"
+          },
+          {
+            "description": "Result from a prior tool call.",
+            "type": "string",
+            "const": "tool"
+          },
+          {
+            "description": "Any role outside the supported subset.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "MessagesInputMessage": {
+        "description": "One inbound Anthropic conversation message.",
+        "type": "object",
+        "properties": {
+          "content": {
+            "description": "Message payload.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessageContent"
+              }
+            ]
+          },
+          "role": {
+            "description": "Message author role.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessageRole"
+              }
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ]
+      },
+      "MessagesOutputBlock": {
+        "description": "One content block emitted by an Anthropic response.",
+        "oneOf": [
+          {
+            "description": "Assistant text output.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "description": "Generated text.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "description": "Assistant request to invoke a tool.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "tool_use"
+              },
+              "id": {
+                "description": "Provider-shaped tool-call identifier.",
+                "type": "string"
+              },
+              "input": {
+                "description": "Arguments supplied to the tool.",
+                "type": "object",
+                "additionalProperties": true
+              },
+              "name": {
+                "description": "Requested tool name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "name",
+              "input"
+            ]
+          },
+          {
+            "description": "Readable thinking returned before the answer.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "thinking"
+              },
+              "signature": {
+                "description": "Stable fixture signature over the trace.",
+                "type": "string"
+              },
+              "thinking": {
+                "description": "Mechanical trace summary.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "thinking",
+              "signature"
+            ]
+          }
+        ]
+      },
+      "MessagesRequest": {
+        "description": "Anthropic Messages request accepted by the adapter.",
+        "type": "object",
+        "properties": {
+          "max_tokens": {
+            "description": "Maximum output tokens accepted as a compatibility limit.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "messages": {
+            "description": "Conversation history in request order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagesInputMessage"
+            }
+          },
+          "model": {
+            "description": "Requested model identifier.",
+            "type": "string"
+          },
+          "output_config": {
+            "description": "Optional direct-output schema controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutputConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stream": {
+            "description": "Whether to use the event-stream response shape.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "system": {
+            "description": "Optional system instruction.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MessageContent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thinking": {
+            "description": "Native thinking controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Thinking"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_choice": {
+            "description": "Tool-selection policy.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "description": "Functions offered to the model.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            }
+          }
+        },
+        "required": [
+          "model",
+          "messages"
+        ]
+      },
+      "MessagesResponse": {
+        "description": "Complete Anthropic Messages response.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Wire object discriminator.",
+            "type": "string"
+          },
+          "content": {
+            "description": "Generated response blocks.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagesOutputBlock"
+            }
+          },
+          "id": {
+            "description": "Provider-shaped message identifier.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Model that produced the response.",
+            "type": "string"
+          },
+          "role": {
+            "description": "Fixed assistant role.",
+            "type": "string"
+          },
+          "stop_reason": {
+            "description": "Reason generation stopped.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessagesStopReason"
+              }
+            ]
+          },
+          "stop_sequence": {
+            "description": "Matching stop sequence, absent in this emulator.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "description": "Request and response token counts.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessagesUsage"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "role",
+          "model",
+          "content",
+          "stop_reason",
+          "usage"
+        ]
+      },
+      "MessagesStopReason": {
+        "description": "Reason the Anthropic response stopped generating.",
+        "oneOf": [
+          {
+            "description": "The assistant completed its turn normally.",
+            "type": "string",
+            "const": "end_turn"
+          },
+          {
+            "description": "The assistant requested a tool invocation.",
+            "type": "string",
+            "const": "tool_use"
+          }
+        ]
+      },
+      "MessagesUsage": {
+        "description": "Token counts serialized by the Anthropic Messages API.",
+        "type": "object",
+        "properties": {
+          "input_tokens": {
+            "description": "Estimated tokens consumed by request input.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "description": "Estimated tokens emitted by the response.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens"
+        ]
+      },
+      "ModelDescriptor": {
+        "description": "`OpenAI` model-catalog entry.",
+        "type": "object",
+        "properties": {
+          "created": {
+            "description": "Unix timestamp associated with the model.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "id": {
+            "description": "Model identifier.",
+            "type": "string"
+          },
+          "object": {
+            "description": "Wire object discriminator.",
+            "type": "string"
+          },
+          "owned_by": {
+            "description": "Provider-compatible owner label.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "owned_by"
+        ]
+      },
+      "ModelDescriptor2": {
+        "description": "Anthropic model-catalog entry.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Wire object discriminator.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Provider-compatible creation timestamp.",
+            "type": "string"
+          },
+          "display_name": {
+            "description": "Human-readable model label.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Model identifier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "display_name",
+          "created_at"
+        ]
+      },
+      "ModelDescriptor3": {
+        "description": "Ollama model-catalog entry.",
+        "type": "object",
+        "properties": {
+          "details": {
+            "description": "Ollama-compatible model metadata.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ModelDetails"
+              }
+            ]
+          },
+          "digest": {
+            "description": "Provider-compatible content digest.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Model identifier used for requests.",
+            "type": "string"
+          },
+          "modified_at": {
+            "description": "Provider-compatible modification timestamp.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Display name used by Ollama clients.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Reported model size in bytes.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "name",
+          "model",
+          "modified_at",
+          "size",
+          "digest",
+          "details"
+        ]
+      },
+      "ModelDetails": {
+        "description": "Ollama-compatible model metadata.",
+        "type": "object",
+        "properties": {
+          "format": {
+            "description": "Model container format.",
+            "type": "string"
+          },
+          "families": {
+            "description": "All model families.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "family": {
+            "description": "Primary model family.",
+            "type": "string"
+          },
+          "parameter_size": {
+            "description": "Human-readable parameter count.",
+            "type": "string"
+          },
+          "parent_model": {
+            "description": "Parent model identifier, empty for the built-in model.",
+            "type": "string"
+          },
+          "quantization_level": {
+            "description": "Human-readable quantization level.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "parent_model",
+          "format",
+          "family",
+          "families",
+          "parameter_size",
+          "quantization_level"
+        ]
+      },
+      "ModelListResponse": {
+        "description": "`OpenAI` model-list response.",
+        "type": "object",
+        "properties": {
+          "data": {
+            "description": "Available models.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelDescriptor"
+            }
+          },
+          "object": {
+            "description": "Wire object discriminator.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object",
+          "data"
+        ]
+      },
+      "ModelListResponse2": {
+        "description": "Anthropic model-list response.",
+        "type": "object",
+        "properties": {
+          "data": {
+            "description": "Available models.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelDescriptor2"
+            }
+          },
+          "first_id": {
+            "description": "First model identifier in this page.",
+            "type": "string"
+          },
+          "has_more": {
+            "description": "Whether another page exists.",
+            "type": "boolean"
+          },
+          "last_id": {
+            "description": "Last model identifier in this page.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "has_more",
+          "first_id",
+          "last_id"
+        ]
+      },
+      "ModelListResponse3": {
+        "description": "Ollama model-list response.",
+        "type": "object",
+        "properties": {
+          "models": {
+            "description": "Available models.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelDescriptor3"
+            }
+          }
+        },
+        "required": [
+          "models"
+        ]
+      },
+      "OllamaEmbeddingInput": {
+        "description": "Ollama text input shapes.",
+        "anyOf": [
+          {
+            "description": "One text value.",
+            "type": "string"
+          },
+          {
+            "description": "Ordered text batch.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Any remaining JSON shape."
+          }
+        ]
+      },
+      "OllamaEmbeddingRequest": {
+        "description": "Ollama embedding request.",
+        "type": "object",
+        "properties": {
+          "dimensions": {
+            "description": "Optional vector size.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "input": {
+            "description": "Text or ordered text batch.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OllamaEmbeddingInput"
+              }
+            ]
+          },
+          "model": {
+            "description": "Fixed local embedding model.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "input"
+        ]
+      },
+      "OllamaEmbeddingResponse": {
+        "description": "Ollama embedding response.",
+        "type": "object",
+        "properties": {
+          "embeddings": {
+            "description": "Ordered vectors.",
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "float"
+              }
+            }
+          },
+          "load_duration": {
+            "description": "Deterministic model-load duration in nanoseconds.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "model": {
+            "description": "Fixed model that produced the vectors.",
+            "type": "string"
+          },
+          "prompt_eval_count": {
+            "description": "Approximate input token count.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "total_duration": {
+            "description": "Deterministic total duration in nanoseconds.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "model",
+          "embeddings",
+          "total_duration",
+          "load_duration",
+          "prompt_eval_count"
+        ]
+      },
+      "OllamaFailureResponse": {
+        "description": "Ollama top-level failure envelope.",
+        "type": "object",
+        "properties": {
+          "error": {
+            "description": "Human-readable failure detail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "OpenAiEmbeddingData": {
+        "description": "One indexed vector in an `OpenAI` response.",
+        "type": "object",
+        "properties": {
+          "embedding": {
+            "description": "Embedding vector.",
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "index": {
+            "description": "Zero-based input position.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "object": {
+            "description": "Wire object discriminator.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object",
+          "embedding",
+          "index"
+        ]
+      },
+      "OpenAiEmbeddingEncoding": {
+        "description": "`OpenAI` embedding output encoding.",
+        "oneOf": [
+          {
+            "description": "JSON floating-point values.",
+            "type": "string",
+            "const": "float"
+          },
+          {
+            "description": "Base64-packed values, deliberately outside the initial fixture.",
+            "type": "string",
+            "const": "base64"
+          },
+          {
+            "description": "Future or unknown `OpenAI` encoding.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "OpenAiEmbeddingInput": {
+        "description": "`OpenAI` input variants retained for explicit subset errors.",
+        "anyOf": [
+          {
+            "description": "One text value.",
+            "type": "string"
+          },
+          {
+            "description": "Ordered text batch.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "One pre-tokenized value, unsupported by this fixture.",
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "description": "Batch of pre-tokenized values, unsupported by this fixture.",
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          },
+          {
+            "description": "Any remaining JSON input shape."
+          }
+        ]
+      },
+      "OpenAiEmbeddingRequest": {
+        "description": "OpenAI-compatible embeddings request.",
+        "type": "object",
+        "properties": {
+          "dimensions": {
+            "description": "Optional vector size.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "encoding_format": {
+            "description": "Optional response encoding.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpenAiEmbeddingEncoding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input": {
+            "description": "Text or ordered text batch.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OpenAiEmbeddingInput"
+              }
+            ]
+          },
+          "model": {
+            "description": "Fixed local embedding model.",
+            "type": "string"
+          },
+          "user": {
+            "description": "End-user metadata accepted as a documented no-op.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "input"
+        ]
+      },
+      "OpenAiEmbeddingResponse": {
+        "description": "Complete `OpenAI` embedding response.",
+        "type": "object",
+        "properties": {
+          "data": {
+            "description": "Ordered indexed vectors.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OpenAiEmbeddingData"
+            }
+          },
+          "model": {
+            "description": "Fixed embedding model.",
+            "type": "string"
+          },
+          "object": {
+            "description": "Wire object discriminator.",
+            "type": "string"
+          },
+          "usage": {
+            "description": "Approximate input usage.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OpenAiEmbeddingUsage"
+              }
+            ]
+          }
+        },
+        "required": [
+          "object",
+          "data",
+          "model",
+          "usage"
+        ]
+      },
+      "OpenAiEmbeddingUsage": {
+        "description": "`OpenAI` embedding token accounting.",
+        "type": "object",
+        "properties": {
+          "prompt_tokens": {
+            "description": "Approximate tokens consumed by all inputs.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "total_tokens": {
+            "description": "Same as prompt tokens because embeddings emit no tokens.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "prompt_tokens",
+          "total_tokens"
+        ]
+      },
+      "OpenAiErrorKind": {
+        "description": "`OpenAI`'s serialized error classification.",
+        "oneOf": [
+          {
+            "description": "Invalid, unsupported, or oversized request input.",
+            "type": "string",
+            "const": "invalid_request_error"
+          },
+          {
+            "description": "Missing or invalid authentication.",
+            "type": "string",
+            "const": "authentication_error"
+          },
+          {
+            "description": "Internal server failure.",
+            "type": "string",
+            "const": "server_error"
+          }
+        ]
+      },
+      "OpenAiFailureBody": {
+        "description": "`OpenAI` error object, also referenced by Responses API progress envelopes.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Provider error classification.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OpenAiErrorKind"
+              }
+            ]
+          },
+          "code": {
+            "description": "Stable diagnostic code.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "Human-readable failure detail.",
+            "type": "string"
+          },
+          "param": {
+            "description": "Request field associated with the failure, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message",
+          "type"
+        ]
+      },
+      "OpenAiFailureResponse": {
+        "description": "`OpenAI` top-level failure envelope.",
+        "type": "object",
+        "properties": {
+          "error": {
+            "description": "Provider-native error payload.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OpenAiFailureBody"
+              }
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "OutputConfig": {
+        "description": "Anthropic response-output controls.",
+        "type": "object",
+        "properties": {
+          "format": {
+            "description": "Optional schema format for direct assistant text.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutputFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effort": {
+            "description": "Requested response effort, accepted without changing ELIZA.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutputEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "OutputEffort": {
+        "description": "Current Anthropic effort levels.",
+        "oneOf": [
+          {
+            "description": "Low effort.",
+            "type": "string",
+            "const": "low"
+          },
+          {
+            "description": "Medium effort.",
+            "type": "string",
+            "const": "medium"
+          },
+          {
+            "description": "High effort.",
+            "type": "string",
+            "const": "high"
+          },
+          {
+            "description": "Extra-high effort.",
+            "type": "string",
+            "const": "xhigh"
+          },
+          {
+            "description": "Maximum effort.",
+            "type": "string",
+            "const": "max"
+          },
+          {
+            "description": "Any effort outside the current contract.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "OutputFormat": {
+        "description": "Structured-output format nested inside Anthropic output configuration.",
+        "oneOf": [
+          {
+            "description": "Conform final text to a supplied JSON Schema.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "json_schema"
+              },
+              "schema": {
+                "description": "JSON Schema compiled into the local deterministic witness.",
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Any future or unknown output format.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "OutputFormat2": {
+        "description": "Named or schema-driven structured-output request.",
+        "anyOf": [
+          {
+            "description": "Named output format.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OutputFormatName"
+              }
+            ]
+          },
+          {
+            "description": "Explicit JSON Schema output contract.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      "OutputFormatName": {
+        "description": "Named structured-output format accepted by Ollama.",
+        "oneOf": [
+          {
+            "description": "JSON object output.",
+            "type": "string",
+            "const": "json"
+          },
+          {
+            "description": "Any named format outside the supported subset.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ReasoningEffort": {
+        "description": "`OpenAI` reasoning effort values accepted by current native APIs.",
+        "oneOf": [
+          {
+            "description": "Disable reasoning effort.",
+            "type": "string",
+            "const": "none"
+          },
+          {
+            "description": "Minimal effort.",
+            "type": "string",
+            "const": "minimal"
+          },
+          {
+            "description": "Low effort.",
+            "type": "string",
+            "const": "low"
+          },
+          {
+            "description": "Medium effort.",
+            "type": "string",
+            "const": "medium"
+          },
+          {
+            "description": "High effort.",
+            "type": "string",
+            "const": "high"
+          },
+          {
+            "description": "Extra-high effort.",
+            "type": "string",
+            "const": "xhigh"
+          },
+          {
+            "description": "Maximum effort.",
+            "type": "string",
+            "const": "max"
+          },
+          {
+            "description": "Any effort outside the current contract.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ReasoningSummary": {
+        "description": "`OpenAI` readable-summary modes.",
+        "oneOf": [
+          {
+            "description": "Provider-selected summary detail.",
+            "type": "string",
+            "const": "auto"
+          },
+          {
+            "description": "Concise summary.",
+            "type": "string",
+            "const": "concise"
+          },
+          {
+            "description": "Detailed summary.",
+            "type": "string",
+            "const": "detailed"
+          },
+          {
+            "description": "Any summary mode outside the current contract.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ResponseFormat": {
+        "description": "Gemini response-format envelope for generated text, audio, or images.",
+        "type": "object",
+        "properties": {
+          "audio": {
+            "description": "Audio-specific response properties.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechAudioConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "image": {
+            "description": "Image-specific response properties.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageResponseFormat2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "description": "Text-specific response properties.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextResponseFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ResponsesReasoningConfig": {
+        "description": "Responses reasoning configuration.",
+        "type": "object",
+        "properties": {
+          "effort": {
+            "description": "Requested effort, accepted without changing ELIZA.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generate_summary": {
+            "description": "Deprecated readable-summary alias.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "description": "Current readable-summary selector.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ResponsesReasoningSummary": {
+        "description": "One readable summary part inside a reasoning output item.",
+        "oneOf": [
+          {
+            "description": "Readable mechanical summary text.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "summary_text"
+              },
+              "text": {
+                "description": "Summary payload.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          }
+        ]
+      },
+      "ResponsesRequest": {
+        "description": "Responses API request accepted by the adapter.",
+        "type": "object",
+        "properties": {
+          "input": {
+            "description": "Input text or structured items.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesRequestInput"
+              }
+            ]
+          },
+          "instructions": {
+            "description": "Optional system-like instructions.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesRequestContent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_output_tokens": {
+            "description": "Maximum output-token allowance accepted for compatibility.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0
+          },
+          "model": {
+            "description": "Requested model identifier.",
+            "type": "string"
+          },
+          "reasoning": {
+            "description": "Native reasoning controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesReasoningConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stream": {
+            "description": "Whether to use the event-stream response shape.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Requested text-output controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesRequestTextConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_choice": {
+            "description": "Tool-selection policy.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesRequestToolChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "description": "Functions offered to the model.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ResponsesRequestTool"
+            }
+          }
+        },
+        "required": [
+          "model",
+          "input"
+        ]
+      },
+      "ResponsesRequestContent": {
+        "description": "Text or structured parts accepted as Responses message content.",
+        "anyOf": [
+          {
+            "description": "Shorthand plain-text content.",
+            "type": "string"
+          },
+          {
+            "description": "Structured content parts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponsesRequestContentPart"
+            }
+          }
+        ]
+      },
+      "ResponsesRequestContentPart": {
+        "description": "One structured content part accepted by the Responses API.",
+        "oneOf": [
+          {
+            "description": "User-provided input text.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "input_text"
+              },
+              "text": {
+                "description": "Text carried by the part.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "description": "Prior assistant output text.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "output_text"
+              },
+              "text": {
+                "description": "Text carried by the part.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "description": "Generic text compatibility shape.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "description": "Text carried by the part.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "description": "User-provided image URL or uploaded-file reference.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "input_image"
+              },
+              "detail": {
+                "description": "Accepted detail hint with no effect on deterministic sampling.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ImageDetail"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "file_id": {
+                "description": "Provider-owned uploaded file identifier.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "image_url": {
+                "description": "Data or HTTP(S) image URL.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Any content-part kind outside the supported subset.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "ResponsesRequestInput": {
+        "description": "Shorthand text or structured items accepted as Responses input.",
+        "anyOf": [
+          {
+            "description": "Shorthand plain-text input.",
+            "type": "string"
+          },
+          {
+            "description": "Structured input items.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponsesRequestInputItem"
+            }
+          }
+        ]
+      },
+      "ResponsesRequestInputItem": {
+        "description": "One structured item accepted by the Responses API.",
+        "anyOf": [
+          {
+            "description": "Conversation message, with or without the optional `type` field.",
+            "type": "object",
+            "properties": {
+              "content": {
+                "description": "Message payload.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ResponsesRequestContent"
+                  }
+                ]
+              },
+              "role": {
+                "description": "Message author role.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ResponsesRequestRole"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "role",
+              "content"
+            ]
+          },
+          {
+            "description": "Input item identified by a required `type` field.",
+            "type": "object",
+            "oneOf": [
+              {
+                "description": "Function invocation from a prior model response.",
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "function_call"
+                  },
+                  "arguments": {
+                    "description": "Arguments supplied to the function.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ToolFunctionArguments"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "description": "Requested function name.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              {
+                "description": "Client-provided result from a prior function call.",
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "function_call_output"
+                  },
+                  "output": {
+                    "description": "Returned function value.",
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ResponsesRequestToolOutput"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              {
+                "description": "Prior reasoning output returned unchanged by a client.",
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "reasoning"
+                  },
+                  "encrypted_content": {
+                    "description": "Prior opaque reasoning token.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "summary": {
+                    "description": "Prior readable summary parts.",
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "$ref": "#/components/schemas/ResponsesRequestInputReasoningSummary"
+                    }
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              {
+                "description": "Any input-item kind outside the supported subset.",
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "unsupported"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "ResponsesRequestInputReasoningSummary": {
+        "description": "One prior reasoning summary part accepted in Responses history.",
+        "oneOf": [
+          {
+            "description": "Readable summary text.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "summary_text"
+              },
+              "text": {
+                "description": "Summary payload.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "description": "Any summary part outside the current contract.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "ResponsesRequestNamedToolChoice": {
+        "description": "Named function selected by a Responses request.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Tool-kind discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind"
+              }
+            ]
+          },
+          "name": {
+            "description": "Selected function name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "ResponsesRequestRole": {
+        "description": "Role attached to an inbound Responses message item.",
+        "oneOf": [
+          {
+            "description": "Human-authored input.",
+            "type": "string",
+            "const": "user"
+          },
+          {
+            "description": "System instruction.",
+            "type": "string",
+            "const": "system"
+          },
+          {
+            "description": "Developer instruction.",
+            "type": "string",
+            "const": "developer"
+          },
+          {
+            "description": "Prior model-authored output.",
+            "type": "string",
+            "const": "assistant"
+          },
+          {
+            "description": "Any role outside the supported subset.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ResponsesRequestTextConfig": {
+        "description": "Text-output configuration for a Responses request.",
+        "type": "object",
+        "properties": {
+          "format": {
+            "description": "Requested text format.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesRequestTextFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ResponsesRequestTextFormat": {
+        "description": "Text-output format requested from the Responses API.",
+        "oneOf": [
+          {
+            "description": "Plain text output.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Wrap final text in the deterministic JSON object.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "json_object"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Conform final text to a supplied JSON Schema.",
+            "type": "object",
+            "properties": {
+              "description": {
+                "description": "Optional schema description accepted without changing local output.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "type": "string",
+                "const": "json_schema"
+              },
+              "name": {
+                "description": "Nonblank schema identity required by the `OpenAI` contract.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "schema": {
+                "description": "JSON Schema compiled into the local deterministic witness.",
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": true
+              },
+              "strict": {
+                "description": "Strictness hint accepted as a no-op because local output is always exact.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Any text format outside the supported subset.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "ResponsesRequestTool": {
+        "description": "Function tool offered through the Responses API.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "Optional human-readable function description.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "Tool-kind discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind"
+              }
+            ]
+          },
+          "name": {
+            "description": "Function name exposed to the model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parameters": {
+            "description": "JSON Schema describing accepted parameters.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "ResponsesRequestToolChoice": {
+        "description": "Named or mode-based Responses tool-selection policy.",
+        "anyOf": [
+          {
+            "description": "General selection mode.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolChoiceMode"
+              }
+            ]
+          },
+          {
+            "description": "One required named function.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesRequestNamedToolChoice"
+              }
+            ]
+          }
+        ]
+      },
+      "ResponsesRequestToolOutput": {
+        "description": "Text or structured JSON accepted as a Responses function result.",
+        "anyOf": [
+          {
+            "description": "Plain-text function result.",
+            "type": "string"
+          },
+          {
+            "description": "Structured JSON function result.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      "ResponsesResponse": {
+        "description": "Complete Responses API response.",
+        "type": "object",
+        "properties": {
+          "created_at": {
+            "description": "Unix timestamp when the response was created.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "error": {
+            "description": "Provider error, absent for successful responses.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpenAiFailureBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "description": "Provider-shaped response identifier.",
+            "type": "string"
+          },
+          "incomplete_details": {
+            "description": "Incompletion detail, absent for successful responses.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "Model that produced the response.",
+            "type": "string"
+          },
+          "object": {
+            "description": "Wire object discriminator.",
+            "type": "string"
+          },
+          "output": {
+            "description": "Generated output items.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponsesResponseOutput"
+            }
+          },
+          "output_text": {
+            "description": "Convenience concatenation of generated text.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Final response lifecycle state.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesResponseStatus"
+              }
+            ]
+          },
+          "usage": {
+            "description": "Request and response token counts.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesResponseUsage"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created_at",
+          "status",
+          "model",
+          "output",
+          "output_text",
+          "usage"
+        ]
+      },
+      "ResponsesResponseInputTokenDetails": {
+        "description": "Additional accounting for Responses input tokens.",
+        "type": "object",
+        "properties": {
+          "cached_tokens": {
+            "description": "Input tokens served from a cache.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "cached_tokens"
+        ]
+      },
+      "ResponsesResponseOutput": {
+        "description": "One output item emitted by the Responses API.",
+        "oneOf": [
+          {
+            "description": "Readable reasoning summary requested by the client.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "reasoning"
+              },
+              "encrypted_content": {
+                "description": "Stable opaque fixture token over the trace.",
+                "type": "string"
+              },
+              "id": {
+                "description": "Provider-shaped output-item identifier.",
+                "type": "string"
+              },
+              "status": {
+                "description": "Current item lifecycle state.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ResponsesResponseStatus"
+                  }
+                ]
+              },
+              "summary": {
+                "description": "Ordered readable summary parts.",
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ResponsesReasoningSummary"
+                }
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "status",
+              "summary",
+              "encrypted_content"
+            ]
+          },
+          {
+            "description": "Assistant text message.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "message"
+              },
+              "content": {
+                "description": "Generated message content.",
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ResponsesResponseText"
+                }
+              },
+              "id": {
+                "description": "Provider-shaped output-item identifier.",
+                "type": "string"
+              },
+              "role": {
+                "description": "Fixed assistant role.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AssistantRole"
+                  }
+                ]
+              },
+              "status": {
+                "description": "Current item lifecycle state.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ResponsesResponseStatus"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "status",
+              "role",
+              "content"
+            ]
+          },
+          {
+            "description": "Assistant request to invoke a function.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "function_call"
+              },
+              "arguments": {
+                "description": "Arguments encoded as JSON text.",
+                "type": "string"
+              },
+              "call_id": {
+                "description": "Provider-shaped function-call identifier.",
+                "type": "string"
+              },
+              "id": {
+                "description": "Provider-shaped output-item identifier.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Requested function name.",
+                "type": "string"
+              },
+              "status": {
+                "description": "Current item lifecycle state.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ResponsesResponseStatus"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "call_id",
+              "name",
+              "arguments",
+              "status"
+            ]
+          }
+        ]
+      },
+      "ResponsesResponseOutputTokenDetails": {
+        "description": "Additional accounting for Responses output tokens.",
+        "type": "object",
+        "properties": {
+          "reasoning_tokens": {
+            "description": "Output tokens attributed to hidden reasoning.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "reasoning_tokens"
+        ]
+      },
+      "ResponsesResponseStatus": {
+        "description": "Lifecycle state of a Responses API response or output item.",
+        "oneOf": [
+          {
+            "description": "Generation remains active.",
+            "type": "string",
+            "const": "in_progress"
+          },
+          {
+            "description": "Generation completed successfully.",
+            "type": "string",
+            "const": "completed"
+          }
+        ]
+      },
+      "ResponsesResponseText": {
+        "description": "Generated text content in a Responses message output.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Content-kind discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesResponseTextKind"
+              }
+            ]
+          },
+          "annotations": {
+            "description": "Text annotations, empty in this emulator.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "logprobs": {
+            "description": "Token log probabilities, empty in this emulator.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "text": {
+            "description": "Generated text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text",
+          "annotations",
+          "logprobs"
+        ]
+      },
+      "ResponsesResponseTextKind": {
+        "description": "Content kind emitted inside a Responses message output.",
+        "oneOf": [
+          {
+            "description": "Generated output text.",
+            "type": "string",
+            "const": "output_text"
+          }
+        ]
+      },
+      "ResponsesResponseUsage": {
+        "description": "Token counts serialized by the Responses API.",
+        "type": "object",
+        "properties": {
+          "input_tokens": {
+            "description": "Estimated tokens consumed by request input.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "input_tokens_details": {
+            "description": "Additional input-token accounting.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesResponseInputTokenDetails"
+              }
+            ]
+          },
+          "output_tokens": {
+            "description": "Estimated tokens emitted by the response.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "output_tokens_details": {
+            "description": "Additional output-token accounting.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResponsesResponseOutputTokenDetails"
+              }
+            ]
+          },
+          "total_tokens": {
+            "description": "Combined input and output token count.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "input_tokens",
+          "input_tokens_details",
+          "output_tokens",
+          "output_tokens_details",
+          "total_tokens"
+        ]
+      },
+      "SpeechAudioConfig": {
+        "description": "Encoded-audio properties requested by Gemini clients.",
+        "type": "object",
+        "properties": {
+          "mimeType": {
+            "description": "Requested audio encoding.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechAudioFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sampleRate": {
+            "description": "Requested output sample rate.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "SpeechAudioFormat": {
+        "description": "Audio encoding requested from Gemini speech generation.",
+        "oneOf": [
+          {
+            "description": "RIFF/WAVE-wrapped signed PCM.",
+            "type": "string",
+            "const": "AUDIO_WAV"
+          },
+          {
+            "description": "Headerless big-endian signed PCM.",
+            "type": "string",
+            "const": "AUDIO_L16"
+          },
+          {
+            "description": "Headerless G.711 mu-law.",
+            "type": "string",
+            "const": "AUDIO_MULAW"
+          },
+          {
+            "description": "Headerless G.711 A-law.",
+            "type": "string",
+            "const": "AUDIO_ALAW"
+          },
+          {
+            "description": "Any audio encoding outside the supported subset.",
+            "type": "string",
+            "const": "UNSUPPORTED"
+          }
+        ]
+      },
+      "SpeechConfig": {
+        "description": "Voice configuration for Gemini audio generation.",
+        "type": "object",
+        "properties": {
+          "multiSpeakerVoiceConfig": {
+            "description": "Multi-speaker voice assignments.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechMultiSpeakerVoiceConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "voiceConfig": {
+            "description": "Single-speaker voice selector.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechVoiceConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SpeechMultiSpeakerVoiceConfig": {
+        "description": "Gemini multi-speaker voice map.",
+        "type": "object",
+        "properties": {
+          "speakerVoiceConfigs": {
+            "description": "Per-speaker voice assignments.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/SpeechSpeakerVoiceConfig"
+            }
+          }
+        }
+      },
+      "SpeechPayload": {
+        "description": "OpenAI-compatible speech request payload.",
+        "type": "object",
+        "properties": {
+          "input": {
+            "description": "Text to pronounce.",
+            "type": "string"
+          },
+          "instructions": {
+            "description": "Optional prose interpreted as simple style keywords.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "Requested model identifier.",
+            "type": "string"
+          },
+          "response_format": {
+            "description": "Optional audio encoding.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechResponseFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "speed": {
+            "description": "Optional speaking-rate multiplier.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "stream_format": {
+            "description": "Optional raw-audio or SSE delivery selector.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechStreamFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "voice": {
+            "description": "Named voice or voice reference.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpeechVoice"
+              }
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "input",
+          "voice"
+        ]
+      },
+      "SpeechPrebuiltVoiceConfig": {
+        "description": "Gemini's nested prebuilt-voice selector.",
+        "type": "object",
+        "properties": {
+          "voiceName": {
+            "description": "Prebuilt voice name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SpeechResponseFormat": {
+        "description": "`OpenAI` speech response format accepted on the wire.",
+        "oneOf": [
+          {
+            "description": "MPEG Layer III audio.",
+            "type": "string",
+            "const": "mp3"
+          },
+          {
+            "description": "RIFF/WAVE signed PCM audio.",
+            "type": "string",
+            "const": "wav"
+          },
+          {
+            "description": "Headerless signed PCM audio.",
+            "type": "string",
+            "const": "pcm"
+          },
+          {
+            "description": "Opus, which this fixture does not encode.",
+            "type": "string",
+            "const": "opus"
+          },
+          {
+            "description": "AAC, which this fixture does not encode.",
+            "type": "string",
+            "const": "aac"
+          },
+          {
+            "description": "FLAC, which this fixture does not encode.",
+            "type": "string",
+            "const": "flac"
+          },
+          {
+            "description": "Future or unknown provider format.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "SpeechSpeakerVoiceConfig": {
+        "description": "Voice assigned to one named speaker.",
+        "type": "object",
+        "properties": {
+          "speaker": {
+            "description": "Speaker label referenced by content parts.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "voiceConfig": {
+            "description": "Voice used for this speaker.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechVoiceConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SpeechStreamFormat": {
+        "description": "`OpenAI` speech delivery format accepted on the wire.",
+        "oneOf": [
+          {
+            "description": "Raw encoded audio bytes.",
+            "type": "string",
+            "const": "audio"
+          },
+          {
+            "description": "Base64 audio deltas carried by server-sent events.",
+            "type": "string",
+            "const": "sse"
+          },
+          {
+            "description": "Future or unknown provider delivery format.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "SpeechVoice": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id"
+            ]
+          }
+        ]
+      },
+      "SpeechVoiceConfig": {
+        "description": "Voice selector accepted by the local Gemini speech extension.",
+        "type": "object",
+        "properties": {
+          "prebuiltVoiceConfig": {
+            "description": "Gemini-compatible nested voice selector.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechPrebuiltVoiceConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "voice": {
+            "description": "Direct voice name accepted as a compatibility shorthand.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TextResponseFormat": {
+        "description": "Current Gemini text response-format properties.",
+        "type": "object",
+        "properties": {
+          "mimeType": {
+            "description": "Requested response MIME type.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextResponseMimeType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema": {
+            "description": "Optional JSON Schema for `APPLICATION_JSON` output.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "TextResponseMimeType": {
+        "description": "MIME type accepted by Gemini's current text response-format control.",
+        "oneOf": [
+          {
+            "description": "Deterministic JSON text.",
+            "type": "string",
+            "const": "APPLICATION_JSON"
+          },
+          {
+            "description": "Ordinary ELIZA text.",
+            "type": "string",
+            "const": "TEXT_PLAIN"
+          },
+          {
+            "description": "Any future or unknown MIME type.",
+            "type": "string",
+            "const": "UNSUPPORTED"
+          }
+        ]
+      },
+      "Thinking": {
+        "description": "Anthropic thinking mode.",
+        "oneOf": [
+          {
+            "description": "Explicit thinking with a required budget.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "enabled"
+              },
+              "budget_tokens": {
+                "description": "Requested thinking budget.",
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              },
+              "display": {
+                "description": "Returned thinking visibility.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ThinkingDisplay"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "budget_tokens"
+            ]
+          },
+          {
+            "description": "Provider-selected adaptive thinking.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "adaptive"
+              },
+              "display": {
+                "description": "Returned thinking visibility.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ThinkingDisplay"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Disable thinking.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "disabled"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Limit thinking to tool boundaries; no readable trace is returned here.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "between_tools"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Any thinking mode outside the current contract.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "ThinkingConfig": {
+        "description": "Gemini thought visibility and budget controls.",
+        "type": "object",
+        "properties": {
+          "includeThoughts": {
+            "description": "Whether returned thought summaries are readable.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "thinkingBudget": {
+            "description": "Dynamic (`-1`), disabled (`0`), or positive thinking budget.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "thinkingLevel": {
+            "description": "Named thinking level used instead of a numeric budget.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThinkingLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ThinkingDisplay": {
+        "description": "Visibility requested for returned thinking.",
+        "oneOf": [
+          {
+            "description": "Return a readable summary.",
+            "type": "string",
+            "const": "summarized"
+          },
+          {
+            "description": "Omit thinking from the response.",
+            "type": "string",
+            "const": "omitted"
+          },
+          {
+            "description": "Any display mode outside the current contract.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ThinkingLevel": {
+        "description": "Named Gemini thinking level.",
+        "oneOf": [
+          {
+            "description": "Provider-selected level.",
+            "type": "string",
+            "const": "UNSPECIFIED"
+          },
+          {
+            "description": "Smallest supported thinking level.",
+            "type": "string",
+            "const": "MINIMAL"
+          },
+          {
+            "description": "Low thinking level.",
+            "type": "string",
+            "const": "LOW"
+          },
+          {
+            "description": "Medium thinking level.",
+            "type": "string",
+            "const": "MEDIUM"
+          },
+          {
+            "description": "High thinking level.",
+            "type": "string",
+            "const": "HIGH"
+          },
+          {
+            "description": "Any level outside the current contract.",
+            "type": "string",
+            "const": "UNSUPPORTED"
+          }
+        ]
+      },
+      "Tool": {
+        "description": "Anthropic function-tool declaration.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "Optional human-readable tool description.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_schema": {
+            "description": "JSON Schema describing accepted input.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "name": {
+            "description": "Tool name exposed to the model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Tool2": {
+        "description": "Ollama tool declaration.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Tool-kind discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind2"
+              }
+            ]
+          },
+          "function": {
+            "description": "Function definition for function tools.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionDefinition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "ToolCall": {
+        "description": "One Ollama tool call from an assistant message.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "Tool-call discriminator.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionKind2"
+              }
+            ]
+          },
+          "function": {
+            "description": "Function invocation payload.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolCalledFunction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "ToolCalledFunction": {
+        "description": "Function payload nested inside an Ollama tool call.",
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "description": "Arguments supplied to the function.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "name": {
+            "description": "Function name requested by the model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ToolChoice": {
+        "description": "Anthropic tool-selection policy.",
+        "oneOf": [
+          {
+            "description": "Let the model decide whether to call a tool.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "auto"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Prevent tool calls.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "none"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Require some tool call.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "any"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Require one named tool.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "tool"
+              },
+              "name": {
+                "description": "Selected tool name.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "description": "Any policy outside the supported subset.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
+      "ToolChoice2": {
+        "description": "Named or mode-based Ollama tool-selection policy.",
+        "anyOf": [
+          {
+            "description": "General selection mode.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolChoiceMode2"
+              }
+            ]
+          },
+          {
+            "description": "One required named function.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolNamedChoice"
+              }
+            ]
+          }
+        ]
+      },
+      "ToolChoiceMode": {
+        "description": "Named tool-selection modes accepted by `OpenAI` APIs.",
+        "oneOf": [
+          {
+            "description": "Let the model decide whether to call a tool.",
+            "type": "string",
+            "const": "auto"
+          },
+          {
+            "description": "Prevent tool calls.",
+            "type": "string",
+            "const": "none"
+          },
+          {
+            "description": "Require a tool call.",
+            "type": "string",
+            "const": "required"
+          },
+          {
+            "description": "Any mode outside the supported subset.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ToolChoiceMode2": {
+        "description": "Named Ollama tool-selection mode.",
+        "oneOf": [
+          {
+            "description": "Let the model decide whether to call a tool.",
+            "type": "string",
+            "const": "auto"
+          },
+          {
+            "description": "Prevent tool calls.",
+            "type": "string",
+            "const": "none"
+          },
+          {
+            "description": "Require a tool call.",
+            "type": "string",
+            "const": "required"
+          },
+          {
+            "description": "Any mode outside the supported subset.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ToolConfig": {
+        "description": "Top-level Gemini tool configuration.",
+        "type": "object",
+        "properties": {
+          "functionCallingConfig": {
+            "description": "Function-selection controls.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionCallingConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ToolFunctionArguments": {
+        "description": "Encoded or structured forms accepted for function arguments.",
+        "anyOf": [
+          {
+            "description": "JSON encoded as a string.",
+            "type": "string"
+          },
+          {
+            "description": "Already-decoded JSON object.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      "ToolFunctionCallingConfig": {
+        "description": "Gemini controls for function selection.",
+        "type": "object",
+        "properties": {
+          "allowedFunctionNames": {
+            "description": "Function names eligible when calls are required.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "mode": {
+            "description": "Requested selection mode.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolFunctionCallingMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ToolFunctionCallingMode": {
+        "description": "Gemini function-calling policy mode.",
+        "oneOf": [
+          {
+            "description": "Let the model decide whether to call a function.",
+            "type": "string",
+            "const": "AUTO"
+          },
+          {
+            "description": "Let the model choose while validating calls against declarations.",
+            "type": "string",
+            "const": "VALIDATED"
+          },
+          {
+            "description": "Prevent function calls.",
+            "type": "string",
+            "const": "NONE"
+          },
+          {
+            "description": "Require a function call.",
+            "type": "string",
+            "const": "ANY"
+          },
+          {
+            "description": "Any mode outside the supported subset.",
+            "type": "string",
+            "const": "UNSUPPORTED"
+          }
+        ]
+      },
+      "ToolFunctionDeclaration": {
+        "description": "Gemini function declaration offered to the model.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "Optional human-readable function description.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Function name exposed to the model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parameters": {
+            "description": "JSON Schema describing accepted parameters.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "ToolFunctionDefinition": {
+        "description": "Ollama function-tool declaration.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "Optional human-readable function description.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Function name exposed to the model.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parameters": {
+            "description": "JSON Schema describing accepted parameters.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "ToolFunctionKind": {
+        "description": "Tool kind understood by the `OpenAI` compatibility adapter.",
+        "oneOf": [
+          {
+            "description": "Function tool or function call.",
+            "type": "string",
+            "const": "function"
+          },
+          {
+            "description": "Any non-function extension kind.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ToolFunctionKind2": {
+        "description": "Tool kind understood by the Ollama compatibility adapter.",
+        "oneOf": [
+          {
+            "description": "Function tool or function call.",
+            "type": "string",
+            "const": "function"
+          },
+          {
+            "description": "Any non-function extension kind.",
+            "type": "string",
+            "const": "unsupported"
+          }
+        ]
+      },
+      "ToolGroup": {
+        "description": "Gemini tool group containing function declarations.",
+        "type": "object",
+        "properties": {
+          "functionDeclarations": {
+            "description": "Functions exposed by this group.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ToolFunctionDeclaration"
+            }
+          }
+        }
+      },
+      "ToolNamedChoice": {
+        "description": "Ollama named tool-choice payload.",
+        "type": "object",
+        "properties": {
+          "function": {
+            "description": "Selected function.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolNamedFunction"
+              }
+            ]
+          }
+        },
+        "required": [
+          "function"
+        ]
+      },
+      "ToolNamedFunction": {
+        "description": "Function selector nested inside a named tool choice.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Selected function name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ToolResultContent": {
+        "description": "Accepted wire shapes for tool-result content.",
+        "anyOf": [
+          {
+            "description": "Shorthand plain-text result.",
+            "type": "string"
+          },
+          {
+            "description": "Structured result blocks.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolResultTextBlock"
+            }
+          },
+          {
+            "description": "Structured JSON result.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      "ToolResultTextBlock": {
+        "description": "One structured block inside a tool result.",
+        "oneOf": [
+          {
+            "description": "Plain text returned by the tool.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "description": "Text carried by the block.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "description": "Any result block kind outside the supported subset.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://example.com/api"
+    }
+  ]
+}
