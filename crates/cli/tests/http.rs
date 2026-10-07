@@ -250,6 +250,17 @@ fn http_contracts_model_aliases() -> io::Result<()> {
     server.run_hurl(&contracts, Some("secret"))
 }
 
+/// A shared chat/embedding name retains one descriptor and both endpoint bindings.
+///
+/// # Errors
+/// Returns an I/O error when the server or shared-name contract fails.
+#[test]
+fn http_contracts_shared_model_alias() -> io::Result<()> {
+    let server = TestServer::spawn(&["--chat-model", "fnv-embed"])?;
+    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/aliases_shared.hurl");
+    server.run_hurl(&contracts, None)
+}
+
 /// Prove image routes raise Axum's former two-mebibyte JSON body limit.
 ///
 /// # Errors
