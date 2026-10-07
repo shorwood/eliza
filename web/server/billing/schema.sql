@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS credentials (
   kind text NOT NULL CHECK (kind IN ('login', 'session')),
   expires_at timestamptz NOT NULL
 );
+CREATE INDEX IF NOT EXISTS accounts_repair ON accounts(next_reconcile_at) WHERE customer_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS credentials_expiry ON credentials(expires_at);
 CREATE TABLE IF NOT EXISTS subscriptions (
   id text PRIMARY KEY,
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   expires_at timestamptz,
   revoked_at timestamptz
 );
+CREATE INDEX IF NOT EXISTS subscriptions_account ON subscriptions(account_id);
 CREATE INDEX IF NOT EXISTS keys_account ON api_keys(account_id);
 CREATE TABLE IF NOT EXISTS billing_events (
   id text PRIMARY KEY,
@@ -45,4 +47,5 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   count integer NOT NULL,
   expires_at timestamptz NOT NULL
 );
+CREATE INDEX IF NOT EXISTS events_pending ON billing_events(retry_at) WHERE done_at IS NULL;
 COMMIT;

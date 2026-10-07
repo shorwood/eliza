@@ -32,7 +32,7 @@ export default defineEventHandler(event => safely(event, async () => {
     await billing.limit('confirm-ip', getRequestIP(event) ?? 'unknown', 30, 900)
     const session = await billing.consume(stringField(body, 'token'))
     setCookie(event, cookie, session, { httpOnly: true, secure: config.billingOrigin.startsWith('https:'),
-      sameSite: 'strict', path: '/', maxAge: 7 * 86400 })
+      sameSite: 'lax', path: '/', maxAge: 7 * 86400 })
     return { signedIn: true }
   }
   const account = await authenticated(event)

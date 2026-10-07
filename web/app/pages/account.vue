@@ -85,6 +85,7 @@ async function logout() {
         <p>Signed in as {{ state.account.email }}. <button :disabled="busy" @click="logout">Sign out</button></p>
         <p v-if="state.account.eligible">Supporter access through {{ new Date(state.account.eligibleUntil!).toLocaleDateString('en-US', { timeZone: 'UTC' }) }} (UTC).</p>
         <p v-else>No confirmed supporter subscription. Returning from checkout does not activate access.</p>
+        <button :disabled="busy" @click="perform(refresh)">Check subscription status</button>
         <p><button :disabled="busy" @click="portal">Manage billing</button> · <a href="/support">Support ELIZA</a></p>
         <form v-if="state.account.eligible" @submit.prevent="keyAction('create')">
           <label for="label">Key label</label>

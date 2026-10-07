@@ -30,6 +30,10 @@ test('email link needs explicit confirmation; keys reveal once, rotate and revok
   expect(await sql`SELECT * FROM credentials WHERE hash = ${hash(token)}`).toHaveLength(1)
   await page.getByRole('button', { name: 'Confirm sign-in' }).click()
   await expect(page.getByRole('button', { name: 'Create key' })).toBeVisible()
+  // Returning from hosted Stripe is a cross-site top-level GET. Preserve the session.
+  await page.goto('http://localhost:18878/')
+  await page.goto(`${origin}/account`)
+  await expect(page.getByRole('button', { name: 'Create key' })).toBeVisible()
   await page.getByRole('button', { name: 'Create key' }).click()
   await expect(page.getByRole('heading', { name: 'Save this key now' })).toBeVisible()
   const key = await page.locator('.secret-key').innerText()
@@ -55,7 +59,7 @@ test('HTTP sessions reject foreign origins and access to another account key', a
   expect(confirm.status()).toBe(200)
   const cookie = confirm.headers()['set-cookie']!
   expect(cookie).toContain('HttpOnly')
-  expect(cookie).toContain('SameSite=Strict')
+  expect(cookie).toContain('SameSite=Lax')
   expect((await request.post(`${origin}/account/confirm`, { data: { token: owner.token }, headers: { Origin: origin } })).status()).toBe(401)
   const other = await seed()
   const id = randomUUID()

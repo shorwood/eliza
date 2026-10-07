@@ -203,3 +203,21 @@ test('SMTP requires verified TLS remotely and cannot enable secret logging throu
   expect(mail.options).toMatchObject({ requireTLS: true, tls: { rejectUnauthorized: true }, debug: false })
   mail.close()
 })
+
+test('failed account reconciliation backs off without starving other accounts', async () => {
+  const owner = await paid()
+  const other = await account('other@example.test')
+  snapshots = []
+  await billing().checkout(other.id)
+  now += 61_000
+  vi.mocked(payments.subscriptions).mockImplementation(async (customer) => {
+    if (customer === owner.customer) throw new Error('unavailable')
+    return [{ id: 'sub_other', status: 'active', paidUntil: now + 30 * DAY }]
+  })
+  expect(await billing().repair()).toMatchObject({ checked: 2, failures: 1 })
+  expect((await billing().summary(other.id)).eligible).toBe(true)
+  const calls = vi.mocked(payments.subscriptions).mock.calls.length
+  now++
+  expect(await billing().repair()).toMatchObject({ checked: 0, failures: 0 })
+  expect(payments.subscriptions).toHaveBeenCalledTimes(calls)
+})

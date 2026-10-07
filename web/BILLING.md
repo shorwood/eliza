@@ -53,7 +53,8 @@ socket IP intentionally does not trust arbitrary forwarded headers.
   The link holds the token in the fragment, not an access-log query parameter.
   GET/email scanners cannot consume it. An explicit confirm button POSTs it.
 - `POST /account/confirm {token}`: atomically consume link and create a seven-day
-  HttpOnly, SameSite=Strict session (Secure on HTTPS). Session hash stored in DB.
+  HttpOnly, SameSite=Lax session (Secure on HTTPS). Top-level returns from hosted
+  Stripe keep the session; mutations still require an exact Origin. Session hash stored in DB.
 - `POST /account/logout {}`: revoke that session and clear its cookie.
 - `POST /account/keys/create {label}`, `/keys/rotate {id,label}`, `/keys/revoke {id}`:
   owner-only. Creation requires current paid/grace eligibility; revocation remains
