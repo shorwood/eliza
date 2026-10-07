@@ -637,8 +637,8 @@ impl Reassembly {
 /// One keyword decomposition and its response cycle.
 #[derive(Clone, Debug)]
 pub(crate) struct Decomposition {
-    /// Index of the next response template.
-    pub(crate) next_reassembly: usize,
+    /// Index of this decomposition's session-local response counter.
+    pub(crate) counter_index: usize,
     /// Pattern matched against the normalized input.
     pub(crate) pattern: Vec<PatternItem>,
     /// Response and control templates in rotation order.
@@ -666,7 +666,7 @@ impl TryFrom<&Form> for Decomposition {
             return Err(form.error(ScriptErrorKind::EmptyReassembly));
         }
         Ok(Self {
-            next_reassembly: 0,
+            counter_index: 0,
             pattern,
             reassemblies,
         })
@@ -1279,8 +1279,10 @@ fn parse_header(forms: &mut impl Iterator<Item = Form>) -> Result<String, Script
 // -----------------------------------------------------------------------------
 
 /// Validated 1966 DOCTOR script.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Script {
+    /// Number of independent response counters needed by each session.
+    pub(crate) counter_count: usize,
     /// Opening response.
     pub(crate) greeting: String,
     /// Single hashed memory rule.
@@ -1319,7 +1321,16 @@ impl FromStr for Script {
             ));
         }
 
+        // Give each validated decomposition one session-local counter slot.
+        let mut counter_count = 0;
+        for decomposition in rules.values_mut().flat_map(|rule| &mut rule.decompositions) {
+            decomposition.counter_index = counter_count;
+            counter_count += 1;
+        }
+
+        // Freeze the rule definitions together with their required counter count.
         Ok(Self {
+            counter_count,
             greeting,
             memory,
             rules,
@@ -1356,6 +1367,12 @@ mod tests {
         assert!(script.rules.len() > MINIMUM_KEYWORD_RULES);
         assert_eq!(script.rules["COMPUTER"].precedence, 50);
         assert!(script.tags["FAMILY"].contains("MOTHER"));
+        let decompositions = script.rules.values().flat_map(|rule| &rule.decompositions);
+        let mut indices = decompositions
+            .map(|decomposition| decomposition.counter_index)
+            .collect::<Vec<_>>();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..script.counter_count).collect::<Vec<_>>());
     }
 
     /// Parses links, PRE, NEWKEY, and grouped patterns.

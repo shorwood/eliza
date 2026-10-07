@@ -1,6 +1,7 @@
 //! Public conversation API driven by the MAD machine.
 
 use std::fmt;
+use std::sync::Arc;
 
 use mad::machine::{Machine, RunState};
 use mad::program::Program;
@@ -28,9 +29,9 @@ const DRIVER_SOURCE: &str = include_str!("../programs/1966/eliza.mad");
 #[derive(Clone)]
 pub struct Doctor {
     /// Linked reconstruction driver.
-    program: Program,
+    program: Arc<Program>,
     /// Parsed 1966 keyword and memory rules.
-    script: Script,
+    script: Arc<Script>,
 }
 
 impl Doctor {
@@ -47,7 +48,10 @@ impl Doctor {
         let driver = SourceModule::parse("eliza-1966.mad", DRIVER_SOURCE)?;
         let program = Program::link(&[driver])?;
         let script = DOCTOR_SCRIPT.parse::<Script>()?;
-        Ok(Self { program, script })
+        Ok(Self {
+            program: Arc::new(program),
+            script: Arc::new(script),
+        })
     }
 
     /// Start an independent conversation with fresh response counters and
@@ -488,6 +492,8 @@ fn validate_input(input: &str) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::Doctor;
 
     /// # Panics
@@ -501,5 +507,25 @@ mod tests {
             session.greeting(),
             "HOW DO YOU DO. PLEASE TELL ME YOUR PROBLEM"
         );
+    }
+
+    /// Shared definitions outlive doctors without sharing conversation state.
+    ///
+    /// # Panics
+    /// Panics if shared ownership, startup, or response rotation changes.
+    #[test]
+    fn cloned_doctors_share_definitions_and_sessions_outlive_them() {
+        let doctor = Doctor::compile().unwrap();
+        let cloned = doctor.clone();
+        assert!(Arc::ptr_eq(&doctor.program, &cloned.program));
+        assert!(Arc::ptr_eq(&doctor.script, &cloned.script));
+        let mut first = doctor.session().unwrap();
+        let expected = first.respond("I NEED HELP").unwrap();
+        assert_ne!(first.respond("I NEED HELP").unwrap(), expected);
+        let mut fresh = cloned.session().unwrap();
+        drop(doctor);
+        drop(cloned);
+        assert_eq!(fresh.respond("I NEED HELP").unwrap(), expected);
+        assert!(!first.respond("I NEED HELP").unwrap().text.is_empty());
     }
 }
