@@ -1,7 +1,7 @@
 //! Anthropic adapter failures and wire rendering.
 use axum::Json;
 use axum::response::{IntoResponse, Response};
-use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
+use eliza_http::problem::{ApiError, NativeError, ProblemClass};
 use eliza_modality_chat as chat;
 use eliza_modality_image as image;
 use miette::Diagnostic;
@@ -102,7 +102,7 @@ pub(super) enum AnthropicError {
     },
 }
 
-impl ProblemDetails for AnthropicError {
+impl ApiError for AnthropicError {
     fn class(&self) -> ProblemClass {
         match self {
             Self::Image(source) => match source.kind() {
@@ -159,6 +159,10 @@ enum AnthropicErrorKind {
     RequestTooLarge,
     /// Internal server failure.
     ApiError,
+    /// Personal request allowance exhausted.
+    RateLimitError,
+    /// Shared service capacity is unavailable.
+    OverloadedError,
 }
 
 impl From<ProblemClass> for AnthropicErrorKind {
@@ -170,6 +174,8 @@ impl From<ProblemClass> for AnthropicErrorKind {
             ProblemClass::Authentication => Self::AuthenticationError,
             ProblemClass::RequestTooLarge => Self::RequestTooLarge,
             ProblemClass::Internal => Self::ApiError,
+            ProblemClass::RateLimit => Self::RateLimitError,
+            ProblemClass::Unavailable => Self::OverloadedError,
         }
     }
 }
@@ -207,15 +213,16 @@ pub(super) struct AnthropicFailureResponse {
 // -----------------------------------------------------------------------------
 
 /// Provider-native renderer for one typed problem.
-pub(super) struct AnthropicRejection(
+#[derive(derive_more::From)]
+pub struct AnthropicRejection(
     /// Neutral problem awaiting Anthropic wire rendering.
-    Problem,
+    NativeError,
 );
 
 impl AnthropicRejection {
     /// Capture a typed diagnostic for Anthropic rendering.
-    pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
-        Self(Problem::from_error(error))
+    pub(super) fn from_error(error: &impl ApiError) -> Self {
+        Self(NativeError::from_error(error))
     }
 }
 
@@ -232,7 +239,7 @@ impl From<&chat::errors::Error> for AnthropicRejection {
             Some(chat::errors::ErrorField::ToolChoice) => Some("tool_choice"),
             None => None,
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 

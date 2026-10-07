@@ -3,7 +3,7 @@
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::problem::{ProblemClass, ProblemDetails};
+use crate::problem::{ApiError, ProblemClass};
 
 // -----------------------------------------------------------------------------
 // ModelError: Rejects invalid provider-visible model identifiers.
@@ -18,7 +18,7 @@ pub enum ModelError {
     Empty,
 }
 
-impl ProblemDetails for ModelError {
+impl ApiError for ModelError {
     fn class(&self) -> ProblemClass {
         ProblemClass::InvalidRequest
     }
@@ -52,7 +52,7 @@ pub enum EncodingError {
     },
 }
 
-impl ProblemDetails for EncodingError {
+impl ApiError for EncodingError {
     fn class(&self) -> ProblemClass {
         ProblemClass::Internal
     }

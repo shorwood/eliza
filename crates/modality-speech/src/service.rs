@@ -71,6 +71,17 @@ impl Default for Service {
 }
 
 impl Service {
+    /// Bound concurrent synthesis jobs across all clones of this service.
+    ///
+    /// # Panics
+    /// Panics if the limit exceeds Tokio's maximum semaphore permits.
+    #[must_use]
+    pub fn with_worker_limit(workers: NonZeroUsize) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(workers.get())),
+        }
+    }
+
     /// Run one streaming encoder until completion or client disconnect.
     ///
     /// # Errors

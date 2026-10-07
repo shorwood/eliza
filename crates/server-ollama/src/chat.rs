@@ -253,6 +253,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Ollama chat")
                 .tag("ollama")
                 .response::<200, Json<ChatResponse>>()
+                .response::<429, Json<OllamaFailureResponse>>()
+                .response::<503, Json<OllamaFailureResponse>>()
                 .default_response::<Json<OllamaFailureResponse>>()
         })
         .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),

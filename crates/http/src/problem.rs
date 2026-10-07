@@ -1,297 +1,349 @@
-//! Provider-neutral HTTP problem details.
+//! Typed public problem contracts with provider-native projections.
+#![expect(
+    rlib::undocumented_items,
+    reason = "problems 0.1.1 generates undocumented definition constants in a sibling impl; handwritten items below are documented"
+)]
 
-use aide::OperationOutput;
-use aide::generate::GenContext;
-use aide::openapi::{MediaType, Operation, Response as ApiResponse, SchemaObject};
-use axum::Json;
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use miette::Diagnostic;
-use schemars::JsonSchema;
-use serde::Serialize;
-
-/// Response header carrying the stable diagnostic identifier.
-const ERROR_CODE_HEADER: &str = "x-eliza-error-code";
+use problems::{IntoReport as _, Problem as _, Report};
+use thiserror::Error;
 
 // -----------------------------------------------------------------------------
-// ProblemClass: Groups failures by transport semantics.
+// ApiProblem: Declares public status, detail and safe diagnostic metadata.
 // -----------------------------------------------------------------------------
 
-/// Provider-neutral failure category.
+/// Shared public API contracts. Provider adapters preserve their native envelopes.
+#[derive(Debug, Error, problems::Problem)]
+pub enum ApiProblem {
+    /// Invalid or unsupported provider input.
+    #[error("{message}")]
+    #[problem(
+        type_uri = "urn:eliza:problem:invalid-request",
+        status = 400,
+        detail = "{message}"
+    )]
+    InvalidRequest {
+        /// Safe client recovery message.
+        message: String,
+    },
+    /// Provider authentication failed.
+    #[error("{message}")]
+    #[problem(
+        type_uri = "urn:eliza:problem:authentication",
+        status = 401,
+        detail = "{message}"
+    )]
+    Authentication {
+        /// Safe authentication message.
+        message: String,
+    },
+    /// Input exceeds an explicit request safety bound.
+    #[error("{message}")]
+    #[problem(
+        type_uri = "urn:eliza:problem:request-too-large",
+        status = 413,
+        detail = "{message}"
+    )]
+    RequestTooLarge {
+        /// Safe bound explanation.
+        message: String,
+    },
+    /// Preserve a framework rejection's validated status.
+    #[error("{message}")]
+    #[problem(type_uri = "urn:eliza:problem:extraction", detail = "{message}")]
+    Extraction {
+        /// Original framework status.
+        #[problem(status)]
+        status: u16,
+        /// Safe rejection message.
+        message: String,
+    },
+    /// Private implementation failures expose no diagnostic detail.
+    #[error("internal server error")]
+    #[problem(
+        type_uri = "urn:eliza:problem:internal",
+        status = 500,
+        title = "Internal server error"
+    )]
+    Internal,
+    /// A caller has exhausted its own allowance.
+    #[error("{message}")]
+    #[problem(
+        type_uri = "urn:eliza:problem:rate-limit",
+        status = 429,
+        detail = "{message}"
+    )]
+    RateLimit {
+        /// Safe retry guidance, with an offer only for anonymous allowances.
+        message: String,
+    },
+    /// Shared capacity or a required service is unavailable.
+    #[error("service temporarily unavailable")]
+    #[problem(
+        type_uri = "urn:eliza:problem:unavailable",
+        status = 503,
+        detail = "Service temporarily unavailable; retry shortly."
+    )]
+    Unavailable,
+}
+
+// -----------------------------------------------------------------------------
+// ProblemClass: Translates application failures to provider-native categories.
+// -----------------------------------------------------------------------------
+
+/// Provider adapter classification; HTTP contracts are declared by `ApiProblem`.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ProblemClass {
-    /// Input does not satisfy the request contract.
+    /// Invalid provider input.
     InvalidRequest,
-    /// Input requests behavior the server does not implement.
+    /// Unsupported provider input.
     UnsupportedRequest,
-    /// Provider credentials are missing or invalid.
+    /// Authentication failed.
     Authentication,
-    /// Input exceeds a configured or transport bound.
+    /// Request safety limit exceeded.
     RequestTooLarge,
-    /// The server failed while processing a valid request.
+    /// Internal implementation failure.
     Internal,
+    /// Personal allowance exceeded.
+    RateLimit,
+    /// Shared capacity or entitlement lookup unavailable.
+    Unavailable,
 }
 
 impl ProblemClass {
-    /// Default HTTP status for this failure category.
-    const fn status(self) -> StatusCode {
+    /// Project a category into a declared typed contract.
+    fn problem(self, message: String) -> ApiProblem {
         match self {
-            Self::InvalidRequest | Self::UnsupportedRequest => StatusCode::BAD_REQUEST,
-            Self::Authentication => StatusCode::UNAUTHORIZED,
-            Self::RequestTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    /// Stable RFC 9457 title for this failure category.
-    const fn title(self) -> &'static str {
-        match self {
-            Self::InvalidRequest => "Invalid request",
-            Self::UnsupportedRequest => "Unsupported request",
-            Self::Authentication => "Authentication failed",
-            Self::RequestTooLarge => "Request too large",
-            Self::Internal => "Internal server error",
+            Self::InvalidRequest | Self::UnsupportedRequest => {
+                ApiProblem::InvalidRequest { message }
+            }
+            Self::Authentication => ApiProblem::Authentication { message },
+            Self::RequestTooLarge => ApiProblem::RequestTooLarge { message },
+            Self::Internal => ApiProblem::Internal,
+            Self::RateLimit => ApiProblem::RateLimit { message },
+            Self::Unavailable => ApiProblem::Unavailable,
         }
     }
 }
 
 // -----------------------------------------------------------------------------
-// ProblemDetails: Describes errors at the HTTP boundary.
+// ApiError: Maps existing diagnostic sources into public contracts.
 // -----------------------------------------------------------------------------
 
-/// Typed error that can become provider-neutral problem details.
-pub trait ProblemDetails: Diagnostic + std::error::Error {
-    /// Classify the failure for HTTP and provider rendering.
+/// Application-owned source mapping into the shared typed API contract.
+///
+/// Engine errors remain transport-neutral; adapters supply their parameter names.
+pub trait ApiError: Diagnostic + std::error::Error {
+    /// Classify the source for the provider boundary.
     fn class(&self) -> ProblemClass;
 
-    /// Select the HTTP status returned to the client.
+    /// Preserve a specific framework status when it differs from its category.
     fn status(&self) -> StatusCode {
-        self.class().status()
+        self.class().problem(String::new()).status()
     }
 
-    /// Identify the invalid provider parameter, when applicable.
+    /// Identify the provider parameter.
     fn param(&self) -> Option<&'static str> {
         None
     }
 }
 
 // -----------------------------------------------------------------------------
-// Problem: Carries one RFC 9457 response.
+// NativeError: Projects a report into existing SDK-compatible envelopes.
 // -----------------------------------------------------------------------------
 
-/// RFC 9457 problem details with an Eliza diagnostic code.
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct Problem {
-    /// Stable URN identifying the concrete diagnostic.
-    #[serde(rename = "type")]
-    kind: Box<str>,
-    /// Short summary shared by failures in the same class.
-    title: &'static str,
-    /// HTTP status repeated in the response body.
-    status: u16,
-    /// Safe human-readable explanation, omitted for internal failures.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
-    /// Request-specific problem occurrence URI, when available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instance: Option<Box<str>>,
-    /// Exact Miette diagnostic code.
+/// Native error metadata around the crate's authoritative typed report.
+#[derive(Debug)]
+pub struct NativeError {
+    /// Public contract and retained public diagnostic.
+    report: Box<Report<ApiProblem>>,
+    /// Stable application diagnostic code, retained for SDK compatibility.
     code: Box<str>,
-    /// Invalid provider parameter, when applicable.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Provider-specific input field.
     param: Option<&'static str>,
-    /// Provider-neutral class used only while rendering a wire response.
-    #[serde(skip)]
-    #[schemars(skip)]
+    /// Provider category, independent of its native name.
     class: ProblemClass,
+    /// Retry hint, when the failure can be retried.
+    retry_after: Option<u64>,
+    /// Public detail materialized once for native rendering.
+    message: String,
 }
 
-impl Problem {
-    /// Capture public problem facts from a typed diagnostic.
-    pub fn from_error(error: &impl ProblemDetails) -> Self {
-        Self::from_parts(error, error.class(), error.status(), error.param())
+impl NativeError {
+    /// Shared overload, without a payment offer or provider diagnostic.
+    #[must_use]
+    pub fn unavailable() -> Self {
+        Self::admission(ProblemClass::Unavailable, String::new(), Some(1))
     }
 
-    /// Capture public problem facts from a diagnostic classified by an adapter.
+    /// Invalid credentials, without revealing their value or lookup result.
+    #[must_use]
+    pub fn unauthorized() -> Self {
+        Self::admission(
+            ProblemClass::Authentication,
+            "authentication failed".into(),
+            None,
+        )
+    }
+
+    /// Map transport-neutral modality diagnostics at their existing API boundary.
     pub fn from_diagnostic(
         error: &impl Diagnostic,
         class: ProblemClass,
         param: Option<&'static str>,
     ) -> Self {
-        Self::from_parts(error, class, class.status(), param)
-    }
-
-    /// Build a problem from an already classified diagnostic.
-    fn from_parts(
-        error: &impl Diagnostic,
-        class: ProblemClass,
-        status: StatusCode,
-        param: Option<&'static str>,
-    ) -> Self {
-        // Keep the exact diagnostic identity while hiding internal details.
         let code = error.code().map_or_else(
-            || "eliza::internal::missing_diagnostic_code".to_owned(),
-            |code| code.to_string(),
+            || "eliza::internal::missing_diagnostic_code".into(),
+            |value| value.to_string().into_boxed_str(),
         );
-        let detail = if class == ProblemClass::Internal {
-            tracing::error!(error = ?error, diagnostic_code = %code, "request failed");
-            None
-        } else {
-            Some(error.to_string())
-        };
-
-        // Expose a stable problem type derived from the diagnostic namespace.
-        let kind = format!(
-            "urn:eliza:problem:{}",
-            code.strip_prefix("eliza::")
-                .unwrap_or(&code)
-                .replace("::", ":")
-        );
-
+        let report = class
+            .problem(if class == ProblemClass::Internal {
+                String::new()
+            } else {
+                error.to_string()
+            })
+            .into_report();
+        let message = report
+            .problem()
+            .detail()
+            .unwrap_or_else(|| report.problem().definition().title.into());
         Self {
-            kind: kind.into_boxed_str(),
-            title: class.title(),
-            status: status.as_u16(),
-            detail,
-            instance: None,
-            code: code.into_boxed_str(),
+            report: Box::new(report),
+            code,
             param,
             class,
+            retry_after: None,
+            message,
         }
     }
 
-    /// Return the provider-neutral failure category.
+    /// Construct a hosted policy rejection without exposing credentials or provider causes.
+    #[must_use]
+    pub fn admission(class: ProblemClass, message: String, retry_after: Option<u64>) -> Self {
+        let report = class.problem(message).into_report();
+        let message = report
+            .problem()
+            .detail()
+            .unwrap_or_else(|| report.problem().definition().title.into());
+        Self {
+            report: Box::new(report),
+            code: match class {
+                ProblemClass::RateLimit => "eliza::admission::rate_limit",
+                ProblemClass::Authentication => "eliza::auth::failed",
+                _ => "eliza::admission::unavailable",
+            }
+            .into(),
+            param: None,
+            class,
+            retry_after,
+            message,
+        }
+    }
+
+    /// Native category.
     #[must_use]
     pub const fn class(&self) -> ProblemClass {
         self.class
     }
 
-    /// Return the HTTP status selected for this problem.
+    /// Status declared by `problems`.
     #[must_use]
     pub fn status(&self) -> StatusCode {
-        StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        self.report.problem().status()
     }
 
-    /// Return the safe provider-facing message.
+    /// Map an existing application failure to a typed report.
+    pub fn from_error(error: &impl ApiError) -> Self {
+        let mut projected = Self::from_diagnostic(error, error.class(), error.param());
+
+        // Preserve a more specific framework status than the default category.
+        if error.status() != projected.status() {
+            projected.report = Box::new(
+                ApiProblem::Extraction {
+                    status: error.status().as_u16(),
+                    message: projected.message.clone(),
+                }
+                .into_report(),
+            );
+        }
+        projected
+    }
+
+    /// Explicit public recovery detail.
     #[must_use]
     pub fn message(&self) -> &str {
-        self.detail.as_deref().unwrap_or(self.title)
+        &self.message
     }
 
-    /// Return the exact Miette diagnostic code.
+    /// Stable diagnostic identity.
     #[must_use]
     pub fn code(&self) -> &str {
         &self.code
     }
 
-    /// Return the invalid provider parameter, when applicable.
+    /// Provider parameter.
     #[must_use]
     pub const fn param(&self) -> Option<&'static str> {
         self.param
     }
 
-    /// Attach the diagnostic identifier to response headers.
+    /// Attach metadata while leaving report/native body status unchanged.
     pub fn write_error_code(&self, headers: &mut HeaderMap) {
-        // An invalid diagnostic code cannot safely become an HTTP header.
-        let Ok(value) = HeaderValue::from_str(self.code()) else {
-            return;
-        };
-        headers.insert(ERROR_CODE_HEADER, value);
+        // Diagnostic metadata is omitted only when it cannot form a header.
+        if let Ok(value) = HeaderValue::from_str(self.code()) {
+            headers.insert("x-eliza-error-code", value);
+        }
+        if let Some(seconds) = self.retry_after {
+            headers.insert("retry-after", HeaderValue::from(seconds));
+        }
+        headers.insert("cache-control", HeaderValue::from_static("no-store"));
     }
 }
 
-impl IntoResponse for Problem {
+impl IntoResponse for NativeError {
     fn into_response(self) -> Response {
-        let status = self.status();
-        let code = self.code.clone();
-        let mut response = (status, Json(self)).into_response();
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/problem+json"),
-        );
-        if let Ok(code) = HeaderValue::from_str(&code) {
-            response.headers_mut().insert(ERROR_CODE_HEADER, code);
-        }
+        let mut headers = HeaderMap::new();
+        self.write_error_code(&mut headers);
+        let mut response = (*self.report).into_response();
+        response.headers_mut().extend(headers);
         response
     }
 }
 
-impl OperationOutput for Problem {
-    type Inner = Self;
-
-    fn operation_response(ctx: &mut GenContext, _operation: &mut Operation) -> Option<ApiResponse> {
-        let mut response = ApiResponse {
-            description: "RFC 9457 problem details".to_owned(),
-            ..ApiResponse::default()
-        };
-        response.content.insert(
-            "application/problem+json".to_owned(),
-            MediaType {
-                schema: Some(SchemaObject {
-                    json_schema: ctx.schema.subschema_for::<Self>(),
-                    external_docs: None,
-                    example: None,
-                }),
-                ..MediaType::default()
-            },
-        );
-        Some(response)
-    }
-}
+// -----------------------------------------------------------------------------
+// Tests: Preserve SDK metadata and prevent private cause disclosure.
+// -----------------------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(
+    clippy::missing_panics_doc,
+    reason = "test assertions define the panic contract"
+)]
 mod tests {
     use super::*;
     use crate::errors::ModelError;
 
-    /// Verify the serialized RFC 9457 and diagnostic fields.
-    ///
-    /// # Panics
-    ///
-    /// Panics when serialization fails or a field differs from its contract.
-    #[test]
-    fn problem_exposes_the_diagnostic_contract() {
-        let problem = Problem::from_error(&ModelError::Empty);
-        let value = serde_json::to_value(&problem).unwrap();
+    /**************************************/
+    /* NativeError: Projection tests      */
+    /**************************************/
 
-        assert_eq!(value["type"], "urn:eliza:problem:model:empty");
-        assert_eq!(value["status"], 400);
-        assert_eq!(value["detail"], "model id must not be empty");
-        assert_eq!(value["code"], "eliza::model::empty");
-        assert_eq!(value["param"], "model");
+    /// Internal source details never become a public report.
+    #[test]
+    fn native_error_internal_detail_is_private() {
+        let failure =
+            NativeError::from_diagnostic(&ModelError::Empty, ProblemClass::Internal, None);
+        assert_eq!(failure.message(), "Internal server error");
+        assert!(failure.report.as_details().detail().is_none());
     }
 
-    /// Verify the response status, content type, and diagnostic header.
-    ///
-    /// # Panics
-    ///
-    /// Panics when an expected response header is absent or differs.
+    /// Framework-selected statuses and stable SDK codes are retained.
     #[test]
-    fn problem_response_uses_the_problem_media_type() {
-        let response = Problem::from_error(&ModelError::Empty).into_response();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            response.headers().get(header::CONTENT_TYPE).unwrap(),
-            "application/problem+json"
-        );
-        assert_eq!(
-            response.headers().get(ERROR_CODE_HEADER).unwrap(),
-            "eliza::model::empty"
-        );
-    }
-
-    /// Verify that internal diagnostics keep implementation details private.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the internal detail is exposed through the public message.
-    #[test]
-    fn internal_problem_redacts_its_detail() {
-        let problem = Problem::from_diagnostic(&ModelError::Empty, ProblemClass::Internal, None);
-
-        assert!(problem.detail.is_none());
-        assert_eq!(problem.message(), "Internal server error");
+    fn native_error_retains_metadata() {
+        let failure = NativeError::from_error(&ModelError::Empty);
+        assert_eq!(failure.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(failure.code(), "eliza::model::empty");
+        assert_eq!(failure.param(), Some("model"));
     }
 }

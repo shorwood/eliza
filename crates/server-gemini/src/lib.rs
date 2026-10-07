@@ -5,7 +5,7 @@
 
 mod context;
 mod embeddings;
-mod errors;
+pub mod errors;
 mod generate;
 mod images;
 mod models;
