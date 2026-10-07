@@ -1,5 +1,6 @@
 //! Contract tests for bounded hosted admission and entitlement reads.
 use axum::http::{HeaderValue, StatusCode};
+use axum::response::IntoResponse as _;
 
 use super::*;
 
@@ -340,4 +341,78 @@ fn hosted_test_outage_clock_never_extends_eligibility() {
         Caller::try_from(&cached).err().unwrap().status(),
         StatusCode::UNAUTHORIZED
     );
+}
+
+/// Saturated public state cannot evict balances or occupy the independent account allowance.
+#[test]
+fn hosted_test_identity_state_has_hard_tier_caps() {
+    let hosted = hosted_test_policy();
+    let mut state = hosted.identities.lock().unwrap();
+    for index in 0..POLICY_PUBLIC_ENTRIES {
+        state
+            .ensure(&Caller {
+                identity: format!("public:{index}"),
+                is_supporter: false,
+            })
+            .unwrap();
+    }
+    let overflow = state
+        .ensure(&Caller {
+            identity: "public:overflow".into(),
+            is_supporter: false,
+        })
+        .unwrap_err();
+    assert_eq!(
+        overflow.into_response().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    state
+        .ensure(&Caller {
+            identity: "public:0".into(),
+            is_supporter: false,
+        })
+        .unwrap();
+    for index in 0..POLICY_ACCOUNT_ENTRIES {
+        state
+            .ensure(&Caller {
+                identity: format!("account:{index}"),
+                is_supporter: true,
+            })
+            .unwrap();
+    }
+    assert!(
+        state
+            .ensure(&Caller {
+                identity: "account:overflow".into(),
+                is_supporter: true
+            })
+            .is_err()
+    );
+    assert_eq!(
+        state.entries.len(),
+        POLICY_PUBLIC_ENTRIES + POLICY_ACCOUNT_ENTRIES
+    );
+    assert_eq!(state.maintenance.len(), state.entries.len());
+}
+
+/// Retained cache callers cannot create unbounded state or be evicted during their lookup.
+#[test]
+fn hosted_test_lookup_state_is_bounded_under_live_callers() {
+    let hosted = hosted_test_policy();
+    let mut callers = Vec::new();
+    for index in 0..POLICY_CACHE_ENTRIES {
+        callers.push(hosted.cache_entry(&index.to_string()).unwrap());
+    }
+
+    // Every retained caller must prevent eviction until its lookup finishes.
+    let Err(overflow) = hosted.cache_entry("overflow") else {
+        panic!("saturated cache must refuse new entries");
+    };
+    assert_eq!(
+        overflow.into_response().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let cache = hosted.cache.lock().unwrap();
+    assert_eq!(cache.entries.len(), POLICY_CACHE_ENTRIES);
+    assert_eq!(cache.maintenance.len(), POLICY_CACHE_ENTRIES);
 }

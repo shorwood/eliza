@@ -526,11 +526,6 @@ impl LimiterState {
         }
     }
 
-    // -----------------------------------------------------------------------------
-
-    // Ensure: Tests behavior.
-    // -----------------------------------------------------------------------------
-
     /// Allocate one bounded identity without evicting depleted balances.
     ///
     /// # Errors
