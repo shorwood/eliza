@@ -5,6 +5,16 @@ export default defineNuxtConfig({
   dir: { public: 'generated/public' },
   devtools: { enabled: false },
   runtimeConfig: {
+    billingEnabled: false,
+    billingOrigin: '',
+    databaseUrl: '',
+    stripeSecret: '',
+    stripePrice: '',
+    stripeWebhookSecret: '',
+    smtpUrl: '',
+    mailFrom: '',
+    entitlementSecret: '',
+    repairSecret: '',
     public: {
       apiRoot: 'http://127.0.0.1:8787',
       siteUrl: '',
