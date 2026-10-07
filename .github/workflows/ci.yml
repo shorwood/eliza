@@ -31,6 +31,7 @@ jobs:
           nix develop --command pnpm --dir web install --frozen-lockfile
           nix develop --command pnpm --dir web check
           nix develop --command pnpm --dir web test:billing
+          nix develop --command cargo build -p eliza-cli --locked
           nix develop --command pnpm --dir web build
           nix develop --command pnpm --dir web exec playwright install --with-deps chromium
           nix develop --command env -u LD_LIBRARY_PATH pnpm --dir web test
