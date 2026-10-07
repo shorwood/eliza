@@ -588,17 +588,18 @@ impl<H: Host> Machine<H> {
             return Ok(RunState::NeedsInput);
         }
 
+        // Keep instructions alive independently of the mutable machine state.
+        let program = Arc::clone(&self.program);
         for _ in 0..instruction_limit {
             // Falling off the linked program terminates it.
-            let Some(instruction) = self.program.instructions.get(self.program_counter).cloned()
-            else {
+            let Some(instruction) = program.instructions.get(self.program_counter) else {
                 self.is_halted = true;
                 return Ok(RunState::Halted);
             };
             let executed_pc = self.program_counter;
             self.program_counter += 1;
 
-            let output = self.execute(&instruction)?;
+            let output = self.execute(instruction)?;
             self.advance_loops(executed_pc)?;
 
             // Cooperative events return control to the caller immediately.
@@ -608,8 +609,7 @@ impl<H: Host> Machine<H> {
         }
 
         // Attribute budget exhaustion to the next instruction when possible.
-        let span = self
-            .program
+        let span = program
             .instructions
             .get(self.program_counter)
             .map(Instruction::span);
@@ -760,7 +760,7 @@ mod tests {
 
     use thiserror::Error;
 
-    use super::{Host, Machine, RunState, Word};
+    use super::{Host, Machine, RunState, RuntimeErrorKind, Word};
     use crate::program::Program;
     use crate::source::SourceModule;
 
@@ -784,6 +784,10 @@ mod tests {
         fn call(&mut self, name: &str, arguments: &mut [Word]) -> Result<Word, Self::Error> {
             match name {
                 "DOUBLE" => Ok(Word::from_i64(arguments[0].to_i64() * 2)),
+                "INCREMENT" => {
+                    arguments[0] = Word::from_i64(arguments[0].to_i64() + 1);
+                    Ok(arguments[0])
+                }
                 _ => Err(TestHostError::UnknownFunction {
                     name: name.to_owned(),
                 }),
@@ -869,5 +873,79 @@ mod tests {
         );
         assert_eq!(first.run(100).unwrap(), RunState::Halted);
         assert_eq!(second.run(100).unwrap(), RunState::Halted);
+    }
+
+    /// Emitted comments own their text beyond the program's lifetime.
+    ///
+    /// # Panics
+    /// Panics if linking, execution, or output ownership changes.
+    #[test]
+    fn emitted_comment_outlives_machine_and_program() {
+        let module = SourceModule::parse("comment", "            PRINT COMMENT $HELLO$\n").unwrap();
+        let program = Program::link(&[module]).unwrap();
+        let mut machine = Machine::new(program, TestHost);
+        let output = machine.run(1).unwrap();
+        drop(machine);
+        assert_eq!(output, RunState::OutputComment("HELLO".to_owned()));
+    }
+
+    /// Exhaustion identifies the next statement and leaves execution resumable.
+    ///
+    /// # Panics
+    /// Panics if budget handling, source ownership, or resumption changes.
+    #[test]
+    fn instruction_budget_preserves_position_and_resumption() {
+        let source = concat!(
+            "            VALUE=7\n",
+            "            PRINT FORMAT NUMBER,VALUE\n",
+            "            EXIT.\n",
+        );
+        let module = SourceModule::parse("budget", source).unwrap();
+        let program = Program::link(&[module]).unwrap();
+        let mut machine = Machine::new(program, TestHost);
+        let error = machine.run(1).unwrap_err();
+        assert_eq!(error.span().unwrap().line(), 2);
+        assert!(matches!(
+            &error.kind,
+            RuntimeErrorKind::InstructionLimit { limit: 1 }
+        ));
+        assert_eq!(
+            machine.run(1).unwrap(),
+            RunState::OutputWord(Word::from_i64(7))
+        );
+        assert_eq!(machine.run(1).unwrap(), RunState::Halted);
+        assert_eq!(machine.run(0).unwrap(), RunState::Halted);
+        drop(machine);
+        assert_eq!(error.span().unwrap().module(), "budget");
+        assert_eq!(error.span().unwrap().line(), 2);
+    }
+
+    /// Native argument mutations reach both scalar and array storage.
+    ///
+    /// # Panics
+    /// Panics if linking, execution, or by-reference writeback changes.
+    #[test]
+    fn native_arguments_write_back_to_scalar_and_array() {
+        let source = concat!(
+            "            DIMENSION A(1)\n",
+            "            VALUE=1\n",
+            "            A(1)=2\n",
+            "            RESULT=INCREMENT.(VALUE)\n",
+            "            RESULT=INCREMENT.(A(1))\n",
+            "            PRINT FORMAT NUMBER,VALUE\n",
+            "            PRINT FORMAT NUMBER,A(1)\n",
+        );
+        let module = SourceModule::parse("writeback", source).unwrap();
+        let program = Program::link(&[module]).unwrap();
+        let mut machine = Machine::new(program, TestHost);
+        assert_eq!(
+            machine.run(100).unwrap(),
+            RunState::OutputWord(Word::from_i64(2))
+        );
+        assert_eq!(
+            machine.run(100).unwrap(),
+            RunState::OutputWord(Word::from_i64(3))
+        );
+        assert_eq!(machine.run(100).unwrap(), RunState::Halted);
     }
 }
