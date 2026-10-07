@@ -7,7 +7,6 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use eliza_http::context::ProviderAuth;
-use eliza_http::model::ModelId;
 use eliza_modality_embedding as embedding;
 use eliza_modality_image as image;
 use eliza_modality_speech as speech;
@@ -17,76 +16,48 @@ use super::types::{ModelDescriptor, ModelListResponse};
 use crate::context::AppState;
 
 // -----------------------------------------------------------------------------
-// ModelId: Converts built-in identifiers into transport values.
-// -----------------------------------------------------------------------------
-
-/// Convert one built-in modality identifier into its transport representation.
-///
-/// # Panics
-///
-/// Panics only if a modality's built-in identifier becomes invalid.
-fn model_id(value: &'static str) -> ModelId {
-    value
-        .parse()
-        .expect("built-in modality model ids should be valid")
-}
-
-// -----------------------------------------------------------------------------
 // Models: Lists the configured provider models.
 // -----------------------------------------------------------------------------
 
-/// List the configured chat model and fixed modality models.
+/// List aliases for each local modality, retaining the first descriptor per ID.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    // Authentication failures use the provider's own error envelope.
+    // Authenticate before revealing configured model names.
     if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OpenAiRejection::from_error(&error).into_response();
     }
 
-    // Render the configured chat model with OpenAI's fixed catalog metadata.
-    let descriptor = ModelDescriptor {
-        id: state.config.chat_model.clone(),
-        object: "model",
-        created: 0,
-        owned_by: "eliza",
-    };
+    // Collect chat and speech aliases in their configured order.
+    let config = &state.config;
+    let aliases = &config.models;
+    let chat_and_speech = aliases
+        .chat
+        .ids(config.chat_model.as_str())
+        .chain(aliases.speech.ids(speech::core::MODEL_ID));
 
-    // Include the fixed speech capability unless it is already configured.
-    let mut data = vec![descriptor];
-    if state.config.chat_model.as_str() != speech::core::MODEL_ID {
+    // Include the remaining engines in the complete catalog.
+    let names = chat_and_speech
+        .chain(config.models.embeddings.ids(embedding::engine::MODEL_ID))
+        .chain(config.models.images.ids(image::generation::MODEL_ID));
+
+    // Render the first descriptor for each unique name.
+    let mut data: Vec<ModelDescriptor> = Vec::new();
+    for id in names {
+        // Advertise each name once, even when assigned to several modalities.
+        if data.iter().any(|model| model.id == id) {
+            continue;
+        }
         data.push(ModelDescriptor {
-            id: model_id(speech::core::MODEL_ID),
+            id,
             object: "model",
             created: 0,
             owned_by: "eliza",
         });
     }
-
-    // Include the fixed embedding capability unless it is already configured.
-    if state.config.chat_model.as_str() != embedding::engine::MODEL_ID {
-        data.push(ModelDescriptor {
-            id: model_id(embedding::engine::MODEL_ID),
-            object: "model",
-            created: 0,
-            owned_by: "eliza",
-        });
-    }
-
-    // Include deterministic image generation unless it is already configured.
-    if state.config.chat_model.as_str() != image::generation::MODEL_ID {
-        data.push(ModelDescriptor {
-            id: model_id(image::generation::MODEL_ID),
-            object: "model",
-            created: 0,
-            owned_by: "eliza",
-        });
-    }
-
-    // Wrap every descriptor with OpenAI's list contract.
-    let response = ModelListResponse {
+    Json(ModelListResponse {
         object: "list",
         data,
-    };
-    Json(response).into_response()
+    })
+    .into_response()
 }
 
 // -----------------------------------------------------------------------------

@@ -212,6 +212,44 @@ fn http_contracts_authenticated() -> io::Result<()> {
     server.run_hurl(&contracts, Some("secret"))
 }
 
+/// Verify repeated aliases across catalogs and modality routes with authentication.
+///
+/// # Errors
+/// Returns an I/O error when the server or an alias contract fails.
+#[test]
+fn http_contracts_model_aliases() -> io::Result<()> {
+    let server = TestServer::spawn(&[
+        "--api-key",
+        "secret",
+        "--chat-model",
+        "chat-one",
+        "--model-chat",
+        "chat-two",
+        "--model-chat",
+        "chat-one",
+        "--model-embeddings",
+        "embed-one",
+        "--model-embeddings",
+        "embed-two",
+        "--model-embeddings",
+        "embed{three}",
+        "--model-embeddings",
+        "embed-one",
+        "--model-speech",
+        "voice-one",
+        "--model-speech",
+        "voice-two",
+        "--model-speech",
+        "voice-one",
+        "--model-images",
+        "image-one",
+        "--model-images",
+        "image-two",
+    ])?;
+    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/aliases.hurl");
+    server.run_hurl(&contracts, Some("secret"))
+}
+
 /// Prove image routes raise Axum's former two-mebibyte JSON body limit.
 ///
 /// # Errors

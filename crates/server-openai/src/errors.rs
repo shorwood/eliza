@@ -47,9 +47,12 @@ pub(super) enum OpenAiError {
     InvalidMaxOutputTokens,
 
     /// Image generation selected a model other than the fixed fixture.
-    #[error("image generation requires model `eliza-retro-image`")]
+    #[error("image generation requires model {expected}")]
     #[diagnostic(code(eliza::openai::image_generation_model_required))]
-    ImageGenerationModelRequired,
+    ImageGenerationModelRequired {
+        /// Configured names accepted by this route.
+        expected: String,
+    },
     /// Image generation selected an output representation outside PNG base64.
     #[error("unsupported image output format")]
     #[diagnostic(code(eliza::openai::unsupported_image_output_format))]
@@ -70,9 +73,12 @@ pub(super) enum OpenAiError {
     },
 
     /// An embedding request selected a model other than the fixed fixture.
-    #[error("embeddings require model `fnv-embed`")]
+    #[error("embeddings require model {expected}")]
     #[diagnostic(code(eliza::embedding::model_required))]
-    EmbeddingModelRequired,
+    EmbeddingModelRequired {
+        /// Configured names accepted by this route.
+        expected: String,
+    },
     /// An embedding request selected an unsupported output encoding.
     #[error("embedding encoding_format must be `float`")]
     #[diagnostic(code(eliza::openai::unsupported_embedding_encoding))]
@@ -218,9 +224,12 @@ pub(super) enum OpenAiError {
     #[diagnostic(code(eliza::openai::unsupported_input_item))]
     UnsupportedInputItem,
     /// Speech synthesis used a model other than the local speech model.
-    #[error("speech requires model `flite`")]
+    #[error("speech requires model {expected}")]
     #[diagnostic(code(eliza::openai::speech_model_required))]
-    SpeechModelRequired,
+    SpeechModelRequired {
+        /// Configured names accepted by this route.
+        expected: String,
+    },
     /// Speech synthesis received an empty voice name.
     #[error("speech voice must not be empty")]
     #[diagnostic(code(eliza::openai::empty_voice))]
@@ -269,9 +278,9 @@ impl ProblemDetails for OpenAiError {
     fn param(&self) -> Option<&'static str> {
         match self {
             Self::InvalidMaxOutputTokens => Some("max_output_tokens"),
-            Self::EmbeddingModelRequired
-            | Self::ImageGenerationModelRequired
-            | Self::SpeechModelRequired => Some("model"),
+            Self::EmbeddingModelRequired { .. }
+            | Self::ImageGenerationModelRequired { .. }
+            | Self::SpeechModelRequired { .. } => Some("model"),
             Self::UnsupportedEmbeddingEncoding => Some("encoding_format"),
             Self::Image(_)
             | Self::EmbeddingTokenInputUnsupported
