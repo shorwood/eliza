@@ -7,7 +7,8 @@ import { testStripe } from '../server/billing/stripe'
 if (!process.env.TEST_DATABASE_URL || !new URL(process.env.TEST_DATABASE_URL).pathname.endsWith('_test')) {
   throw new Error('TEST_DATABASE_URL must point to a disposable database ending in _test. Run test:billing first.')
 }
-const sql = postgres(process.env.TEST_DATABASE_URL, { max: 2 })
+let sql: ReturnType<typeof postgres>
+test.beforeAll(() => { sql = postgres(process.env.TEST_DATABASE_URL!, { max: 2 }) })
 const origin = 'http://127.0.0.1:18880'
 test.afterAll(async () => { await sql.end() })
 
