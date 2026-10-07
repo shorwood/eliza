@@ -14,18 +14,19 @@ or therapeutic system.
 
 ### Nix flake
 
-Install the 1.0.0 release from GitHub:
+Clone the private repository with authorized GitHub SSH credentials:
 
 ```sh
-nix profile install github:shorwood/eliza/v1.0.0#eliza
+git clone git@github.com:shorwood/eliza.git
+cd eliza
+nix profile install .#eliza
 eliza serve
 ```
 
-Use `.#eliza` instead when installing from a checkout. The published package
-can also be run without adding it to a profile:
+Run from the checkout without adding the package to a profile:
 
 ```sh
-nix run github:shorwood/eliza/v1.0.0#eliza -- serve
+nix run .#eliza -- serve
 ```
 
 ### Docker image
@@ -57,10 +58,13 @@ docker run --rm -p 127.0.0.1:8787:8787 eliza:1.0.0 \
   serve --bind 0.0.0.0:8787 --json-logs
 ```
 
-The same x86-64 and ARM64 image is published to GHCR for each release:
+Container releases keep the name `ghcr.io/shorwood/eliza`. The public package
+was deleted; the next release will recreate it privately and require registry
+authentication. See [private distribution](OPERATIONS.md) for access and release
+verification. After authenticating, run a newly published release:
 
 ```sh
-docker run --rm -p 127.0.0.1:8787:8787 ghcr.io/shorwood/eliza:1.0.0
+docker run --rm -p 127.0.0.1:8787:8787 ghcr.io/shorwood/eliza:<release>
 ```
 
 The server listens on `http://127.0.0.1:8787` in both examples. Verify it with:
