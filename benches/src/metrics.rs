@@ -37,7 +37,7 @@ pub struct Measurements {
     shared_rejections: u32,
     /// Request counts by tier and status, including transport failures.
     by_status: BTreeMap<String, u32>,
-    /// Received validated payload bytes.
+    /// Received payload bytes, including partial failed exchanges.
     bytes: usize,
     /// Completion distributions separated by caller tier.
     by_tier: BTreeMap<String, Histogram<u64>>,

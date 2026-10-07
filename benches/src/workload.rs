@@ -275,6 +275,7 @@ impl Workload {
         let dispatched = Instant::now();
         let mut first = None;
         let mut status = None;
+        let mut received = 0usize;
         let result = async {
             let mut request = client
                 .post(&self.url)
@@ -302,6 +303,7 @@ impl Workload {
                 response.status() == 200 && content_type.starts_with(self.content_type);
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await? {
+                received = received.saturating_add(chunk.len());
                 if self.read_delay_ms != 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(self.read_delay_ms)).await;
                 }
@@ -330,7 +332,7 @@ impl Workload {
         .await;
         let (bytes, error) = match result {
             Ok(bytes) => (bytes, None),
-            Err(error) => (0, Some(error.to_string())),
+            Err(error) => (received, Some(error.to_string())),
         };
         Sample {
             finished_at: Instant::now(),
@@ -381,7 +383,7 @@ pub struct Sample {
     pub first_us: Option<u64>,
     /// Arrival scheduling delay in microseconds.
     pub dispatch_us: u64,
-    /// Received body size; zero on failure.
+    /// Received body bytes, including partial failed exchanges.
     pub bytes: usize,
     /// Transport or validation failure, when present.
     pub error: Option<String>,
