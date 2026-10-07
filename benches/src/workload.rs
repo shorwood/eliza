@@ -17,13 +17,24 @@ const FIXTURES: &str = include_str!("../fixtures.json");
 const WORKLOAD_LONG_HISTORY_TURNS: usize = 100;
 
 /// Maximum decoded body accepted by the load generator.
-const WORKLOAD_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const WORKLOAD_RESPONSE_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+
+/// Maximum input chunk retained by a paced upload.
+const WORKLOAD_UPLOAD_CHUNK_BYTES: usize = 1024;
 
 /// Prepared provider request and its response checks.
 #[derive(Clone)]
 pub struct Workload {
     /// Stable workload name used in result artifacts.
     name: String,
+    /// Whether this request uses the supporter account.
+    is_supporter: bool,
+    /// Verified synthetic public caller address.
+    client_ip: String,
+    /// Delay between received response chunks.
+    read_delay_ms: u64,
+    /// Delay between uploaded input chunks.
+    upload_delay_ms: u64,
     /// Provider route for this workload.
     url: String,
     /// Fixed serialized request input.
@@ -40,7 +51,17 @@ pub struct Workload {
 impl Workload {
     /// # Errors
     /// Returns setup, validation, or I/O failures to the benchmark runner.
+    #[expect(
+        rlib::missing_code_phase_comments,
+        reason = "request construction ends in declarative field mapping rather than sequential phases"
+    )]
     fn new(name: &str, base: &str) -> Result<Self> {
+        // Media presets share transport preparation with chat.
+        if matches!(name, "image" | "embedding" | "inline-image") {
+            return Self::media(name, Self::new("chat-short", base)?);
+        }
+
+        // Prepare the native request from the fixed corpus.
         let fixtures: Value = serde_json::from_str(FIXTURES)?;
         let (path, body, kind, content_type) = if name.starts_with("chat-") {
             if !["chat-short", "chat-long", "chat-sse", "chat-long-sse"].contains(&name) {
@@ -96,8 +117,14 @@ impl Workload {
                 },
             )
         };
+
+        // Retain encoded input once for all repeated exchanges.
         Ok(Self {
             name: name.to_owned(),
+            is_supporter: false,
+            read_delay_ms: 0,
+            upload_delay_ms: 0,
+            client_ip: "192.0.2.1".into(),
             url: format!("{base}{path}"),
             payload: bytes::Bytes::from(serde_json::to_vec(&body)?),
             #[cfg(test)]
@@ -105,6 +132,40 @@ impl Workload {
             kind: kind.to_owned(),
             content_type,
         })
+    }
+
+    /// Prepare media fixtures using the same bounded request transport.
+    /// # Errors
+    /// Returns fixture serialization failures.
+    fn media(name: &str, mut workload: Self) -> Result<Self> {
+        let base = workload.url.trim_end_matches("/openai/v1/chat/completions");
+        let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABAQAAAADcWUInAAAACklEQVQI12NwAAAAQgBBg7nsrQAAAABJRU5ErkJggg==";
+        let (path, body, kind) = match name {
+            "image" => (
+                "/openai/v1/images/generations",
+                json!({"model":"eliza-retro-image","prompt":"Hello","size":"256x256"}),
+                "image",
+            ),
+            "embedding" => (
+                "/openai/v1/embeddings",
+                json!({"model":"fnv-embed","input":"Hello","dimensions":1024}),
+                "embedding",
+            ),
+            _ => (
+                "/openai/v1/chat/completions",
+                json!({"model":"eliza-1966","messages":[{"role":"user","content":[{"type":"text","text":"Hello"},{"type":"image_url","image_url":{"url":url}}]}]}),
+                "chat",
+            ),
+        };
+        workload.name = name.into();
+        workload.url = format!("{base}{path}");
+        workload.payload = bytes::Bytes::from(serde_json::to_vec(&body)?);
+        workload.kind = kind.into();
+        #[cfg(test)]
+        {
+            workload.body = body;
+        }
+        Ok(workload)
     }
 
     /// Build alternating history ending at the latest user input.
@@ -189,31 +250,76 @@ impl Workload {
         }
     }
 
+    /// Prepare either buffered input or bounded paced upload chunks.
+    fn request_body(&self) -> reqwest::Body {
+        // Ordinary clients send their already encoded input directly.
+        if self.upload_delay_ms == 0 {
+            return reqwest::Body::from(self.payload.clone());
+        }
+        let delay = std::time::Duration::from_millis(self.upload_delay_ms);
+        let chunks =
+            futures_util::stream::unfold(self.payload.clone(), move |mut bytes| async move {
+                // Finishing input ends the upload without a trailing delayed frame.
+                if bytes.is_empty() {
+                    return None;
+                }
+                tokio::time::sleep(delay).await;
+                let chunk = bytes.split_to(bytes.len().min(WORKLOAD_UPLOAD_CHUNK_BYTES));
+                Some((Ok::<_, std::io::Error>(chunk), bytes))
+            });
+        reqwest::Body::wrap_stream(chunks)
+    }
+
     /// Consume and validate a bounded response, measuring from its offered time.
     pub async fn perform(&self, client: &Client, offered: Instant) -> Sample {
         let dispatched = Instant::now();
         let mut first = None;
+        let mut status = None;
         let result = async {
-            let request = client
+            let mut request = client
                 .post(&self.url)
-                .body(self.payload.clone())
+                .body(self.request_body())
                 .header(reqwest::header::CONTENT_TYPE, "application/json");
+            if let Ok(secret) = std::env::var("ELIZA_INGRESS_SECRET") {
+                request = request
+                    .header("x-eliza-ingress-token", secret)
+                    .header("x-eliza-client-ip", &self.client_ip);
+            }
+            if self.is_supporter {
+                request = request.bearer_auth(std::env::var("ELIZA_BENCH_SUPPORTER_KEY")?);
+            }
             let mut response = request.send().await?;
+            status = Some(response.status().as_u16());
             let content_type = response
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .ok_or_else(|| anyhow::anyhow!("response lacks Content-Type"))?
                 .to_str()?;
+            let retryable = response
+                .headers()
+                .contains_key(reqwest::header::RETRY_AFTER);
             let headers_valid =
                 response.status() == 200 && content_type.starts_with(self.content_type);
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await? {
+                if self.read_delay_ms != 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(self.read_delay_ms)).await;
+                }
                 if bytes.len() + chunk.len() > WORKLOAD_RESPONSE_LIMIT_BYTES {
-                    bail!("response exceeds benchmark's 8 MiB bound");
+                    bail!("response exceeds benchmark's 32 MiB bound");
                 }
                 bytes.extend_from_slice(&chunk);
                 if first.is_none() && self.is_meaningful(&bytes) {
                     first = Some(Instant::now().duration_since(offered));
+                }
+            }
+
+            // Hosted overload is a measured native rejection, distinct from transport failure.
+            if matches!(status, Some(429 | 503)) && retryable {
+                let rejection: Value = serde_json::from_slice(&bytes)?;
+                // A complete native rejection is recorded without treating it as generated output.
+                if rejection["error"].is_object() {
+                    return Ok(bytes.len());
                 }
             }
             if !headers_valid || !self.is_valid(&bytes) {
@@ -229,6 +335,12 @@ impl Workload {
         Sample {
             finished_at: Instant::now(),
             workload: self.name.clone(),
+            tier: if self.is_supporter {
+                "supporter"
+            } else {
+                "public"
+            },
+            status,
             completion_us: micros(Instant::now().duration_since(offered)),
             first_us: first.map(micros),
             dispatch_us: micros(dispatched.duration_since(offered)),
@@ -257,6 +369,10 @@ pub struct Sample {
     /// Completion time used to distinguish measurement from drain.
     #[serde(skip)]
     pub finished_at: Instant,
+    /// Caller tier, without credentials or account identity.
+    pub tier: &'static str,
+    /// Received HTTP status; absent on transport failure.
+    pub status: Option<u16>,
     /// Workload that produced this sample.
     pub workload: String,
     /// Scheduled arrival to complete body receipt in microseconds.
@@ -266,16 +382,35 @@ pub struct Sample {
     /// Arrival scheduling delay in microseconds.
     pub dispatch_us: u64,
     /// Received body size; zero on failure.
-    bytes: usize,
+    pub bytes: usize,
     /// Transport or validation failure, when present.
     pub error: Option<String>,
 }
 
 // -----------------------------------------------------------------------------
-// Workloads: Benchmark data.
+// CallerMix: Deterministic caller distribution.
 // -----------------------------------------------------------------------------
+/// Deterministic public and supporter caller distribution.
+#[derive(Clone, Copy)]
+pub struct CallerMix {
+    /// Percentage of offered work using the supporter key.
+    pub supporter_percent: u32,
+    /// Delay in milliseconds between response chunks.
+    pub read_delay_ms: u64,
+    /// Delay in milliseconds between upload chunks.
+    pub upload_delay_ms: u64,
+    /// Number of distinct verified public addresses.
+    pub public_identities: u32,
+}
+
+// -----------------------------------------------------------------------------
+// Workloads: Prepared corpus and caller mix.
+// -----------------------------------------------------------------------------
+
 /// One workload or the fixed nine-chat/one-speech request mix.
 pub struct Workloads {
+    /// Deterministic caller distribution.
+    callers: CallerMix,
     /// Prepared provider requests.
     items: Vec<Workload>,
 }
@@ -294,12 +429,36 @@ impl Workloads {
         } else {
             vec![Workload::new(name, base)?]
         };
-        Ok(Self { items })
+        Ok(Self {
+            items,
+            callers: CallerMix {
+                supporter_percent: 0,
+                read_delay_ms: 0,
+                upload_delay_ms: 0,
+                public_identities: 1,
+            },
+        })
+    }
+
+    /// Configure caller distribution without putting secrets into artifacts.
+    pub fn with_callers(mut self, callers: CallerMix) -> Self {
+        self.callers = callers;
+        self
     }
 
     /// Select the next deterministic request by its global sequence number.
     pub fn selected(&self, iteration: u64) -> Workload {
-        self.items[usize::from(self.items.len() == 2 && iteration % 10 == 9)].clone()
+        let mut selected =
+            self.items[usize::from(self.items.len() == 2 && iteration % 10 == 9)].clone();
+        selected.read_delay_ms = self.callers.read_delay_ms;
+        selected.upload_delay_ms = self.callers.upload_delay_ms;
+        selected.is_supporter =
+            iteration.wrapping_mul(37) % 100 < u64::from(self.callers.supporter_percent);
+        let identity = iteration % u64::from(self.callers.public_identities);
+        let address =
+            std::net::Ipv4Addr::from(0xc612_0000 + u32::try_from(identity).unwrap_or(u32::MAX));
+        selected.client_ip = address.to_string();
+        selected
     }
 }
 

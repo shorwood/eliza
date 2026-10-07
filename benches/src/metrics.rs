@@ -31,6 +31,16 @@ pub struct Measurements {
     dispatch: Histogram<u64>,
     /// Separate completion distributions for each workload in a mixed run.
     by_workload: BTreeMap<String, Histogram<u64>>,
+    /// Native personal allowance rejections.
+    personal_rejections: u32,
+    /// Native shared-capacity rejections.
+    shared_rejections: u32,
+    /// Request counts by tier and status, including transport failures.
+    by_status: BTreeMap<String, u32>,
+    /// Received validated payload bytes.
+    bytes: usize,
+    /// Completion distributions separated by caller tier.
+    by_tier: BTreeMap<String, Histogram<u64>>,
     /// Successful complete requests including drain.
     pub successful: u32,
     /// Requests that failed transport or response validation.
@@ -49,6 +59,11 @@ impl Measurements {
             first: Histogram::new_with_bounds(1, 3_600_000_000, 3)?,
             dispatch: Histogram::new_with_bounds(1, 3_600_000_000, 3)?,
             by_workload: BTreeMap::new(),
+            personal_rejections: 0,
+            shared_rejections: 0,
+            bytes: 0,
+            by_status: BTreeMap::new(),
+            by_tier: BTreeMap::new(),
             successful: 0,
             failures: 0,
             completed_in_window: 0,
@@ -66,14 +81,31 @@ impl Measurements {
             Entry::Vacant(entry) => entry.insert(Histogram::new_with_bounds(1, 3_600_000_000, 3)?),
         };
         histogram.record(sample.completion_us)?;
+        let tier = match self.by_tier.entry(sample.tier.into()) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(Histogram::new_with_bounds(1, 3_600_000_000, 3)?),
+        };
+        if sample.error.is_none() && sample.status == Some(reqwest::StatusCode::OK.as_u16()) {
+            tier.record(sample.completion_us)?;
+        }
+        let status = sample
+            .status
+            .map_or_else(|| "transport".into(), |code| code.to_string());
+        *self
+            .by_status
+            .entry(format!("{}/{status}", sample.tier))
+            .or_default() += 1;
+        self.bytes += sample.bytes;
+        self.personal_rejections += u32::from(sample.status == Some(429) && sample.error.is_none());
+        self.shared_rejections += u32::from(sample.status == Some(503) && sample.error.is_none());
         self.dispatch.record(sample.dispatch_us)?;
-        if sample.error.is_none() {
+        if sample.error.is_none() && sample.status == Some(reqwest::StatusCode::OK.as_u16()) {
             self.successful += 1;
             self.completed_in_window += u32::from(sample.finished_at < end);
             if let Some(first) = sample.first_us {
                 self.first.record(first)?;
             }
-        } else {
+        } else if sample.error.is_some() || !matches!(sample.status, Some(429 | 503)) {
             self.failures += 1;
         }
         Ok(())
@@ -86,8 +118,15 @@ impl Measurements {
         let by_workload = self.by_workload.iter().map(|(name, histogram)| {
             (name, json!({"requests":histogram.len(), "completion_ms":quantiles(histogram), "completion_histogram_us":bins(histogram)}))
         }).collect::<BTreeMap<_, _>>();
+        let by_tier = self
+            .by_tier
+            .iter()
+            .map(|(name, histogram)| (name, quantiles(histogram)))
+            .collect::<BTreeMap<_, _>>();
         Ok(
             json!({"successful":self.successful, "failures":self.failures,
+            "personal_rejections":self.personal_rejections, "shared_rejections":self.shared_rejections,
+            "received_bytes":self.bytes, "by_tier":by_tier, "by_status":self.by_status,
             "completed_in_window":self.completed_in_window,
             "completion_ms":quantiles(&self.completion), "first_ms":quantiles(&self.first),
             "dispatch_ms":quantiles(&self.dispatch),

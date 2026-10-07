@@ -252,6 +252,8 @@ impl<'a> Load<'a> {
         summary["dropped"] = json!(self.dropped);
         summary["peak_concurrency"] = json!(self.peak_concurrency);
         summary["elapsed_seconds"] = json!(elapsed);
+        summary["received_bytes_per_second"] =
+            json!(summary["received_bytes"].as_f64().unwrap_or(0.0) / elapsed);
         summary["successful_rps"] =
             json!(f64::from(self.measurements.completed_in_window) / f64::from(self.point.seconds));
         summary["successful_rps_including_drain"] =

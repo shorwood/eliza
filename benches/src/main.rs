@@ -48,6 +48,12 @@ const TIMING_SPEECH_BUDGET_MS: f64 = 5000.0;
 // Options: Validated local benchmark configuration.
 // -----------------------------------------------------------------------------
 
+/// Maximum caller mix percentage.
+const OPTIONS_MAX_PERCENT: u32 = 100;
+
+/// Maximum synthetic addresses in the reserved benchmark network.
+const OPTIONS_MAX_IDENTITIES: u32 = 131_072;
+
 /// Validated local benchmark configuration.
 #[derive(Clone, Parser)]
 #[command(about = "Measure Eliza throughput, streaming latency, and CPU/request")]
@@ -92,6 +98,27 @@ struct Options {
     /// Concurrent speech job limits to compare.
     #[arg(long, value_delimiter = ',', default_value = "2")]
     speech_workers: Vec<NonZeroUsize>,
+    /// Hosted origin policy; ingress secrets come from the environment.
+    #[arg(long)]
+    hosted_config: Option<PathBuf>,
+    /// Exact origin binary to compare against this benchmark driver.
+    #[arg(long)]
+    server_binary: Option<PathBuf>,
+    /// Git revision of an externally built origin binary.
+    #[arg(long, requires = "server_binary")]
+    server_commit: Option<String>,
+    /// Percentage of requests using `ELIZA_BENCH_SUPPORTER_KEY`.
+    #[arg(long, default_value = "0", requires = "hosted_config")]
+    supporter_percent: u32,
+    /// Distinct verified public IPs in the deterministic request mix.
+    #[arg(long, default_value = "1")]
+    public_identities: u32,
+    /// Delay in milliseconds between response chunks for slow-reader tests.
+    #[arg(long, default_value = "0")]
+    read_delay_ms: u64,
+    /// Delay in milliseconds between 1 KiB upload chunks.
+    #[arg(long, default_value = "0")]
+    upload_delay_ms: u64,
     /// Fresh directory for raw samples and summaries.
     #[arg(long)]
     output: Option<PathBuf>,
@@ -128,6 +155,19 @@ impl Options {
     /// # Errors
     /// Returns invalid configuration or affinity failures.
     fn configure(&mut self) -> Result<()> {
+        ensure!(
+            self.supporter_percent <= OPTIONS_MAX_PERCENT
+                && (1..=OPTIONS_MAX_IDENTITIES).contains(&self.public_identities),
+            "invalid caller mix"
+        );
+        ensure!(
+            self.server_binary.is_none() || self.server_commit.is_some(),
+            "external binaries require --server-commit for reproducibility"
+        );
+        ensure!(
+            self.supporter_percent == 0 || std::env::var("ELIZA_BENCH_SUPPORTER_KEY").is_ok(),
+            "supporter traffic requires ELIZA_BENCH_SUPPORTER_KEY"
+        );
         let available = available_cpus()?;
         if self.server_cpus.is_empty() {
             self.server_cpus = available[..(available.len() / 2).max(1)].to_vec();
@@ -217,6 +257,10 @@ impl Options {
         save(
             &output.join("metadata.json"),
             &json!({"commit":version(&["git","rev-parse","HEAD"]),
+        "server_commit":self.server_commit.as_ref().map_or_else(|| version(&["git","rev-parse","HEAD"]), Clone::clone),
+        "hosted_policy":self.hosted_config.clone().map(read),
+        "supporter_percent":self.supporter_percent, "public_identities":self.public_identities,
+        "read_delay_ms":self.read_delay_ms, "upload_delay_ms":self.upload_delay_ms,
         "diff":version(&["git","diff"]), "rust":version(&["rustc","-vV"]),
         "lockfile":read(root.join("Cargo.lock")), "fixtures":read(root.join("benches/fixtures.json")),
         "cpu":read(PathBuf::from("/proc/cpuinfo")), "memory":read(PathBuf::from("/proc/meminfo")),
@@ -248,7 +292,13 @@ impl Options {
     ) -> Result<Value> {
         let Point { mode, amount, .. } = point;
         let mut server = Server::new(self, root, directory)?;
-        let workloads = Workloads::new(name, &server.base)?;
+        let workloads =
+            Workloads::new(name, &server.base)?.with_callers(crate::workload::CallerMix {
+                supporter_percent: self.supporter_percent,
+                public_identities: self.public_identities,
+                read_delay_ms: self.read_delay_ms,
+                upload_delay_ms: self.upload_delay_ms,
+            });
         affinity(&self.client_cpus)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(self.client_cpus.len())
@@ -260,7 +310,7 @@ impl Options {
                 .timeout(Duration::from_secs(u64::from(LOAD_REQUEST_SECONDS)))
                 .build()?;
             server.ready(&client).await?;
-            if let Some(output) = probe_output {
+            if let Some(output) = probe_output.filter(|_| self.hosted_config.is_none()) {
                 smoke_providers(&client, &server.base).await?;
                 probes(&client, &server.base, output, self.probe_seconds).await?;
             }
@@ -374,7 +424,11 @@ impl Server {
         let base = format!("http://{address}");
         affinity(&options.server_cpus)?;
         let server_log = File::create(directory.join("server.log"))?;
-        let mut command = Command::new(root.join("target/release/eliza"));
+        let binary = options
+            .server_binary
+            .clone()
+            .unwrap_or_else(|| root.join("target/release/eliza"));
+        let mut command = Command::new(binary);
         command.args([
             "serve",
             "--bind",
@@ -382,6 +436,9 @@ impl Server {
             "--stream-delay-ms",
             "0",
         ]);
+        if let Some(path) = &options.hosted_config {
+            command.arg("--hosted-config").arg(path);
+        }
         for workers in &options.runtime_workers {
             command.args(["--runtime-workers", &workers.to_string()]);
         }
@@ -408,7 +465,13 @@ impl Server {
                 self.child.try_wait()?.is_none(),
                 "server exited before readiness"
             );
-            let response = client.get(format!("{}/healthz", self.base)).send().await;
+            let mut request = client.get(format!("{}/healthz", self.base));
+            if let Ok(secret) = std::env::var("ELIZA_INGRESS_SECRET") {
+                request = request
+                    .header("x-eliza-ingress-token", secret)
+                    .header("x-eliza-client-ip", "192.0.2.1");
+            }
+            let response = request.send().await;
 
             is_ready = response.is_ok_and(|response| response.status() == 200);
             sleep(Duration::from_millis(TIMING_READY_RETRY_MS)).await;
@@ -739,6 +802,8 @@ fn is_within_budget(name: &str, result: &Value) -> bool {
         TIMING_CHAT_BUDGET_MS
     };
     result["failures"] == 0
+        && result["personal_rejections"] == 0
+        && result["shared_rejections"] == 0
         && result["dropped"] == 0
         && result["completion_ms"]["p95"]
             .as_f64()
