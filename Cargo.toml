@@ -7,6 +7,10 @@ default-members = ["crates/cli"]
 license = "MIT"
 version = "1.0.0"
 
+[profile.release]
+lto = true
+codegen-units = 1
+
 [workspace.lints.clippy]
 pedantic = "warn"
 arbitrary_source_item_ordering = "warn"
