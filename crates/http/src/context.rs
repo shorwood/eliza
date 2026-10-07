@@ -7,7 +7,7 @@ use axum::http::HeaderMap;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::model::ModelId;
+use crate::model::{ModelAliases, ModelId};
 use crate::problem::{ProblemClass, ProblemDetails};
 
 // -----------------------------------------------------------------------------
@@ -132,8 +132,10 @@ impl RequestLimits {
 /// Route-visible server behavior without listener or tracing concerns.
 #[derive(Debug, Clone)]
 pub struct RouteConfig {
-    /// Provider-visible chat model identifier.
+    /// Provider-visible chat model identifier used when no chat aliases exist.
     pub chat_model: ModelId,
+    /// Names advertised and accepted by each local modality engine.
+    pub models: ModelAliases,
     /// Expected credential when provider authentication is enabled.
     api_key: Option<ApiKey>,
     /// Optional delay between streamed chunks.
@@ -153,10 +155,18 @@ impl RouteConfig {
     ) -> Self {
         Self {
             chat_model,
+            models: ModelAliases::EMPTY,
             api_key,
             stream_delay_ms,
             limits,
         }
+    }
+
+    /// Set model names by modality; empty groups use their default identifiers.
+    #[must_use]
+    pub fn with_model_aliases(mut self, models: ModelAliases) -> Self {
+        self.models = models;
+        self
     }
 
     /// Check provider authentication headers against this route configuration.
@@ -255,6 +265,7 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, header};
 
     use super::*;
+    use crate::model::ModelNames;
 
     /// Build the smallest route configuration needed by authentication tests.
     fn route_config_with_api_key(api_key: Option<&str>) -> RouteConfig {
@@ -266,6 +277,32 @@ mod tests {
             0,
             RequestLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN),
         )
+    }
+
+    /// Existing Rust constructors retain defaults while supplied groups replace them.
+    #[test]
+    fn model_aliases_preserve_legacy_constructor_defaults() {
+        let config = route_config_with_api_key(None);
+        let chat = config
+            .models
+            .chat
+            .ids(config.chat_model.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(chat, vec![config.chat_model.clone()]);
+        let builtin: ModelId = "flite".parse().unwrap();
+        assert!(config.models.speech.has_model(&builtin, "flite"));
+
+        let alias: ModelId = "voice-alias".parse().unwrap();
+        let config = config.with_model_aliases(ModelAliases {
+            speech: ModelNames::new(vec![alias.clone()]),
+            ..ModelAliases::default()
+        });
+        assert!(config.models.speech.has_model(&alias, "flite"));
+        assert!(!config.models.speech.has_model(&builtin, "flite"));
+        assert_eq!(
+            config.models.chat.ids(config.chat_model.as_str()).count(),
+            1
+        );
     }
 
     /// Authentication-disabled routes ignore provider headers.

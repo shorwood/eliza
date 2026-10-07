@@ -819,6 +819,7 @@ dependencies = [
  "eliza-modality-speech",
  "futures-util",
  "miette",
+ "percent-encoding",
  "schemars 0.9.0",
  "serde",
  "serde_json",

@@ -12,12 +12,29 @@ Listener:
           
           [default: 127.0.0.1:8787]
 
-Chat:
-      --chat-model <ID>
-          Chat model ID advertised by provider catalogs
+Models:
+      --model-chat <ID>
+          Chat model name advertised by provider catalogs (repeatable)
           
           [default: eliza-1966]
+          [aliases: --chat-model]
 
+      --model-embeddings <ID>
+          Embedding model name accepted by embedding routes (repeatable)
+          
+          [default: fnv-embed]
+
+      --model-images <ID>
+          Image model name accepted by image generation routes (repeatable)
+          
+          [default: eliza-retro-image]
+
+      --model-speech <ID>
+          Speech model name accepted by speech routes (repeatable)
+          
+          [default: flite]
+
+Chat:
       --max-history-messages <MESSAGES>
           Maximum chat transcript entries accepted per request
           
@@ -47,8 +64,12 @@ Logging:
           Render tracing events as JSON instead of human-readable text
 
 Built-in modality models:
-  Chat:       eliza-1966 (configurable with --chat-model)
-  Speech:     flite (fixed)
-  Embeddings: fnv-embed (fixed)
+  Chat:       eliza-1966
+  Speech:     flite
+  Embeddings: fnv-embed
+  Images:     eliza-retro-image
+
+Repeat --model-* options to advertise multiple names for a local engine.
+Supplied names replace that modality's defaults.
 
 Explore every provider route at /docs or /openapi.json.

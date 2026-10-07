@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 use clap::{Args, Parser, Subcommand};
 use eliza_http::context::{ApiKey, RequestLimits, RouteConfig};
-use eliza_http::model::ModelId;
+use eliza_http::model::{ModelAliases, ModelId, ModelNames};
 use eliza_server::serve::{CorsMode, LogFormat, ServerConfig};
 
 // -----------------------------------------------------------------------------
@@ -30,9 +30,13 @@ fn parse_positive_usize(value: &str) -> Result<NonZeroUsize, String> {
 #[derive(Debug, Clone, Args)]
 #[command(after_long_help = "\
 Built-in modality models:
-  Chat:       eliza-1966 (configurable with --chat-model)
-  Speech:     flite (fixed)
-  Embeddings: fnv-embed (fixed)
+  Chat:       eliza-1966
+  Speech:     flite
+  Embeddings: fnv-embed
+  Images:     eliza-retro-image
+
+Repeat --model-* options to advertise multiple names for a local engine.
+Supplied names replace that modality's defaults.
 
 Explore every provider route at /docs or /openapi.json.
 ")]
@@ -46,14 +50,42 @@ pub(super) struct ServeArgs {
     )]
     bind: SocketAddr,
 
-    /// Chat model ID advertised by provider catalogs.
+    /// Chat model name advertised by provider catalogs (repeatable).
     #[arg(
-        long,
+        long = "model-chat",
+        visible_alias = "chat-model",
         value_name = "ID",
         default_value = "eliza-1966",
-        help_heading = "Chat"
+        help_heading = "Models"
     )]
-    chat_model: ModelId,
+    chat_models: Vec<ModelId>,
+
+    /// Embedding model name accepted by embedding routes (repeatable).
+    #[arg(
+        long = "model-embeddings",
+        value_name = "ID",
+        default_value = "fnv-embed",
+        help_heading = "Models"
+    )]
+    embedding_models: Vec<ModelId>,
+
+    /// Image model name accepted by image generation routes (repeatable).
+    #[arg(
+        long = "model-images",
+        value_name = "ID",
+        default_value = "eliza-retro-image",
+        help_heading = "Models"
+    )]
+    image_models: Vec<ModelId>,
+
+    /// Speech model name accepted by speech routes (repeatable).
+    #[arg(
+        long = "model-speech",
+        value_name = "ID",
+        default_value = "flite",
+        help_heading = "Models"
+    )]
+    speech_models: Vec<ModelId>,
 
     /// Maximum chat transcript entries accepted per request.
     #[arg(
@@ -99,12 +131,31 @@ pub(super) struct ServeArgs {
 
 impl ServeArgs {
     /// Lower parsed arguments into runtime configuration.
+    ///
+    /// # Panics
+    /// Panics if constructed without a chat name; Clap supplies its default.
     #[must_use]
     pub(super) fn into_server_config(self) -> ServerConfig {
         let limits = RequestLimits::new(self.max_input_chars, self.max_history_messages);
 
+        // Retain the first chat name for existing Rust configuration callers.
+        let chat_model = self
+            .chat_models
+            .first()
+            .expect("Clap supplies a chat name")
+            .clone();
+
+        // Collect independently configured names for each local engine.
+        let models = ModelAliases {
+            chat: ModelNames::new(self.chat_models),
+            embeddings: ModelNames::new(self.embedding_models),
+            images: ModelNames::new(self.image_models),
+            speech: ModelNames::new(self.speech_models),
+        };
+
         // Assemble route-wide behavior from parsed domain values.
-        let routes = RouteConfig::new(self.chat_model, self.api_key, self.stream_delay_ms, limits);
+        let routes = RouteConfig::new(chat_model, self.api_key, self.stream_delay_ms, limits)
+            .with_model_aliases(models);
 
         // Translate simple CLI switches into explicit server modes.
         let cors = if self.should_allow_any_origin {

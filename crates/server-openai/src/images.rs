@@ -175,16 +175,6 @@ impl TryFrom<ImageGenerationRequest> for LoweredImageRequest {
     type Error = OpenAiError;
 
     fn try_from(payload: ImageGenerationRequest) -> Result<Self, Self::Error> {
-        let model = payload
-            .model
-            .as_ref()
-            .map_or(image::generation::MODEL_ID, ModelId::as_str);
-
-        // This route exposes one fixed local generation model.
-        if model != image::generation::MODEL_ID {
-            return Err(OpenAiError::ImageGenerationModelRequired);
-        }
-
         let output_format = payload.output_format.unwrap_or_default();
 
         // The deterministic fixture encodes only lossless PNG bytes.
@@ -295,6 +285,24 @@ async fn handle(
             return OpenAiRejection::from_error(&ExtractionError::from(error)).into_response();
         }
     };
+
+    // An omitted name uses the local image engine; explicit names must be configured.
+    if payload.model.as_ref().is_some_and(|model| {
+        !state
+            .config
+            .models
+            .images
+            .has_model(model, image::generation::MODEL_ID)
+    }) {
+        return OpenAiRejection::from_error(&OpenAiError::ImageGenerationModelRequired {
+            expected: state
+                .config
+                .models
+                .images
+                .expected(image::generation::MODEL_ID),
+        })
+        .into_response();
+    }
 
     // Lower the decoded provider shape before invoking shared generation.
     let lowered = match LoweredImageRequest::try_from(payload) {

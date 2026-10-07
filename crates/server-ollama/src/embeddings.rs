@@ -123,8 +123,20 @@ async fn handle(
     };
 
     // Model routing is a provider concern, not an engine concern.
-    if payload.model.as_str() != embedding::engine::MODEL_ID {
-        return OllamaRejection::from_error(&OllamaError::EmbeddingModelRequired).into_response();
+    if !state
+        .config
+        .models
+        .embeddings
+        .has_model(&payload.model, embedding::engine::MODEL_ID)
+    {
+        return OllamaRejection::from_error(&OllamaError::EmbeddingModelRequired {
+            expected: state
+                .config
+                .models
+                .embeddings
+                .expected(embedding::engine::MODEL_ID),
+        })
+        .into_response();
     }
 
     // Lower Ollama's supported text input shapes.

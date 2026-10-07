@@ -201,8 +201,20 @@ pub(crate) async fn handle(
     drop(user);
 
     // Model routing is a provider concern, not an engine concern.
-    if model.as_str() != embedding::engine::MODEL_ID {
-        return OpenAiRejection::from_error(&OpenAiError::EmbeddingModelRequired).into_response();
+    if !state
+        .config
+        .models
+        .embeddings
+        .has_model(&model, embedding::engine::MODEL_ID)
+    {
+        return OpenAiRejection::from_error(&OpenAiError::EmbeddingModelRequired {
+            expected: state
+                .config
+                .models
+                .embeddings
+                .expected(embedding::engine::MODEL_ID),
+        })
+        .into_response();
     }
 
     // This fixture emits JSON floating-point vectors only.
