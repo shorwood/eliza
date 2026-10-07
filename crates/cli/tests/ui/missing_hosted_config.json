@@ -1,0 +1,8 @@
+{
+  "args": [
+    "serve",
+    "--hosted-config",
+    "missing.json"
+  ],
+  "code": 1
+}

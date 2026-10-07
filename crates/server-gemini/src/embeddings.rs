@@ -366,6 +366,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Gemini embedding")
                 .tag("gemini")
                 .response::<200, Json<GeminiEmbedContentResponse>>()
+                .response::<429, Json<GeminiFailureResponse>>()
+                .response::<503, Json<GeminiFailureResponse>>()
                 .default_response::<Json<GeminiFailureResponse>>()
         }),
     );
@@ -376,6 +378,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Gemini batch embeddings")
                 .tag("gemini")
                 .response::<200, Json<GeminiBatchEmbedContentsResponse>>()
+                .response::<429, Json<GeminiFailureResponse>>()
+                .response::<503, Json<GeminiFailureResponse>>()
                 .default_response::<Json<GeminiFailureResponse>>()
         }),
     )

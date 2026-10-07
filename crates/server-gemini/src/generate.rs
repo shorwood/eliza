@@ -669,6 +669,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Gemini content")
                 .tag("gemini")
                 .response::<200, Json<GenerateContentResponse>>()
+                .response::<429, Json<GeminiFailureResponse>>()
+                .response::<503, Json<GeminiFailureResponse>>()
                 .default_response::<Json<GeminiFailureResponse>>()
         })
         .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),

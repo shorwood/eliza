@@ -3,6 +3,7 @@
 #![feature(register_tool)]
 #![register_tool(rlib)]
 
+mod admission;
 mod docs;
 mod health;
 mod routes;

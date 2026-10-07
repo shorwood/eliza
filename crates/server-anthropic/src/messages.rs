@@ -511,6 +511,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Anthropic message")
                 .tag("anthropic")
                 .response::<200, Json<MessagesResponse>>()
+                .response::<429, Json<AnthropicFailureResponse>>()
+                .response::<503, Json<AnthropicFailureResponse>>()
                 .default_response::<Json<AnthropicFailureResponse>>()
         })
         .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),

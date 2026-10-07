@@ -102,6 +102,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("OpenAI models")
                 .tag("openai")
                 .response::<200, Json<ModelListResponse>>()
+                .response::<429, Json<OpenAiFailureResponse>>()
+                .response::<503, Json<OpenAiFailureResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
         }),
     )

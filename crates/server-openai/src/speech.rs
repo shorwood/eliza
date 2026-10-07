@@ -454,6 +454,8 @@ pub(super) fn router() -> ApiRouter<SpeechState> {
                 .summary("OpenAI text to speech")
                 .tag("openai")
                 .response::<200, Bytes>()
+                .response::<429, Json<OpenAiFailureResponse>>()
+                .response::<503, Json<OpenAiFailureResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
         }),
     )
