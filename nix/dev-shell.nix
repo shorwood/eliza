@@ -6,6 +6,7 @@
   docker-client,
   docker-compose,
   hurl,
+  jq,
   just,
   lib,
   mkShell,
@@ -15,6 +16,7 @@
   pkg-config,
   pnpm,
   rlibShell,
+  shellcheck,
   statix,
   stdenv,
 }:
@@ -26,12 +28,14 @@ mkShell {
     docker-client
     docker-compose
     hurl
+    jq
     just
     nodejs_22
     nixfmt
     openssl
     pnpm
     pkg-config
+    shellcheck
     statix
     stdenv.cc
   ];
