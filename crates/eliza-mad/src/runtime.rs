@@ -1,6 +1,7 @@
 //! Native SLIP bridge used by the reconstructed MAD driver.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use mad::machine::Host;
 use mad::word::Word;
@@ -185,21 +186,9 @@ pub(crate) enum NativeError {
     /// The session exhausted its resource budget.
     #[error("session resource limit exhausted")]
     ResourceLimit,
-    /// A selected decomposition disappeared during rule application.
-    #[error("selected decomposition {index} disappeared")]
-    SelectedDecompositionMissing {
-        /// Missing decomposition index.
-        index: usize,
-    },
     /// A selected reassembly disappeared during rule application.
     #[error("selected reassembly disappeared")]
     SelectedReassemblyMissing,
-    /// A selected keyword rule disappeared during rule application.
-    #[error("selected rule {keyword} disappeared")]
-    SelectedRuleMissing {
-        /// Missing canonical keyword.
-        keyword: String,
-    },
     /// A word position cannot be replaced.
     #[error("SET position is outside the word list")]
     SetPosition,
@@ -243,10 +232,12 @@ pub(crate) struct ElizaHost {
     last_target: Word,
     /// Queued memory responses.
     memories: VecDeque<Vec<String>>,
+    /// Next response template for each compiled decomposition.
+    next_reassemblies: Vec<usize>,
     /// Values addressable from MAD words.
     resources: Vec<Resource>,
-    /// Parsed DOCTOR rules and mutable reassembly counters.
-    script: Script,
+    /// Shared immutable DOCTOR rules.
+    script: Arc<Script>,
     /// Mechanical facts captured for the current turn.
     trace: TraceState,
 }
@@ -374,7 +365,7 @@ impl ElizaHost {
     /// # Errors
     ///
     /// Returns an error when initial resource allocation fails.
-    pub(crate) fn new(script: Script) -> Result<Self, NativeError> {
+    pub(crate) fn new(script: Arc<Script>) -> Result<Self, NativeError> {
         let mut host = Self {
             arena: Arena::new(Self::SLIP_CELL_LIMIT),
             input: Word::ZERO,
@@ -383,6 +374,7 @@ impl ElizaHost {
             last_result: Word::ZERO,
             last_target: Word::ZERO,
             memories: VecDeque::new(),
+            next_reassemblies: vec![0; script.counter_count],
             resources: Vec::new(),
             script,
             trace: TraceState::default(),
@@ -608,13 +600,13 @@ impl ElizaHost {
                 |tag, word| tags.get(tag).is_some_and(|members| members.contains(word)),
                 Self::MATCH_LIMIT,
             )? {
-                selected = Some((index, captures));
+                selected = Some((index, decomposition, captures));
                 break;
             }
         }
 
         // A rule without a matching decomposition may still link elsewhere.
-        let Some((decomposition_index, captures)) = selected else {
+        let Some((decomposition_index, decomposition, captures)) = selected else {
             // A rule-level fallback delegates processing to its target.
             if let Some(target) = rule.fallback.clone() {
                 self.last_target = self.intern(&target)?;
@@ -623,27 +615,17 @@ impl ElizaHost {
             return Ok(0);
         };
 
-        let (reassembly, reassembly_index) = {
-            let rule = self.script.rules.get_mut(keyword).ok_or_else(|| {
-                NativeError::SelectedRuleMissing {
-                    keyword: keyword.to_owned(),
-                }
-            })?;
-            let decomposition = rule.decompositions.get_mut(decomposition_index).ok_or(
-                NativeError::SelectedDecompositionMissing {
-                    index: decomposition_index,
-                },
-            )?;
-            let reassembly_index = decomposition.next_reassembly;
-            let reassembly = decomposition
-                .reassemblies
-                .get(reassembly_index)
-                .cloned()
-                .ok_or(NativeError::SelectedReassemblyMissing)?;
-            decomposition.next_reassembly =
-                (decomposition.next_reassembly + 1) % decomposition.reassemblies.len();
-            (reassembly, reassembly_index)
-        };
+        // Select a response using this session's counter, leaving definitions immutable.
+        let counter = &mut self.next_reassemblies[decomposition.counter_index];
+        let reassembly_index = *counter;
+        let reassembly = decomposition
+            .reassemblies
+            .get(reassembly_index)
+            .cloned()
+            .ok_or(NativeError::SelectedReassemblyMissing)?;
+
+        // Advance the cycle even when the selected action links, yields, or fails.
+        *counter = (*counter + 1) % decomposition.reassemblies.len();
         let selected_rule = TraceRule {
             keyword: keyword.to_owned(),
             decomposition: decomposition_index,
@@ -994,7 +976,29 @@ impl Host for ElizaHost {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::ElizaHost;
+    use crate::script::Script;
+
+    /// Hosts share definitions while owning fresh response counters.
+    ///
+    /// # Panics
+    /// Panics if parsing, initialization, or ownership changes.
+    #[test]
+    fn hosts_share_rules_and_own_response_counters() {
+        let script = Arc::new(
+            include_str!("../programs/1966/doctor.script")
+                .parse::<Script>()
+                .unwrap(),
+        );
+        let mut first = ElizaHost::new(Arc::clone(&script)).unwrap();
+        let second = ElizaHost::new(Arc::clone(&script)).unwrap();
+        assert!(Arc::ptr_eq(&first.script, &second.script));
+        let index = script.rules["I"].decompositions[0].counter_index;
+        first.next_reassemblies[index] = 1;
+        assert_eq!(second.next_reassemblies[index], 0);
+    }
 
     /// Splits words without treating delimiter substrings as punctuation.
     ///
