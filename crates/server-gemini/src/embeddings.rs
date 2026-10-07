@@ -1,15 +1,19 @@
 //! Native Gemini deterministic embeddings adapter.
 
+use std::sync::Arc;
+
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
-use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use eliza_http::context::ProviderAuth;
 use eliza_http::extraction::ExtractionError;
+use eliza_http::model::ModelId;
 use eliza_modality_embedding as embedding;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -96,7 +100,7 @@ struct GeminiBatchEmbedContentsResponse {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct GeminiEmbedContentRequest {
-    /// Fixed model resource name.
+    /// Model resource named by the request URL.
     model: Option<String>,
     /// Text content to embed.
     content: Option<Content>,
@@ -110,23 +114,24 @@ struct GeminiEmbedContentRequest {
     embed_content_config: Option<GeminiEmbeddingConfig>,
 }
 
-/// Native Gemini synchronous batch request.
-#[derive(Debug, Deserialize, JsonSchema)]
-struct GeminiBatchEmbedContentsRequest {
-    /// Ordered embedding requests.
-    requests: Option<Vec<GeminiEmbedContentRequest>>,
-}
+impl GeminiEmbedContentRequest {
+    /// Require the body's model resource to match its URL before lowering input.
+    ///
+    /// # Errors
+    /// Returns native validation failures for model, dimensions, or content.
+    fn into_input(self, model: &ModelId) -> Result<embedding::engine::Input, GeminiError> {
+        let request = self;
 
-/// Resource name required inside native Gemini embedding bodies.
-const GEMINI_MODEL_RESOURCE: &str = "models/fnv-embed";
-
-impl TryFrom<GeminiEmbedContentRequest> for embedding::engine::Input {
-    type Error = GeminiError;
-
-    fn try_from(request: GeminiEmbedContentRequest) -> Result<Self, Self::Error> {
-        // The body resource must agree with the fixed route model.
-        if request.model.as_deref() != Some(GEMINI_MODEL_RESOURCE) {
-            return Err(GeminiError::EmbeddingModelRequired);
+        // Every item must select its URL's model, including configured aliases.
+        if request
+            .model
+            .as_deref()
+            .and_then(|name| name.strip_prefix("models/"))
+            != Some(model.as_str())
+        {
+            return Err(GeminiError::EmbeddingModelRequired {
+                expected: model.clone(),
+            });
         }
 
         let dimensions = gemini_validation_dimensions(
@@ -144,6 +149,13 @@ impl TryFrom<GeminiEmbedContentRequest> for embedding::engine::Input {
             dimensions,
         })
     }
+}
+
+/// Native Gemini synchronous batch request.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GeminiBatchEmbedContentsRequest {
+    /// Ordered embedding requests.
+    requests: Option<Vec<GeminiEmbedContentRequest>>,
 }
 
 // -----------------------------------------------------------------------------
@@ -240,6 +252,7 @@ fn gemini_embeddings_complete(
 /// Handle one native Gemini embedding request.
 async fn gemini_embeddings_embed(
     State(state): State<AppState>,
+    Extension(model): Extension<Arc<ModelId>>,
     headers: HeaderMap,
     payload: Result<Json<GeminiEmbedContentRequest>, JsonRejection>,
 ) -> Response {
@@ -261,7 +274,7 @@ async fn gemini_embeddings_embed(
     };
 
     // Lower native fields into one shared input.
-    let input: embedding::engine::Input = match payload.try_into() {
+    let input = match payload.into_input(&model) {
         Ok(input) => input,
         // Native validation failures retain Gemini's error schema.
         Err(error) => {
@@ -291,6 +304,7 @@ async fn gemini_embeddings_embed(
 /// Handle one native Gemini batch embedding request.
 async fn gemini_embeddings_batch_embed(
     State(state): State<AppState>,
+    Extension(model): Extension<Arc<ModelId>>,
     headers: HeaderMap,
     payload: Result<Json<GeminiBatchEmbedContentsRequest>, JsonRejection>,
 ) -> Response {
@@ -317,7 +331,9 @@ async fn gemini_embeddings_batch_embed(
     };
 
     // Lower each native item without disturbing its batch position.
-    let lowered = requests.into_iter().map(TryInto::try_into);
+    let lowered = requests
+        .into_iter()
+        .map(|request| request.into_input(&model));
 
     // Collect the batch only when every native item is valid.
     let inputs = match lowered.collect::<Result<Vec<_>, _>>() {
@@ -355,29 +371,48 @@ async fn gemini_embeddings_batch_embed(
 }
 
 // -----------------------------------------------------------------------------
+// ModelPathEncoding: Encodes literal model identifiers.
+// -----------------------------------------------------------------------------
+
+/// Encode alias IDs as literal path segments, preserving URI-unreserved bytes.
+const MODEL_PATH_ENCODING: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
+// -----------------------------------------------------------------------------
 // Router: Publishes native Gemini embedding endpoints.
 // -----------------------------------------------------------------------------
 
-/// Build fixed-model unary and batch embedding routes.
-pub(super) fn router() -> ApiRouter<AppState> {
-    let router = ApiRouter::new().api_route(
-        "/v1beta/models/fnv-embed:embedContent",
-        post_with(gemini_embeddings_embed, |operation| {
-            operation
-                .summary("Gemini embedding")
-                .tag("gemini")
-                .response::<200, Json<GeminiEmbedContentResponse>>()
-                .default_response::<Json<GeminiFailureResponse>>()
-        }),
-    );
-    router.api_route(
-        "/v1beta/models/fnv-embed:batchEmbedContents",
-        post_with(gemini_embeddings_batch_embed, |operation| {
-            operation
-                .summary("Gemini batch embeddings")
-                .tag("gemini")
-                .response::<200, Json<GeminiBatchEmbedContentsResponse>>()
-                .default_response::<Json<GeminiFailureResponse>>()
-        }),
-    )
+/// Build literal alias routes, sharing each URL's validated model identity.
+pub(super) fn router(models: impl Iterator<Item = ModelId>) -> ApiRouter<AppState> {
+    let mut router = ApiRouter::new();
+    for model in models {
+        let name = utf8_percent_encode(model.as_str(), MODEL_PATH_ENCODING).to_string();
+        let model = Arc::new(model);
+        router = router.api_route(
+            &format!("/v1beta/models/{name}:embedContent"),
+            post_with(gemini_embeddings_embed, |operation| {
+                operation
+                    .summary("Gemini embedding")
+                    .tag("gemini")
+                    .response::<200, Json<GeminiEmbedContentResponse>>()
+                    .default_response::<Json<GeminiFailureResponse>>()
+            })
+            .layer(Extension(Arc::clone(&model))),
+        );
+        router = router.api_route(
+            &format!("/v1beta/models/{name}:batchEmbedContents"),
+            post_with(gemini_embeddings_batch_embed, |operation| {
+                operation
+                    .summary("Gemini batch embeddings")
+                    .tag("gemini")
+                    .response::<200, Json<GeminiBatchEmbedContentsResponse>>()
+                    .default_response::<Json<GeminiFailureResponse>>()
+            })
+            .layer(Extension(model)),
+        );
+    }
+    router
 }

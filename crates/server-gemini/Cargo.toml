@@ -16,6 +16,7 @@ eliza-modality-image = { path = "../modality-image" }
 eliza-modality-speech = { path = "../modality-speech" }
 futures-util = "0.3"
 miette = { version = "7.6.0", features = ["derive"] }
+percent-encoding = "2.3.2"
 schemars = "0.9.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--model-embeddings", ""],
+  "code": 2
+}

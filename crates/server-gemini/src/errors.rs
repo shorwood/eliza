@@ -2,6 +2,7 @@
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use eliza_http::errors::EncodingError;
+use eliza_http::model::ModelId;
 use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
 use eliza_modality_chat as chat;
 use eliza_modality_embedding as embedding;
@@ -28,9 +29,12 @@ pub(super) enum GeminiError {
     ),
 
     /// An embedding body selected a model other than the fixed resource.
-    #[error("embeddings require model `models/fnv-embed`")]
+    #[error("embeddings require model `models/{expected}`")]
     #[diagnostic(code(eliza::gemini::embedding_model_required))]
-    EmbeddingModelRequired,
+    EmbeddingModelRequired {
+        /// Model selected by the embedding URL.
+        expected: ModelId,
+    },
     /// A native embedding request omitted its content.
     #[error("embedding content and text parts are required")]
     #[diagnostic(code(eliza::gemini::missing_embedding_content))]
@@ -193,21 +197,33 @@ pub(super) enum GeminiError {
     #[diagnostic(code(eliza::gemini::text_format_for_audio))]
     TextFormatForAudio,
     /// Audio generation used a model other than the local speech model.
-    #[error("audio generation requires model `flite`")]
+    #[error("audio generation requires model {expected}")]
     #[diagnostic(code(eliza::gemini::speech_model_required))]
-    SpeechModelRequired,
+    SpeechModelRequired {
+        /// Configured names accepted for audio generation.
+        expected: String,
+    },
     /// The local speech model was asked for a non-audio response.
-    #[error("model `flite` only supports AUDIO responses")]
+    #[error("model `{model}` only supports AUDIO responses")]
     #[diagnostic(code(eliza::gemini::speech_model_audio_only))]
-    SpeechModelAudioOnly,
+    SpeechModelAudioOnly {
+        /// Requested dedicated speech alias.
+        model: ModelId,
+    },
     /// Image generation used a model other than the local image fixture.
-    #[error("image generation requires model `eliza-retro-image`")]
+    #[error("image generation requires model {expected}")]
     #[diagnostic(code(eliza::gemini::image_generation_model_required))]
-    ImageGenerationModelRequired,
+    ImageGenerationModelRequired {
+        /// Configured names accepted for image generation.
+        expected: String,
+    },
     /// The local image model was asked for a response without an image.
-    #[error("model `eliza-retro-image` requires IMAGE output")]
+    #[error("model `{model}` requires IMAGE output")]
     #[diagnostic(code(eliza::gemini::image_model_requires_image))]
-    ImageModelRequiresImage,
+    ImageModelRequiresImage {
+        /// Requested dedicated image alias.
+        model: ModelId,
+    },
     /// Response modalities did not select one supported output combination.
     #[error("responseModalities must select TEXT, AUDIO, IMAGE, or TEXT with IMAGE")]
     #[diagnostic(code(eliza::gemini::invalid_response_modalities))]
@@ -326,11 +342,11 @@ impl ProblemDetails for GeminiError {
             | Self::SpeechTextOnly
             | Self::ImageTextOnly
             | Self::UnknownSpeaker => Some("contents.parts"),
-            Self::EmbeddingModelRequired
-            | Self::SpeechModelRequired
-            | Self::SpeechModelAudioOnly
-            | Self::ImageGenerationModelRequired
-            | Self::ImageModelRequiresImage => Some("model"),
+            Self::EmbeddingModelRequired { .. }
+            | Self::SpeechModelRequired { .. }
+            | Self::SpeechModelAudioOnly { .. }
+            | Self::ImageGenerationModelRequired { .. }
+            | Self::ImageModelRequiresImage { .. } => Some("model"),
             Self::InvalidResponseModalities => Some("generationConfig.responseModalities"),
             Self::MissingSpeechConfig | Self::InvalidSpeakerConfig => {
                 Some("generationConfig.speechConfig")

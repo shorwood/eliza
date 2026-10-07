@@ -355,9 +355,6 @@ impl TryFrom<SpeechPayload> for LoweredSpeech {
     type Error = OpenAiError;
 
     fn try_from(payload: SpeechPayload) -> Result<Self, Self::Error> {
-        (payload.model.as_str() == speech::core::MODEL_ID)
-            .then_some(())
-            .ok_or(OpenAiError::SpeechModelRequired)?;
         let format = payload.response_format.unwrap_or_default().try_into()?;
         let delivery = payload.stream_format.unwrap_or_default().try_into()?;
         let voice = payload.voice.into_name()?;
@@ -428,6 +425,17 @@ async fn handle(
         }
     };
 
+    let names = &state.config.models.speech;
+
+    // Select the configured speech engine before lowering voice and format controls.
+    if !names.has_model(&payload.model, speech::core::MODEL_ID) {
+        return OpenAiRejection::from_error(&OpenAiError::SpeechModelRequired {
+            expected: names.expected(speech::core::MODEL_ID),
+        })
+        .into_response();
+    }
+
+    // Lower the selected voice and format under the existing speech contract.
     let lowered = match LoweredSpeech::try_from(payload) {
         Ok(lowered) => lowered,
         // Provider validation errors finish before synthesis work begins.

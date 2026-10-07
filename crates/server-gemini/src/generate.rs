@@ -9,7 +9,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::ProviderAuth;
+use eliza_http::context::{ProviderAuth, RouteConfig};
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks};
@@ -110,13 +110,23 @@ impl GenerateRequestMode {
     /// # Errors
     ///
     /// Returns a typed error for unsupported modality combinations or controls.
-    fn for_payload(model: &ModelId, payload: &GenerateContentRequest) -> Result<Self, GeminiError> {
+    fn for_payload(
+        model: &ModelId,
+        payload: &GenerateContentRequest,
+        config: &RouteConfig,
+    ) -> Result<Self, GeminiError> {
         let generation = payload.generation_config.as_ref();
         let modalities = generation.and_then(|config| config.response_modalities.as_deref());
         match modalities {
-            None if model.as_str() == image::generation::MODEL_ID => Ok(Self::Image {
-                composition: super::images::ImageComposition::TextAndImage,
-            }),
+            None if config
+                .models
+                .images
+                .has_model(model, image::generation::MODEL_ID) =>
+            {
+                Ok(Self::Image {
+                    composition: super::images::ImageComposition::TextAndImage,
+                })
+            }
             None | Some([GenerateResponseModality::Text]) => Ok(Self::Text),
             Some([GenerateResponseModality::Audio])
                 if generation
@@ -152,6 +162,31 @@ impl GenerateRequestMode {
             }),
             _ => Err(GeminiError::InvalidResponseModalities),
         }
+    }
+
+    /// Keep dedicated model aliases from falling back to another engine.
+    ///
+    /// # Errors
+    /// Returns a native rejection when the selected mode contradicts its model.
+    fn validate_model(self, model: &ModelId, config: &RouteConfig) -> Result<Self, GeminiError> {
+        let models = &config.models;
+
+        // Dedicated image names require image output before engine dispatch.
+        if !matches!(self, Self::Image { .. })
+            && models.images.has_model(model, image::generation::MODEL_ID)
+        {
+            return Err(GeminiError::ImageModelRequiresImage {
+                model: model.clone(),
+            });
+        }
+
+        // Dedicated speech names cannot silently produce ELIZA text.
+        if matches!(self, Self::Text) && models.speech.has_model(model, speech::core::MODEL_ID) {
+            return Err(GeminiError::SpeechModelAudioOnly {
+                model: model.clone(),
+            });
+        }
+        Ok(self)
     }
 }
 
@@ -649,18 +684,13 @@ async fn generate(
         GenerateDelivery::JsonStream
     };
 
-    let mode = match GenerateRequestMode::for_payload(&action.model, &payload) {
+    let mode = match GenerateRequestMode::for_payload(&action.model, &payload, &state.config)
+        .and_then(|mode| mode.validate_model(&action.model, &state.config))
+    {
         Ok(mode) => mode,
         // Invalid modality controls cannot proceed to provider lowering.
         Err(error) => return GeminiRejection::from_error(&error).into_response(),
     };
-
-    // Dedicated modality models never silently fall back to another engine.
-    if action.model.as_str() == image::generation::MODEL_ID
-        && !matches!(mode, GenerateRequestMode::Image { .. })
-    {
-        return GeminiRejection::from_error(&GeminiError::ImageModelRequiresImage).into_response();
-    }
 
     match mode {
         // Audio generation owns its provider-native response.
@@ -674,11 +704,6 @@ async fn generate(
             return transport.into_response();
         }
         GenerateRequestMode::Text => {}
-    }
-
-    // The dedicated speech model does not silently fall back to text.
-    if action.model.as_str() == speech::core::MODEL_ID {
-        return GeminiRejection::from_error(&GeminiError::SpeechModelAudioOnly).into_response();
     }
 
     // Lower and execute the provider request under shared resource limits.

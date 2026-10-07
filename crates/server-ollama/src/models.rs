@@ -6,8 +6,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use eliza_http::context::ProviderAuth;
-use eliza_http::model::ModelId;
+use eliza_http::context::{ProviderAuth, RouteConfig};
 use eliza_modality_embedding as embedding;
 
 use super::errors::{OllamaFailureResponse, OllamaRejection};
@@ -22,47 +21,38 @@ use crate::context::AppState;
 const CREATED_AT: &str = "1966-01-01T00:00:00Z";
 
 // -----------------------------------------------------------------------------
-// EmbeddingModelId: Converts the built-in embedding identifier.
+// ModelCatalogWithEmbeddings: Builds the native catalog.
 // -----------------------------------------------------------------------------
 
-/// Construct the fixed embedding model ID for provider response types.
-///
-/// # Panics
-///
-/// Panics only if the modality's built-in identifier becomes invalid.
-fn embedding_model_id() -> ModelId {
-    embedding::engine::MODEL_ID
-        .parse()
-        .expect("the built-in embedding model id should be valid")
-}
-
-// -----------------------------------------------------------------------------
-// ModelCatalogWithEmbedding: Builds the native catalog.
-// -----------------------------------------------------------------------------
-
-/// Build the model catalog for the configured chat identity.
-fn model_catalog_with_embedding(model: ModelId) -> ModelListResponse {
-    let include_embedding = model.as_str() != embedding::engine::MODEL_ID;
-    let mut models = vec![ModelDescriptor {
-        name: model.clone(),
-        model,
-        modified_at: CREATED_AT,
-        size: 0,
-        digest: "eliza-1966",
-        details: ModelDetails {
-            parent_model: "",
-            format: "eliza",
-            family: "eliza",
-            families: vec!["eliza"],
-            parameter_size: "DOCTOR",
-            quantization_level: "none",
-        },
-    }];
-    if include_embedding {
-        let embedding_model = embedding_model_id();
+/// Advertise chat and embedding aliases with their engine's fixed metadata.
+fn model_catalog_with_embeddings(config: &RouteConfig) -> ModelListResponse {
+    let mut models: Vec<ModelDescriptor> = config
+        .models
+        .chat
+        .ids(config.chat_model.as_str())
+        .map(|model| ModelDescriptor {
+            name: model.clone(),
+            model,
+            modified_at: CREATED_AT,
+            size: 0,
+            digest: "eliza-1966",
+            details: ModelDetails {
+                parent_model: "",
+                format: "eliza",
+                family: "eliza",
+                families: vec!["eliza"],
+                parameter_size: "DOCTOR",
+                quantization_level: "none",
+            },
+        })
+        .collect();
+    for model in config.models.embeddings.ids(embedding::engine::MODEL_ID) {
+        if models.iter().any(|descriptor| descriptor.model == model) {
+            continue;
+        }
         models.push(ModelDescriptor {
-            name: embedding_model.clone(),
-            model: embedding_model,
+            name: model.clone(),
+            model,
             modified_at: CREATED_AT,
             size: 0,
             digest: embedding::engine::MODEL_ID,
@@ -83,16 +73,13 @@ fn model_catalog_with_embedding(model: ModelId) -> ModelListResponse {
 // Models: Handles the native model catalog request.
 // -----------------------------------------------------------------------------
 
-/// List the configured models in Ollama's native envelope.
+/// List configured models in Ollama's native envelope.
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    // Authentication failures use Ollama's native error envelope.
+    // Authenticate before revealing configured model names.
     if let Err(error) = state.config.authenticate(&headers, ProviderAuth::Bearer) {
         return OllamaRejection::from_error(&error).into_response();
     }
-    Json(model_catalog_with_embedding(
-        state.config.chat_model.clone(),
-    ))
-    .into_response()
+    Json(model_catalog_with_embeddings(&state.config)).into_response()
 }
 
 // -----------------------------------------------------------------------------

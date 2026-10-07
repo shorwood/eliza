@@ -27,9 +27,12 @@ pub(super) enum OllamaError {
     ),
 
     /// An embedding request selected a model other than the fixed fixture.
-    #[error("embeddings require model `fnv-embed`")]
+    #[error("embeddings require model {expected}")]
     #[diagnostic(code(eliza::embedding::model_required))]
-    EmbeddingModelRequired,
+    EmbeddingModelRequired {
+        /// Configured names accepted by this route.
+        expected: String,
+    },
     /// An embedding request used an input shape outside the text subset.
     #[error("embedding input must be a string or an array of strings")]
     #[diagnostic(code(eliza::ollama::unsupported_embedding_input))]
@@ -129,7 +132,7 @@ impl ProblemDetails for OllamaError {
     fn param(&self) -> Option<&'static str> {
         match self {
             Self::Image(_) | Self::ImagesRequireUserRole => Some("messages.images"),
-            Self::EmbeddingModelRequired => Some("model"),
+            Self::EmbeddingModelRequired { .. } => Some("model"),
             Self::UnsupportedEmbeddingInput => Some("input"),
             Self::InvalidResponseSchema { .. }
             | Self::UnsupportedResponseFormat

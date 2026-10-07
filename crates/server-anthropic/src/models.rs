@@ -26,21 +26,32 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return AnthropicRejection::from_error(&error).into_response();
     }
 
-    // Render the configured chat model with Anthropic's fixed catalog metadata.
-    let model = state.config.chat_model.clone();
-    let descriptor = ModelDescriptor {
-        kind: "model",
-        id: model.clone(),
-        display_name: "ELIZA DOCTOR",
-        created_at: "1966-01-01T00:00:00Z",
-    };
+    let config = &state.config;
+    let names = config.models.chat.ids(config.chat_model.as_str());
+
+    // Render each configured chat name with the underlying engine's metadata.
+    let data: Vec<ModelDescriptor> = names
+        .map(|id| ModelDescriptor {
+            kind: "model",
+            id,
+            display_name: "ELIZA DOCTOR",
+            created_at: "1966-01-01T00:00:00Z",
+        })
+        .collect();
+
+    let first_id = data
+        .first()
+        .map_or_else(|| state.config.chat_model.clone(), |model| model.id.clone());
+    let last_id = data
+        .last()
+        .map_or_else(|| state.config.chat_model.clone(), |model| model.id.clone());
 
     // Wrap the descriptor with Anthropic's pagination contract.
     let response = ModelListResponse {
-        data: vec![descriptor],
+        data,
         has_more: false,
-        first_id: model.clone(),
-        last_id: model,
+        first_id,
+        last_id,
     };
     Json(response).into_response()
 }

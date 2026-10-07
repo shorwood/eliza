@@ -617,8 +617,16 @@ pub(super) async fn generate(
     payload: GenerateContentRequest,
 ) -> Response {
     // Only the dedicated speech model can execute AUDIO requests.
-    if model.as_str() != speech::core::MODEL_ID {
-        return GeminiRejection::from_error(&GeminiError::SpeechModelRequired).into_response();
+    if !state
+        .config
+        .models
+        .speech
+        .has_model(&model, speech::core::MODEL_ID)
+    {
+        return GeminiRejection::from_error(&GeminiError::SpeechModelRequired {
+            expected: state.config.models.speech.expected(speech::core::MODEL_ID),
+        })
+        .into_response();
     }
 
     // Lower the provider request before occupying a synthesis worker.
