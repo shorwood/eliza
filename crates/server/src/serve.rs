@@ -119,6 +119,9 @@ impl ServerConfig {
     /// Enable an explicitly validated hosted deployment.
     #[must_use]
     pub fn with_hosted(mut self, hosted: Arc<Hosted>) -> Self {
+        let workers = std::num::NonZeroUsize::new(hosted.config().speech_jobs)
+            .unwrap_or(std::num::NonZeroUsize::MIN);
+        self.routes = self.routes.with_speech_workers(workers);
         self.hosted = Some(hosted);
         self
     }
@@ -168,13 +171,23 @@ impl ServerConfig {
             })
         })?;
         tracing::info!(address = %self.address, "serving ELIZA compatibility server");
-        axum::serve(
-            listener,
-            self.into_router()
-                .into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .map_err(|source| ServerError(ServerErrorKind::Serve(source)))?;
+        let config = self.hosted.as_ref().map(|hosted| hosted.config().clone());
+        let router = self.into_router();
+        let result = if let Some(config) = config {
+            let listener = crate::connection::OriginListener::new(listener, Some(&config));
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<crate::connection::Peer>(),
+            )
+            .await
+        } else {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+        };
+        result.map_err(|source| ServerError(ServerErrorKind::Serve(source)))?;
         Ok(())
     }
 }

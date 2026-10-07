@@ -3,13 +3,14 @@ use std::str::FromStr;
 
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
-use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use eliza_http::context::ProviderAuth;
+use eliza_http::execution::Execution;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks};
@@ -110,7 +111,7 @@ impl GenerateRequestMode {
     /// # Errors
     ///
     /// Returns a typed error for unsupported modality combinations or controls.
-    fn for_payload(model: &ModelId, payload: &GenerateContentRequest) -> Result<Self, GeminiError> {
+    fn select(model: &ModelId, payload: &GenerateContentRequest) -> Result<Self, GeminiError> {
         let generation = payload.generation_config.as_ref();
         let modalities = generation.and_then(|config| config.response_modalities.as_deref());
         match modalities {
@@ -152,6 +153,20 @@ impl GenerateRequestMode {
             }),
             _ => Err(GeminiError::InvalidResponseModalities),
         }
+    }
+
+    /// Select native modality controls and validate dedicated model policy.
+    ///
+    /// # Errors
+    /// Rejects image models requested with a non-image modality.
+    fn for_payload(model: &ModelId, payload: &GenerateContentRequest) -> Result<Self, GeminiError> {
+        let mode = Self::select(model, payload)?;
+
+        // Dedicated image models never silently fall back to another engine.
+        if model.as_str() == image::generation::MODEL_ID && !matches!(mode, Self::Image { .. }) {
+            return Err(GeminiError::ImageModelRequiresImage);
+        }
+        Ok(mode)
     }
 }
 
@@ -540,6 +555,7 @@ impl IntoResponse for GenerateTransport {
 async fn generate(
     State(state): State<AppState>,
     headers: HeaderMap,
+    execution: Option<Extension<Execution>>,
     model_action: Result<Path<String>, PathRejection>,
     query: Result<Query<GenerateQuery>, QueryRejection>,
     payload: Result<Json<GenerateContentRequest>, JsonRejection>,
@@ -602,17 +618,12 @@ async fn generate(
         Err(error) => return GeminiRejection::from_error(&error).into_response(),
     };
 
-    // Dedicated modality models never silently fall back to another engine.
-    if action.model.as_str() == image::generation::MODEL_ID
-        && !matches!(mode, GenerateRequestMode::Image { .. })
-    {
-        return GeminiRejection::from_error(&GeminiError::ImageModelRequiresImage).into_response();
-    }
-
+    let execution = execution.map(|Extension(value)| value);
     match mode {
         // Audio generation owns its provider-native response.
         GenerateRequestMode::Audio => {
-            return super::speech::generate(&state, action.model, delivery, payload).await;
+            return super::speech::generate(&state, action.model, delivery, payload, execution)
+                .await;
         }
         // Image generation owns its provider-native multipart response.
         GenerateRequestMode::Image { composition } => {

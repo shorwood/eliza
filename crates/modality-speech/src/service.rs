@@ -121,24 +121,32 @@ impl Service {
         }
     }
 
-    /// Validate, synthesize, and encode one complete request off the async runtime.
+    /// Run hosted work with owned admission retained until actual completion.
     ///
     /// # Errors
-    ///
-    /// Returns a typed request, worker, synthesis, or encoding failure.
-    pub async fn render(
+    /// Returns validation, saturation, synthesis or encoding failures.
+    pub async fn render_guarded(
         &self,
         request: Request,
         format: AudioFormat,
         max_chars: NonZeroUsize,
+        guard: Option<Arc<dyn Send + Sync>>,
     ) -> Result<Audio, Error> {
         request.validate(max_chars)?;
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        let capacity = Arc::clone(&self.permits);
+        let permit = if guard.is_some() {
+            capacity
+                .try_acquire_owned()
+                .map_err(|_| Error::Overloaded)?
+        } else {
+            capacity
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::Unavailable)?
+        };
 
         tokio::task::spawn_blocking(move || {
+            let _guard = guard;
             let _permit = permit;
             let sample_rate = request.sample_rate;
             let samples = synth::synthesize(&request, sample_rate as usize * SERVICE_MAX_SECONDS)?;
@@ -157,28 +165,50 @@ impl Service {
         })?
     }
 
-    /// Start incremental synthesis and encoding on a bounded worker.
+    /// Validate, synthesize, and encode one complete request off the async runtime.
     ///
     /// # Errors
     ///
-    /// Returns request validation or worker-pool failures before response delivery begins.
-    pub async fn stream(
+    /// Returns a typed request, worker, synthesis, or encoding failure.
+    pub async fn render(
         &self,
         request: Request,
         format: AudioFormat,
         max_chars: NonZeroUsize,
+    ) -> Result<Audio, Error> {
+        self.render_guarded(request, format, max_chars, None).await
+    }
+
+    /// Run hosted work with owned admission retained until actual completion.
+    ///
+    /// # Errors
+    /// Returns validation, saturation, synthesis or encoding failures.
+    pub async fn stream_guarded(
+        &self,
+        request: Request,
+        format: AudioFormat,
+        max_chars: NonZeroUsize,
+        guard: Option<Arc<dyn Send + Sync>>,
     ) -> Result<Stream, Error> {
         request.validate(max_chars)?;
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        let capacity = Arc::clone(&self.permits);
+        let permit = if guard.is_some() {
+            capacity
+                .try_acquire_owned()
+                .map_err(|_| Error::Overloaded)?
+        } else {
+            capacity
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::Unavailable)?
+        };
         let sample_rate = request.sample_rate;
         let encoder = audio::StreamingEncoder::new(format, sample_rate);
         let media_type = encoder.media_type();
         let (sender, items) = mpsc::channel(SERVICE_STREAM_BUFFER);
         let panic_sender = sender.clone();
         let worker = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
             let _permit = permit;
             Self::stream_audio(&request, encoder, &sender)
         });
@@ -200,6 +230,20 @@ impl Service {
             items,
         })
     }
+
+    /// Start incremental synthesis and encoding on a bounded worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns request validation or worker-pool failures before response delivery begins.
+    pub async fn stream(
+        &self,
+        request: Request,
+        format: AudioFormat,
+        max_chars: NonZeroUsize,
+    ) -> Result<Stream, Error> {
+        self.stream_guarded(request, format, max_chars, None).await
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -210,6 +254,38 @@ impl Service {
 mod tests {
     use super::*;
     use crate::core::Segment;
+
+    /// Hosted synthesis fails immediately when its native worker slot is occupied.
+    ///
+    /// # Panics
+    /// Panics if guarded work queues or ignores the shared speech limit.
+    #[tokio::test]
+    async fn guarded_speech_never_queues() {
+        let service = Service::with_worker_limit(NonZeroUsize::MIN);
+        let occupied = Arc::clone(&service.permits).try_acquire_owned().unwrap();
+        let request = Request {
+            segments: vec![Segment {
+                text: "Hello".into(),
+                voice: "Kore".into(),
+                style: String::new(),
+                speed: 1.0,
+                pause_after_ms: 0,
+            }],
+            sample_rate: 8_000,
+        };
+        let result = service
+            .render_guarded(
+                request,
+                AudioFormat::Pcm,
+                NonZeroUsize::MAX,
+                Some(Arc::new(())),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Overloaded)));
+        drop(occupied);
+        let remaining = service.permits.available_permits();
+        assert_eq!(remaining, 1);
+    }
 
     /// Streaming PCM arrives in multiple chunks and terminates with an exact count.
     ///

@@ -482,6 +482,7 @@ impl From<&speech::errors::Error> for GeminiRejection {
             speech::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
             speech::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
             speech::errors::ErrorKind::Internal => ProblemClass::Internal,
+            speech::errors::ErrorKind::Overloaded => ProblemClass::Unavailable,
         };
         let param = match error.field() {
             Some(speech::errors::ErrorField::Input) => Some("contents.parts"),
