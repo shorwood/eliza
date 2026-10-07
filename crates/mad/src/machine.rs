@@ -1,5 +1,6 @@
 //! Bounded execution for linked MAD programs.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
@@ -457,13 +458,22 @@ impl<H: Host> Machine<H> {
     ) -> Result<usize, RuntimeError> {
         let label = match target {
             JumpTarget::Computed { base, index } => {
-                format!("{base}({})", self.evaluate(index)?.to_i64())
+                Cow::Owned(format!("{base}({})", self.evaluate(index)?.to_i64()))
             }
-            JumpTarget::Label(label) => label.clone(),
+            JumpTarget::Label(label) => Cow::Borrowed(label.as_str()),
         };
-        self.program.labels.get(&label).copied().ok_or_else(|| {
-            RuntimeError::at_optional(span, RuntimeErrorKind::UnknownLabel { label })
-        })
+        self.program
+            .labels
+            .get(label.as_ref())
+            .copied()
+            .ok_or_else(|| {
+                RuntimeError::at_optional(
+                    span,
+                    RuntimeErrorKind::UnknownLabel {
+                        label: label.into_owned(),
+                    },
+                )
+            })
     }
 
     /// Retain a THROUGH loop for its eventual back edge.
@@ -765,7 +775,7 @@ mod tests {
     use thiserror::Error;
 
     use super::{Host, Machine, RunState, RuntimeErrorKind, Word};
-    use crate::program::Program;
+    use crate::program::{JumpTarget, Program};
     use crate::source::SourceModule;
 
     /// Native failure exposed by [`TestHost`].
@@ -1009,5 +1019,69 @@ mod tests {
             RunState::OutputWord(Word::from_i64(1))
         );
         assert_eq!(machine.run(100).unwrap(), RunState::Halted);
+    }
+
+    /// Computed transfers evaluate a mutating index exactly once.
+    ///
+    /// # Panics
+    /// Panics if index evaluation or computed label resolution changes.
+    #[test]
+    fn computed_transfer_evaluates_index_once() {
+        let source = concat!(
+            "            INDEX=0\n",
+            "            T'O TARGET(INCREMENT.(INDEX))\n",
+            "TARGET(1)   PRINT FORMAT NUMBER,INDEX\n",
+            "            EXIT.\n",
+        );
+        let module = SourceModule::parse("computed", source).unwrap();
+        let program = Program::link(&[module]).unwrap();
+        let mut machine = Machine::new(program, TestHost);
+        assert_eq!(
+            machine.run(100).unwrap(),
+            RunState::OutputWord(Word::from_i64(1))
+        );
+        assert_eq!(machine.run(100).unwrap(), RunState::Halted);
+    }
+
+    /// Missing computed targets retain their exact label and source location.
+    ///
+    /// # Panics
+    /// Panics if linking or owned error diagnostics change.
+    #[test]
+    fn computed_transfer_error_outlives_machine() {
+        let source = concat!(
+            "            INDEX=0\n",
+            "            T'O MISSING(INCREMENT.(INDEX))\n",
+        );
+        let module = SourceModule::parse("computed_missing", source).unwrap();
+        let program = Program::link(&[module]).unwrap();
+        let mut machine = Machine::new(program, TestHost);
+        let error = machine.run(100).unwrap_err();
+        assert_eq!(machine.scalars.get("INDEX"), Some(&Word::from_i64(1)));
+        drop(machine);
+        assert!(
+            matches!(&error.kind, RuntimeErrorKind::UnknownLabel { label } if label == "MISSING(1)")
+        );
+        assert_eq!(error.span().unwrap().module(), "computed_missing");
+        assert_eq!(error.span().unwrap().line(), 2);
+    }
+
+    /// Direct lookup failures own their label beyond the borrowed target.
+    ///
+    /// # Panics
+    /// Panics if linking or owned direct-target diagnostics change.
+    #[test]
+    fn direct_target_error_outlives_target_and_machine() {
+        let module = SourceModule::parse("direct_missing", "            EXIT.\n").unwrap();
+        let program = Program::link(&[module]).unwrap();
+        let mut machine = Machine::new(program, TestHost);
+        let target = JumpTarget::Label("MISSING".to_owned());
+        let error = machine.resolve_target(&target, None).unwrap_err();
+        drop(target);
+        drop(machine);
+        assert!(
+            matches!(&error.kind, RuntimeErrorKind::UnknownLabel { label } if label == "MISSING")
+        );
+        assert!(error.span().is_none());
     }
 }
