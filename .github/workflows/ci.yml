@@ -11,6 +11,18 @@ permissions:
 jobs:
   web:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: eliza_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5432/eliza_test
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
@@ -18,6 +30,7 @@ jobs:
         run: |
           nix develop --command pnpm --dir web install --frozen-lockfile
           nix develop --command pnpm --dir web check
+          nix develop --command pnpm --dir web test:billing
           nix develop --command pnpm --dir web build
           nix develop --command pnpm --dir web exec playwright install --with-deps chromium
           nix develop --command env -u LD_LIBRARY_PATH pnpm --dir web test
