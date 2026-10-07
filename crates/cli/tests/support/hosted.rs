@@ -162,6 +162,10 @@ fn hosted_contracts() -> std::io::Result<()> {
     config.entitlement_url.clone_from(&billing.url);
     config.public.text.burst = 1;
     config.public.text.per_minute = 1;
+    config.public.speech.burst = 1;
+    config.public.speech.per_minute = 1;
+    config.public.image.burst = 1;
+    config.public.image.per_minute = 1;
     config.supporter.text.burst = 2;
     config.supporter.text.per_minute = 1;
     let mut file = tempfile::NamedTempFile::new()?;

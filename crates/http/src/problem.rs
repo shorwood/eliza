@@ -172,6 +172,32 @@ pub struct NativeError {
 }
 
 impl NativeError {
+    /// Explicit hosted encoded input or output size rejection.
+    #[must_use]
+    pub fn too_large() -> Self {
+        Self::admission(
+            ProblemClass::RequestTooLarge,
+            "Request exceeds hosted size limits.".into(),
+            None,
+        )
+    }
+
+    /// Upload deadline exhaustion retains a native invalid-request envelope with HTTP 408.
+    #[must_use]
+    pub fn request_timeout() -> Self {
+        let message = "Request upload deadline exhausted.".to_owned();
+        let mut error = Self::admission(ProblemClass::InvalidRequest, message.clone(), None);
+        error.report = Box::new(
+            ApiProblem::Extraction {
+                status: StatusCode::REQUEST_TIMEOUT.as_u16(),
+                message,
+            }
+            .into_report(),
+        );
+        error.code = "eliza::admission::request_timeout".into();
+        error
+    }
+
     /// Shared overload, without a payment offer or provider diagnostic.
     #[must_use]
     pub fn unavailable() -> Self {
@@ -214,7 +240,7 @@ impl NativeError {
             code,
             param,
             class,
-            retry_after: None,
+            retry_after: (class == ProblemClass::Unavailable).then_some(1),
             message,
         }
     }
@@ -232,6 +258,10 @@ impl NativeError {
             code: match class {
                 ProblemClass::RateLimit => "eliza::admission::rate_limit",
                 ProblemClass::Authentication => "eliza::auth::failed",
+                ProblemClass::RequestTooLarge => "eliza::admission::request_too_large",
+                ProblemClass::InvalidRequest | ProblemClass::UnsupportedRequest => {
+                    "eliza::admission::invalid_request"
+                }
                 _ => "eliza::admission::unavailable",
             }
             .into(),
