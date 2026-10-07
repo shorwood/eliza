@@ -349,7 +349,11 @@ impl<H: Host> Machine<H> {
         match place {
             Place::Array { index, name } => self.write_array(index, name, value, span)?,
             Place::Scalar(name) => {
-                self.scalars.insert(name.clone(), value);
+                if let Some(slot) = self.scalars.get_mut(name.as_str()) {
+                    *slot = value;
+                } else {
+                    self.scalars.insert(name.clone(), value);
+                }
             }
         }
         Ok(())
@@ -945,6 +949,64 @@ mod tests {
         assert_eq!(
             machine.run(100).unwrap(),
             RunState::OutputWord(Word::from_i64(3))
+        );
+        assert_eq!(machine.run(100).unwrap(), RunState::Halted);
+    }
+
+    /// Scalars retain default-zero reads and updates across cooperative input.
+    ///
+    /// # Panics
+    /// Panics if first insertion, overwrite, or input writeback changes.
+    #[test]
+    fn scalar_writes_preserve_values_across_input() {
+        let source = concat!(
+            "            PRINT FORMAT NUMBER,VALUE\n",
+            "            VALUE=7\n",
+            "            PRINT FORMAT NUMBER,VALUE\n",
+            "            VALUE=VALUE+2\n",
+            "            PRINT FORMAT NUMBER,VALUE\n",
+            "            READ FORMAT NUMBER,VALUE\n",
+            "            PRINT FORMAT NUMBER,VALUE\n",
+        );
+        let module = SourceModule::parse("scalar", source).unwrap();
+        let program = Program::link(&[module]).unwrap();
+        let mut machine = Machine::new(program, TestHost);
+        for value in [0, 7, 9] {
+            assert_eq!(
+                machine.run(100).unwrap(),
+                RunState::OutputWord(Word::from_i64(value))
+            );
+        }
+        assert_eq!(machine.run(100).unwrap(), RunState::NeedsInput);
+        machine.provide_input(Word::from_i64(11)).unwrap();
+        assert_eq!(
+            machine.run(100).unwrap(),
+            RunState::OutputWord(Word::from_i64(11))
+        );
+        assert_eq!(machine.run(100).unwrap(), RunState::Halted);
+    }
+
+    /// Native writeback can create a scalar that previously read as zero.
+    ///
+    /// # Panics
+    /// Panics if native scalar insertion or return-value assignment changes.
+    #[test]
+    fn native_arguments_create_absent_scalar() {
+        let source = concat!(
+            "            RESULT=INCREMENT.(VALUE)\n",
+            "            PRINT FORMAT NUMBER,VALUE\n",
+            "            PRINT FORMAT NUMBER,RESULT\n",
+        );
+        let module = SourceModule::parse("native_scalar", source).unwrap();
+        let program = Program::link(&[module]).unwrap();
+        let mut machine = Machine::new(program, TestHost);
+        assert_eq!(
+            machine.run(100).unwrap(),
+            RunState::OutputWord(Word::from_i64(1))
+        );
+        assert_eq!(
+            machine.run(100).unwrap(),
+            RunState::OutputWord(Word::from_i64(1))
         );
         assert_eq!(machine.run(100).unwrap(), RunState::Halted);
     }
