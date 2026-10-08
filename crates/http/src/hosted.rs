@@ -1091,6 +1091,8 @@ impl Hosted {
     fn limit_error(&self, caller: &Caller, modality: Modality, seconds: u64) -> NativeError {
         let message = if modality == Modality::Credential {
             "Credential lookup allowance exhausted; retry shortly.".into()
+        } else if modality == Modality::Discovery {
+            "Discovery allowance temporarily exhausted; retry shortly.".into()
         } else if caller.is_supporter {
             "Your account allowance is temporarily exhausted; retry shortly.".into()
         } else {
