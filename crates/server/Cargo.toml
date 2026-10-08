@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+percent-encoding = "=2.3.2"
 tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
 bytes = "1.12.0"
