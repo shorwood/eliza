@@ -1,9 +1,5 @@
 [rlib-lint]
-
-# Keep compact provider contracts and scenario suites in one navigable section.
 declarations-per-section-threshold = 12
-
-# ELIZA uses thiserror for error contracts and derive_more for wire enum parsing.
 error-implementation-provider = "thiserror_error"
 error-variant-conversion-provider = "thiserror_from"
 enum-string-parsing-provider = "derive_more_from_str"
