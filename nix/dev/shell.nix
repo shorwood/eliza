@@ -3,6 +3,7 @@
 {
   curl,
   deadnix,
+  git-cliff,
   hurl,
   jq,
   just,
@@ -34,6 +35,7 @@ mkShell {
   packages = [
     curl
     deadnix
+    git-cliff
     hurl
     jq
     just

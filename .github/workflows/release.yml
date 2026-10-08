@@ -1,5 +1,9 @@
+# Publish downloads and a multi-architecture container from a version tag.
+# The check job gates every build; the release job waits for all smoke tests.
 name: Release
 
+# --- Start from a tag, then verify its exact version below.
+# The broad trigger lets the check job reject tags such as v1.2.3-rc1.
 on:
   push:
     tags:
@@ -12,6 +16,9 @@ env:
   IMAGE: ghcr.io/shorwood/eliza
 
 jobs:
+  # --- Check the source and publication destinations before making artifacts.
+  # A private repository or existing private GHCR package would make the
+  # promised public release inaccessible, so either condition stops the run.
   check:
     runs-on: ubuntu-24.04
     permissions:
@@ -19,6 +26,9 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # git-cliff needs the previous tag and its commit history.
+          fetch-depth: 0
       - name: Verify public release destination
         shell: bash
         env:
@@ -38,11 +48,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Require a plain version tag matching the version built by Nix.
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "${GITHUB_REF_NAME#v}" = "$(nix eval --raw .#eliza.version)"
       - name: Check source
         run: nix develop --command just ok
+      - name: Generate changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="eliza-$GITHUB_REF_NAME-CHANGELOG.md"
+          if [[ "$GITHUB_REF_NAME" == v1.0.0 ]]; then
+            cp CHANGELOG.md "$notes"
+          else
+            nix develop --command git-cliff --current --config cliff.toml --output "$notes"
+          fi
+          test -s "$notes"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-changelog
+          path: eliza-*-CHANGELOG.md
+          if-no-files-found: error
 
+  # --- Build and push one Linux image for each container architecture.
+  # The final job combines these architecture tags into version and latest
+  # manifests after the downloads and smoke tests have passed.
   image:
     needs: check
     strategy:
@@ -66,6 +96,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           nix build .#dockerImage
           docker load --input result
+          # Check the loaded image before it is tagged and pushed to GHCR.
           docker run --rm "eliza:$version" --help
       - name: Log in to GHCR
         shell: bash
@@ -77,6 +108,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
+          # Keep each image under its own tag until the manifest is ready.
           docker tag "eliza:$version" "$IMAGE:$version-${{ matrix.architecture }}"
           docker push "$IMAGE:$version-${{ matrix.architecture }}"
       - name: Verify published package is public
@@ -86,6 +118,9 @@ jobs:
           gh api "users/$GITHUB_REPOSITORY_OWNER/packages/container/${IMAGE##*/}" \
             --jq '.visibility' | grep -qx public
 
+  # --- Build each platform's downloads on a compatible runner.
+  # Nix checks Linux and macOS outputs on those hosts. Windows is cross-built
+  # on Linux, then executed by the separate Windows smoke job below.
   assets:
     needs: check
     strategy:
@@ -122,7 +157,7 @@ jobs:
           set -euo pipefail
           mkdir release-assets
           nix build -o result-assets '.#${{ matrix.output }}'
-          # Nix's aggregate output contains symlinks into the store.
+          # Artifacts must contain files, not links into the runner's Nix store.
           cp -L result-assets/* release-assets/
       - name: Smoke-test release downloads
         if: matrix.platform != 'windows'
@@ -134,6 +169,8 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
+  # --- Exercise the cross-built executable on an actual Windows runner.
+  # Building it on Linux cannot prove that it starts or serves requests there.
   windows-smoke:
     needs: assets
     runs-on: windows-2025
@@ -152,6 +189,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'eliza.exe --help failed' }
           $server = Start-Process -FilePath $binary.FullName -ArgumentList 'serve', '--bind', '127.0.0.1:18787' -PassThru -NoNewWindow
           try {
+            # Give the server a short startup window before checking health.
             $healthy = $false
             for ($i = 0; $i -lt 50; $i++) {
               try {
@@ -163,6 +201,8 @@ jobs:
             if (-not $healthy) { throw 'Windows health check failed' }
           } finally { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
 
+  # --- Publish only after every image, download, and smoke test succeeds.
+  # Re-runs replace existing assets and update the release for the same tag.
   release:
     needs: [image, assets, windows-smoke]
     runs-on: ubuntu-24.04
@@ -188,8 +228,10 @@ jobs:
             test -f "eliza-$version-linux-$arch.apk"
           done
           test -f "eliza-$version-windows-x86_64.exe"
-          # Guard against an incomplete or unexpected download matrix.
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 9
+          test -s "eliza-$version-CHANGELOG.md"
+          # Expect nine platform downloads and their shared changelog.
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 10
+          # Ship one standard checksum sidecar per downloadable asset.
           for asset in eliza-*; do
             sha256sum "$asset" > "$asset.sha256"
             sha256sum --check "$asset.sha256"
@@ -206,6 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
+          # Point the public tags at the two images pushed by the image jobs.
           docker buildx imagetools create \
             --tag "$IMAGE:$version" \
             --tag "$IMAGE:latest" \
@@ -213,12 +256,18 @@ jobs:
             "$IMAGE:$version-arm64"
           docker buildx imagetools inspect "$IMAGE:$version" --raw | \
             jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64", "linux/arm64"]'
+          notes="release-assets/eliza-$GITHUB_REF_NAME-CHANGELOG.md"
+          # A retry should refresh the body and assets without another release.
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
-              --generate-notes \
+              --notes-file "$notes" \
               --verify-tag
+          else
+            gh release edit "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --notes-file "$notes"
           fi
           gh release upload "$GITHUB_REF_NAME" release-assets/* \
             --repo "$GITHUB_REPOSITORY" --clobber
