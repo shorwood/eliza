@@ -3,6 +3,9 @@ fmt:
     hurlfmt --in-place crates/cli/tests/http/public/*.hurl crates/cli/tests/http/auth/*.hurl
     nixfmt flake.nix nix/*.nix
 
+check-public-docs:
+    bash web/tools/check-docs.sh
+
 chat:
     sh examples/open-webui/run.sh
 
