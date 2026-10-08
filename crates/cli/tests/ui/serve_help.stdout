@@ -57,9 +57,6 @@ Security:
       --api-key <KEY>
           Require this key through each provider's native authentication scheme
 
-      --hosted-config <PATH>
-          Enable explicit hosted admission using a JSON policy file
-
       --allow-any-origin
           Allow browser requests from any origin using permissive CORS
 
