@@ -1,4 +1,4 @@
 {
-  "args": ["serve", "--config", "../../config/hosted-staging.toml", "--api-key", "secret"],
+  "args": ["serve", "--config", "tests/fixtures/hosted-staging.toml", "--api-key", "secret"],
   "code": 1
 }

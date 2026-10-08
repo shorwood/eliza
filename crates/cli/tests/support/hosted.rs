@@ -171,7 +171,7 @@ struct HostedToml<'a> {
 pub(super) fn run() -> std::io::Result<()> {
     let billing = EntitlementFixture::start()?;
     let mut config: HostedConfig = Figment::from(Toml::string(include_str!(
-        "../../../../config/hosted-staging.toml"
+        "../fixtures/hosted-staging.toml"
     )))
     .extract_inner("hosted")
     .map_err(std::io::Error::other)?;
