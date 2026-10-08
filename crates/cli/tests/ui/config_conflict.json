@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--config", "../../config/hosted-staging.toml", "--api-key", "secret"],
+  "code": 1
+}

@@ -1,0 +1,7 @@
+Error:   × invalid server configuration: unknown field: found `misspelled_option`,
+  │ expected `one of `bind`, `runtime_workers`, `speech_workers`,
+  │ `chat_models`, `embedding_models`, `image_models`, `speech_models`,
+  │ `max_history_messages`, `api_key`, `hosted`, `should_allow_any_origin`,
+  │ `max_input_chars`, `stream_delay_ms`, `should_use_json_logs`` for key
+  │ "default.misspelled_option" in tests/ui/config_unknown.toml TOML file
+

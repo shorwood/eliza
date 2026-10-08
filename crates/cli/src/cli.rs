@@ -72,7 +72,7 @@ pub(super) struct ServeArgs {
     /// TOML file supplying server options below explicit CLI flags.
     #[arg(long = "config", value_name = "PATH", help_heading = "Configuration")]
     #[serde(skip)]
-    config_file: Option<PathBuf>,
+    config: Option<PathBuf>,
 
     /// IP address and port on which to listen.
     #[arg(
@@ -142,14 +142,10 @@ pub(super) struct ServeArgs {
     #[arg(long, value_name = "KEY", help_heading = "Security")]
     api_key: Option<ApiKey>,
 
-    /// Enable explicit hosted admission using a JSON policy file.
-    #[arg(
-        long,
-        value_name = "PATH",
-        conflicts_with = "api_key",
-        help_heading = "Security"
-    )]
-    hosted_config: Option<PathBuf>,
+    /// Hosted admission policy supplied by the TOML configuration file.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hosted: Option<HostedConfig>,
 
     /// Allow browser requests from any origin using permissive CORS.
     #[arg(long = "allow-any-origin", help_heading = "Security")]
@@ -188,11 +184,7 @@ impl ServeArgs {
     /// # Panics
     /// Panics if constructed without a chat name; Clap supplies its default.
     pub(super) fn into_server_config(self) -> miette::Result<ServerConfig> {
-        let hosted = if let Some(path) = self.hosted_config {
-            let bytes = std::fs::read(path)
-                .map_err(|_| miette::miette!("cannot read hosted configuration"))?;
-            let config: HostedConfig = serde_json::from_slice(&bytes)
-                .map_err(|_| miette::miette!("invalid hosted JSON configuration"))?;
+        let hosted = if let Some(config) = self.hosted {
             let ingress = std::env::var("ELIZA_INGRESS_SECRET")
                 .map_err(|_| miette::miette!("ELIZA_INGRESS_SECRET is required"))?;
             let entitlement = std::env::var("ELIZA_ENTITLEMENT_SECRET")
@@ -258,10 +250,8 @@ impl ServeArgs {
     /// Rejects conflicting security settings and invalid model or worker counts.
     fn validate_config(&self) -> miette::Result<()> {
         // Clap sees only flags, so enforce this conflict after merging the file.
-        if self.api_key.is_some() && self.hosted_config.is_some() {
-            return Err(miette::miette!(
-                "api_key and hosted_config cannot both be set"
-            ));
+        if self.api_key.is_some() && self.hosted.is_some() {
+            return Err(miette::miette!("api_key and hosted cannot both be set"));
         }
 
         // File values must fit the same semaphore bound as CLI values.
@@ -285,7 +275,7 @@ impl ServeArgs {
     /// Panics only if the built-in Clap declaration cannot parse its own defaults.
     pub(super) fn with_config(self, matches: &ArgMatches) -> miette::Result<Self> {
         // Keep the existing CLI-only path when no file is requested.
-        let Some(path) = &self.config_file else {
+        let Some(path) = &self.config else {
             return Ok(self);
         };
 
@@ -340,68 +330,4 @@ pub(super) struct Cli {
     /// Selected command.
     #[command(subcommand)]
     pub(super) command: Commands,
-}
-
-#[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::missing_errors_doc,
-        clippy::missing_panics_doc,
-        reason = "configuration tests use assertions and temporary files"
-    )]
-
-    use std::num::NonZeroUsize;
-
-    use clap::{CommandFactory as _, FromArgMatches as _};
-
-    use super::{ApiKey, Cli, Commands, ServeArgs};
-
-    /// Load a temporary TOML file through the same Clap and Figment path as main.
-    fn load(file: &str, flags: &[&str]) -> miette::Result<ServeArgs> {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("serve.toml");
-        std::fs::write(&path, file).unwrap();
-        let args = ["eliza", "serve", "--config", path.to_str().unwrap()]
-            .into_iter()
-            .chain(flags.iter().copied());
-        let matches = Cli::command().try_get_matches_from(args).unwrap();
-        let Commands::Serve(parsed) = Cli::from_arg_matches(&matches).unwrap().command;
-        parsed.with_config(matches.subcommand_matches("serve").unwrap())
-    }
-
-    /// File values override built-ins, while explicit flags replace file values.
-    #[test]
-    fn config_precedence() {
-        let file = "bind = '127.0.0.1:0'\nruntime_workers = 1\nspeech_workers = 4\nchat_models = ['file-chat']\nshould_allow_any_origin = true\napi_key = 'secret'\n";
-        let from_file = load(file, &[]).unwrap();
-        assert_eq!(from_file.bind.port(), 0);
-        assert_eq!(from_file.runtime_workers.map(NonZeroUsize::get), Some(1));
-        assert_eq!(from_file.speech_workers.get(), 4);
-        assert_eq!(from_file.chat_models[0].as_str(), "file-chat");
-        assert!(from_file.should_allow_any_origin);
-        assert_eq!(
-            from_file.api_key.as_ref().map(ApiKey::as_str),
-            Some("secret")
-        );
-
-        let overridden =
-            load(file, &["--model-chat", "cli-chat", "--speech-workers", "2"]).unwrap();
-        assert_eq!(overridden.chat_models[0].as_str(), "cli-chat");
-        assert_eq!(overridden.speech_workers.get(), 2);
-        assert!(
-            load("should_allow_any_origin = false", &["--allow-any-origin"])
-                .unwrap()
-                .should_allow_any_origin
-        );
-    }
-
-    /// File values must retain constraints that Clap applies to flags.
-    #[test]
-    fn config_validation() {
-        assert!(load("chat_models = []", &[]).is_err());
-        assert!(load("api_key = ''", &[]).is_err());
-        assert!(load("speech_workers = 0", &[]).is_err());
-        assert!(load("api_key = 'secret'\nhosted_config = 'hosted.json'", &[]).is_err());
-        assert!(load("misspelled_option = true", &[]).is_err());
-    }
 }

@@ -8,6 +8,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eliza_http::hosted::HostedConfig;
+use figment::{
+    Figment,
+    providers::{Format as _, Toml},
+};
+use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
@@ -148,6 +153,17 @@ impl Drop for EntitlementFixture {
 }
 
 // -----------------------------------------------------------------------------
+// HostedToml: Wraps the hosted policy in the server config.
+// -----------------------------------------------------------------------------
+
+/// Serialized TOML served to the child process.
+#[derive(Serialize)]
+struct HostedToml<'a> {
+    /// Hosted admission settings beneath the `[hosted]` table.
+    hosted: &'a HostedConfig,
+}
+
+// -----------------------------------------------------------------------------
 // Run: Verify native hosted wire behavior.
 // -----------------------------------------------------------------------------
 
@@ -156,8 +172,11 @@ impl Drop for EntitlementFixture {
 /// Returns fixture, child process or Hurl contract failures.
 pub(super) fn run() -> std::io::Result<()> {
     let billing = EntitlementFixture::start()?;
-    let mut config: HostedConfig =
-        serde_json::from_str(include_str!("../../../../config/hosted-staging.json"))?;
+    let mut config: HostedConfig = Figment::from(Toml::string(include_str!(
+        "../../../../config/hosted-staging.toml"
+    )))
+    .extract_inner("hosted")
+    .map_err(std::io::Error::other)?;
     config.entitlement_url.clone_from(&billing.url);
     config.public.text.burst = 1;
     config.public.text.per_minute = 1;
@@ -168,13 +187,15 @@ pub(super) fn run() -> std::io::Result<()> {
     config.supporter.text.burst = 2;
     config.supporter.text.per_minute = 1;
     let mut file = tempfile::NamedTempFile::new()?;
-    serde_json::to_writer(&mut file, &config)?;
+    let contents =
+        toml::to_string(&HostedToml { hosted: &config }).map_err(std::io::Error::other)?;
+    std::io::Write::write_all(&mut file, contents.as_bytes())?;
     let path = file
         .path()
         .to_str()
         .ok_or_else(|| std::io::Error::other("fixture config path"))?;
     let server = TestServer::spawn_with_env(
-        &["--hosted-config", path],
+        &["--config", path],
         &std::collections::HashMap::from([
             ("ELIZA_INGRESS_SECRET", HOSTED_INGRESS_SECRET),
             ("ELIZA_ENTITLEMENT_SECRET", HOSTED_ENTITLEMENT_SECRET),
