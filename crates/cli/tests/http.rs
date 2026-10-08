@@ -275,6 +275,22 @@ fn http_contracts_model_aliases() -> io::Result<()> {
     server.run_hurl(&contracts, Some("secret"))
 }
 
+/// Gemini resource paths accept both literal and encoded slashes in aliases.
+///
+/// # Errors
+/// Returns an I/O error when the server or a slash-alias contract fails.
+#[test]
+fn http_contracts_slash_model_aliases() -> io::Result<()> {
+    let server = TestServer::spawn(&[
+        "--model-chat",
+        "acme/chat",
+        "--model-embeddings",
+        "acme/embed",
+    ])?;
+    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/aliases_slash.hurl");
+    server.run_hurl(&contracts, None)
+}
+
 /// A shared chat/embedding name retains one descriptor and both endpoint bindings.
 ///
 /// # Errors
