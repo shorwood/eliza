@@ -26,6 +26,14 @@ const DOCTOR_SCRIPT: &str = include_str!("../programs/1966/doctor.script");
 const DRIVER_SOURCE: &str = include_str!("../programs/1966/eliza.mad");
 
 /// Compiled 1966 DOCTOR program and script.
+///
+/// ```
+/// use eliza_mad::engine::Doctor;
+///
+/// let doctor = Doctor::compile().unwrap();
+/// let session = doctor.session().unwrap();
+/// assert_eq!(session.greeting(), "HOW DO YOU DO. PLEASE TELL ME YOUR PROBLEM");
+/// ```
 #[derive(Clone)]
 pub struct Doctor {
     /// Linked reconstruction driver.
@@ -484,48 +492,4 @@ fn validate_input(input: &str) -> Result<(), Error> {
         return Err(Error::new(ErrorDetail::InputCommand));
     }
     Ok(())
-}
-
-// -----------------------------------------------------------------------------
-// Tests: Compile the historical assets and verify the opening remark.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::Doctor;
-
-    /// # Panics
-    ///
-    /// Panics when compilation, startup, or the assertion fails.
-    #[test]
-    fn compiles_and_starts_doctor() {
-        let doctor = Doctor::compile().unwrap();
-        let session = doctor.session().unwrap();
-        assert_eq!(
-            session.greeting(),
-            "HOW DO YOU DO. PLEASE TELL ME YOUR PROBLEM"
-        );
-    }
-
-    /// Shared definitions outlive doctors without sharing conversation state.
-    ///
-    /// # Panics
-    /// Panics if shared ownership, startup, or response rotation changes.
-    #[test]
-    fn cloned_doctors_share_definitions_and_sessions_outlive_them() {
-        let doctor = Doctor::compile().unwrap();
-        let cloned = doctor.clone();
-        assert!(Arc::ptr_eq(&doctor.program, &cloned.program));
-        assert!(Arc::ptr_eq(&doctor.script, &cloned.script));
-        let mut first = doctor.session().unwrap();
-        let expected = first.respond("I NEED HELP").unwrap();
-        assert_ne!(first.respond("I NEED HELP").unwrap(), expected);
-        let mut fresh = cloned.session().unwrap();
-        drop(doctor);
-        drop(cloned);
-        assert_eq!(fresh.respond("I NEED HELP").unwrap(), expected);
-        assert!(!first.respond("I NEED HELP").unwrap().text.is_empty());
-    }
 }

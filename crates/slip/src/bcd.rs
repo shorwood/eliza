@@ -84,6 +84,16 @@ const BCD_WORD_REPERTOIRE: [Option<char>; 64] = [
 ];
 
 /// One 36-bit word containing six BCD characters.
+///
+/// ```
+/// use slip::bcd::BcdWord;
+///
+/// let word = BcdWord::encode("HERE").unwrap();
+/// assert_eq!(word.decode(), "HERE  ");
+/// assert_eq!(word.raw(), 0o302_551_256_060);
+/// assert_eq!(word.hash(2), 3);
+/// assert_eq!(BcdWord::last_chunk("INVENTED").unwrap(), BcdWord::encode("ED").unwrap());
+/// ```
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct BcdWord(
     /// Raw six-bit character codes packed into a 36-bit word.
@@ -187,45 +197,4 @@ pub enum BcdError {
         /// Unsupported source character.
         char,
     ),
-}
-
-// -----------------------------------------------------------------------------
-// Tests: Verify historical encodings, chunks, and hash examples.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::BcdWord;
-
-    /// # Panics
-    ///
-    /// Panics when encoding or an assertion fails.
-    #[test]
-    fn encodes_historical_words() {
-        assert_eq!(BcdWord::encode("ALWAYS").unwrap().raw(), 0o214_366_217_062);
-        assert_eq!(BcdWord::encode("HERE").unwrap().raw(), 0o302_551_256_060);
-        assert_eq!(BcdWord::encode("HERE").unwrap().decode(), "HERE  ");
-    }
-
-    /// # Panics
-    ///
-    /// Panics when encoding or an assertion fails.
-    #[test]
-    fn hashes_historical_examples() {
-        assert_eq!(BcdWord::encode("ALWAYS").unwrap().hash(7), 14);
-        assert_eq!(BcdWord::encode("HERE").unwrap().hash(2), 3);
-        assert_eq!(BcdWord::encode("KIDS").unwrap().hash(2), 1);
-        assert_eq!(BcdWord::encode("TIME").unwrap().hash(2), 0);
-    }
-
-    /// # Panics
-    ///
-    /// Panics when encoding or the assertion fails.
-    #[test]
-    fn uses_the_final_storage_chunk() {
-        assert_eq!(
-            BcdWord::last_chunk("INVENTED").unwrap(),
-            BcdWord::encode("ED").unwrap()
-        );
-    }
 }

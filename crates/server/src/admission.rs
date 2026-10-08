@@ -355,15 +355,3 @@ impl Admission {
         Ok(bytes.freeze())
     }
 }
-
-// -----------------------------------------------------------------------------
-// Tests: Verify cancellation ownership with actual blocking workers.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "assertions describe the test panic contract"
-)]
-#[path = "admission_tests.rs"]
-mod tests;

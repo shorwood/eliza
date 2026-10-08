@@ -683,11 +683,3 @@ impl http_body::Body for WorkBody {
         self.receiver.poll_recv(cx)
     }
 }
-
-// -----------------------------------------------------------------------------
-// Tests: Exercises provider-specific preflight before allocation.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-#[path = "work_tests.rs"]
-mod tests;

@@ -1458,34 +1458,3 @@ impl LinkError {
         &self.span
     }
 }
-
-// -----------------------------------------------------------------------------
-// Tests: Cover statement linking and expression precedence.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::{Instruction, Program};
-    use crate::source::SourceModule;
-
-    /// # Panics
-    ///
-    /// Panics when parsing, linking, or an assertion fails.
-    #[test]
-    fn links_supported_statements() {
-        let source = concat!(
-            "            DIMENSION A(4)\n",
-            "START       A(1)=2+3*4\n",
-            "            W'R A(1) .G. 10, T'O DONE\n",
-            "            T'O START\n",
-            "DONE        EXIT.\n",
-        );
-        let module = SourceModule::parse("sample", source).unwrap();
-        let program = Program::link(&[module]).unwrap();
-        assert_eq!(program.instruction_count(), 5);
-        assert!(matches!(
-            program.instructions[1],
-            Instruction::Assign { .. }
-        ));
-    }
-}

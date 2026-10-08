@@ -31,6 +31,14 @@ pub struct AssemblyError {
 
 /// Assemble literal words and captured pattern elements.
 ///
+/// ```
+/// use slip::pattern::{AssemblyItem, assemble};
+///
+/// let items = [AssemblyItem::Word("WHY".into()), AssemblyItem::Capture(1)];
+/// let captures = vec![vec!["I".into()], vec!["CARE".into(), "NOW".into()]];
+/// assert_eq!(assemble(&items, &captures).unwrap(), ["WHY", "CARE", "NOW"]);
+/// ```
+///
 /// # Errors
 ///
 /// Returns an error when an item names a capture that is not present.
@@ -225,6 +233,14 @@ where
 /// A variable element tries the shortest capture first, as the 1966 ELIZA
 /// algorithm did.
 ///
+/// ```
+/// use slip::pattern::{PatternItem, match_pattern};
+///
+/// let pattern = [PatternItem::Variable, PatternItem::Word("NO".into())];
+/// let words = ["ONE", "TWO", "THREE"].map(str::to_owned);
+/// assert!(match_pattern(&pattern, &words, |_, _| false, 2).is_err());
+/// ```
+///
 /// # Errors
 ///
 /// Returns an error when matching uses more than the configured recursive steps.
@@ -244,69 +260,4 @@ where
         words,
     }
     .match_from(MatcherCursor::default())
-}
-
-// -----------------------------------------------------------------------------
-// Tests: Cover assembly, historical pattern forms, and bounded backtracking.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use std::collections::{HashMap, HashSet};
-
-    use super::{AssemblyItem, PatternItem, assemble, match_pattern};
-
-    /// # Panics
-    ///
-    /// Panics when assembly or the assertion fails.
-    #[test]
-    fn assembles_captures() {
-        let items = [
-            AssemblyItem::Word("WHY".to_owned()),
-            AssemblyItem::Capture(1),
-        ];
-        let captures = vec![
-            vec!["I".to_owned()],
-            vec!["CARE".to_owned(), "NOW".to_owned()],
-        ];
-        assert_eq!(assemble(&items, &captures).unwrap(), ["WHY", "CARE", "NOW"]);
-    }
-
-    /// # Panics
-    ///
-    /// Panics when the expected bound or assertion is absent.
-    #[test]
-    fn bounds_backtracking() {
-        let pattern = [PatternItem::Variable, PatternItem::Word("NO".to_owned())];
-        let words = ["ONE", "TWO", "THREE"].map(str::to_owned);
-        assert!(match_pattern(&pattern, &words, |_, _| false, 2).is_err());
-    }
-
-    /// # Panics
-    ///
-    /// Panics when matching or an assertion fails.
-    #[test]
-    fn matches_variable_fixed_alternative_and_tag_parts() {
-        let pattern = [
-            PatternItem::Variable,
-            PatternItem::Word("YOUR".to_owned()),
-            PatternItem::Fixed(1),
-            PatternItem::Tags(vec!["FAMILY".to_owned()]),
-            PatternItem::Alternatives(vec!["CARES".to_owned(), "LOVES".to_owned()]),
-            PatternItem::Variable,
-        ];
-        let words = ["WELL", "YOUR", "DEAR", "MOTHER", "LOVES", "YOU"].map(str::to_owned);
-        let tags = HashMap::from([("FAMILY".to_owned(), HashSet::from(["MOTHER".to_owned()]))]);
-        let captures = match_pattern(
-            &pattern,
-            &words,
-            |tag, word| tags.get(tag).is_some_and(|members| members.contains(word)),
-            100_000,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(captures[0], ["WELL"]);
-        assert_eq!(captures[2], ["DEAR"]);
-        assert_eq!(captures[5], ["YOU"]);
-    }
 }

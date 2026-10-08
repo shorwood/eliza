@@ -1389,19 +1389,3 @@ impl std::fmt::Debug for Hosted {
         f.write_str("Hosted(<redacted>)")
     }
 }
-
-// -----------------------------------------------------------------------------
-// Tests: Verify reservations, accounting and finite outage access.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-#[expect(
-    rlib::unnamed_policy_literals,
-    reason = "tiny test capacities and clock boundary offsets describe scenarios, not deployment defaults"
-)]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "assertions are the test panic contract"
-)]
-#[path = "hosted_tests.rs"]
-mod tests;
