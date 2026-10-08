@@ -26,6 +26,14 @@ pub(super) enum OllamaError {
         image::errors::Error,
     ),
 
+    /// Chat selected a name outside the configured local aliases.
+    #[error("chat requires model {expected}")]
+    #[diagnostic(code(eliza::chat::model_required))]
+    ChatModelRequired {
+        /// Configured names accepted by the chat route.
+        expected: String,
+    },
+
     /// An embedding request selected a model other than the fixed fixture.
     #[error("embeddings require model {expected}")]
     #[diagnostic(code(eliza::embedding::model_required))]
@@ -132,7 +140,7 @@ impl ApiError for OllamaError {
     fn param(&self) -> Option<&'static str> {
         match self {
             Self::Image(_) | Self::ImagesRequireUserRole => Some("messages.images"),
-            Self::EmbeddingModelRequired { .. } => Some("model"),
+            Self::ChatModelRequired { .. } | Self::EmbeddingModelRequired { .. } => Some("model"),
             Self::UnsupportedEmbeddingInput => Some("input"),
             Self::InvalidResponseSchema { .. }
             | Self::UnsupportedResponseFormat

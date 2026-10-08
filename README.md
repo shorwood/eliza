@@ -81,9 +81,8 @@ modality's defaults; duplicates keep their first occurrence. These names still
 use the local engines listed above. `--chat-model` remains an alias for
 `--model-chat`. Model arguments accept literal names.
 
-Chat keeps accepting arbitrary request model IDs, with configured names controlling
-its catalogs. Embedding, speech, and image-generation routes accept their configured
-aliases. Gemini embedding bodies must name the same model resource as their URL,
+Chat, embedding, speech, and image-generation routes accept only their configured
+model names. Gemini embedding bodies must name the same model resource as their URL,
 including every item in a batch. Use distinct names across modalities for clear
 Gemini generation routing; catalogs show a shared name once, with the first
 modality's metadata.
@@ -138,26 +137,31 @@ Run `eliza serve --help` for the complete CLI contract. The main options are:
 | `--model-images` | `eliza-retro-image` | Repeatable image-generation names |
 | `--model-speech` | `flite` | Repeatable speech names |
 | `--api-key` | unset | Enable provider-native authentication |
-| `--allow-any-origin` | off | Enable permissive CORS |
+| `--cors-mode` | `off` | Browser CORS: `off`, `any`, or `origins` |
+| `--cors-origin` | unset | Repeatable origin for `--cors-mode origins` |
 | `--max-input-chars` | `8000` | Bound combined request text |
 | `--max-history-messages` | `200` | Bound chat history |
 | `--stream-delay-ms` | `0` | Pace streamed chunks |
-| `--json-logs` | off | Emit JSON logs |
+| `--log-format` | `text` | Log format: `text` or `json` |
 
 The TOML file uses snake_case keys. Most keys match the CLI flags with hyphens
 replaced by underscores. Model flags use `chat_models`, `embedding_models`,
-`image_models`, and `speech_models`; the two switch keys are
-`should_allow_any_origin` and `should_use_json_logs`. Model names are arrays;
+`image_models`, and `speech_models`; CORS uses `cors_mode` and `cors_origins`,
+and logging uses `log_format = "text"` or `log_format = "json"`. Model names are arrays;
 each model array supplied on the CLI replaces its file value:
 
 ```toml
 bind = "127.0.0.1:8787"
 speech_workers = 4
 chat_models = ["eliza-1966", "local-chat"]
-should_allow_any_origin = true
+cors_mode = "origins"
+cors_origins = ["http://localhost:3000"]
 ```
 
 Run `eliza serve --config eliza.toml`. Omitted keys use the CLI defaults.
+Use `cors_mode = "any"` only when every browser origin should be allowed.
+An explicit list of `--cors-origin` values replaces the TOML list. Origin
+values must be HTTP(S) origins without paths, queries, or fragments.
 For hosted admission, put the policy under `[hosted]` in the same TOML file.
 Secrets still come from `ELIZA_INGRESS_SECRET` and `ELIZA_ENTITLEMENT_SECRET`.
 

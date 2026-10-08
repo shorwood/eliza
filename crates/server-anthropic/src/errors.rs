@@ -24,6 +24,14 @@ pub(super) enum AnthropicError {
         image::errors::Error,
     ),
 
+    /// Chat selected a name outside the configured local aliases.
+    #[error("chat requires model {expected}")]
+    #[diagnostic(code(eliza::chat::model_required))]
+    ChatModelRequired {
+        /// Configured names accepted by the Messages route.
+        expected: String,
+    },
+
     /// The requested output-token limit was zero.
     #[error("max_tokens must be positive")]
     #[diagnostic(code(eliza::anthropic::invalid_max_tokens))]
@@ -151,6 +159,7 @@ impl ApiError for AnthropicError {
 
     fn param(&self) -> Option<&'static str> {
         match self {
+            Self::ChatModelRequired { .. } => Some("model"),
             Self::InvalidMaxTokens => Some("max_tokens"),
             Self::InvalidThinkingBudget
             | Self::ThinkingBudgetTooLarge

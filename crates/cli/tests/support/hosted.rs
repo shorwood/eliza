@@ -8,10 +8,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eliza_http::hosted::HostedConfig;
-use figment::{
-    Figment,
-    providers::{Format as _, Toml},
-};
+use figment::Figment;
+use figment::providers::{Format as _, Toml};
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};

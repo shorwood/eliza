@@ -4,11 +4,11 @@
     "--bind", "127.0.0.1:0",
     "--chat-model", "ui-doctor",
     "--api-key", "must-not-leak",
-    "--allow-any-origin",
+    "--cors-mode", "any",
     "--max-input-chars", "0",
     "--max-history-messages", "1",
     "--stream-delay-ms", "1",
-    "--json-logs"
+    "--log-format", "json"
   ],
   "code": 2
 }

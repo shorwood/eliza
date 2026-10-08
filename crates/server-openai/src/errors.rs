@@ -27,6 +27,14 @@ pub(super) enum OpenAiError {
         image::errors::Error,
     ),
 
+    /// Chat selected a name outside the configured local aliases.
+    #[error("chat requires model {expected}")]
+    #[diagnostic(code(eliza::chat::model_required))]
+    ChatModelRequired {
+        /// Configured names accepted by chat routes.
+        expected: String,
+    },
+
     /// The requested reasoning effort was outside the current contract.
     #[error("unsupported reasoning effort")]
     #[diagnostic(code(eliza::openai::unsupported_reasoning_effort))]
@@ -278,7 +286,8 @@ impl ApiError for OpenAiError {
     fn param(&self) -> Option<&'static str> {
         match self {
             Self::InvalidMaxOutputTokens => Some("max_output_tokens"),
-            Self::EmbeddingModelRequired { .. }
+            Self::ChatModelRequired { .. }
+            | Self::EmbeddingModelRequired { .. }
             | Self::ImageGenerationModelRequired { .. }
             | Self::SpeechModelRequired { .. } => Some("model"),
             Self::UnsupportedEmbeddingEncoding => Some("encoding_format"),
