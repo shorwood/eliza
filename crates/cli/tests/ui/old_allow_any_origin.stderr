@@ -1,0 +1,5 @@
+error: unexpected argument '--allow-any-origin' found
+
+Usage: eliza serve [OPTIONS]
+
+For more information, try '--help'.

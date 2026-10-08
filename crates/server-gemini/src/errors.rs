@@ -28,6 +28,14 @@ pub(super) enum GeminiError {
         image::errors::Error,
     ),
 
+    /// Text generation selected a name outside the configured chat aliases.
+    #[error("text generation requires model {expected}")]
+    #[diagnostic(code(eliza::chat::model_required))]
+    ChatModelRequired {
+        /// Configured names accepted for text generation.
+        expected: String,
+    },
+
     /// An embedding body selected a model other than the fixed resource.
     #[error("embeddings require model `models/{expected}`")]
     #[diagnostic(code(eliza::gemini::embedding_model_required))]
@@ -342,7 +350,8 @@ impl ApiError for GeminiError {
             | Self::SpeechTextOnly
             | Self::ImageTextOnly
             | Self::UnknownSpeaker => Some("contents.parts"),
-            Self::EmbeddingModelRequired { .. }
+            Self::ChatModelRequired { .. }
+            | Self::EmbeddingModelRequired { .. }
             | Self::SpeechModelRequired { .. }
             | Self::SpeechModelAudioOnly { .. }
             | Self::ImageGenerationModelRequired { .. }

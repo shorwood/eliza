@@ -472,6 +472,7 @@ impl Request {
                 preceding_text_turn = false;
                 continue;
             };
+
             // Rig's Responses adapter sends text and image parts as consecutive
             // user messages. Treat an image-only message as part of the preceding
             // text turn while retaining both messages for request limits.

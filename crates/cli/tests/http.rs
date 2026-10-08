@@ -83,6 +83,22 @@ const ALIAS_SLASH_ARGS: &[&str] = &[
 ];
 
 // -----------------------------------------------------------------------------
+// CorsOriginArgs: Exercise exact browser-origin admission.
+// -----------------------------------------------------------------------------
+
+/// CLI options for authenticated browser-origin contracts.
+const CORS_ORIGIN_ARGS: &[&str] = &[
+    "--cors-mode",
+    "origins",
+    "--cors-origin",
+    "http://localhost:3000",
+    "--cors-origin",
+    "https://app.example.test",
+    "--api-key",
+    "secret",
+];
+
+// -----------------------------------------------------------------------------
 // TestServer: Owns one isolated HTTP test process.
 // -----------------------------------------------------------------------------
 
@@ -233,7 +249,10 @@ fn http_test() -> io::Result<()> {
 
     // Alias replacement requires catalogs different from the public defaults.
     let server = TestServer::spawn(ALIAS_ARGS)?;
-    server.run_hurl("tests/http/**/scenario_alias_default_*.hurl", HURL_VARIABLE_TOKEN)?;
+    server.run_hurl(
+        "tests/http/**/scenario_alias_default_*.hurl",
+        HURL_VARIABLE_TOKEN,
+    )?;
     drop(server);
 
     // Slash aliases have their own exact catalog expectations.
@@ -244,6 +263,19 @@ fn http_test() -> io::Result<()> {
     // Shared names require an intentional chat/embedding collision.
     let server = TestServer::spawn(&["--chat-model", "fnv-embed"])?;
     server.run_hurl("tests/http/**/scenario_alias_shared_*.hurl", &[])?;
+    drop(server);
+
+    // CORS modes control browser origins without changing provider authentication.
+    let server = TestServer::spawn(CORS_ORIGIN_ARGS)?;
+    server.run_hurl(
+        "tests/http/**/scenario_cors_origins.hurl",
+        HURL_VARIABLE_TOKEN,
+    )?;
+    drop(server);
+
+    // Any-origin mode retains the existing permissive browser contract.
+    let server = TestServer::spawn(&["--cors-mode", "any"])?;
+    server.run_hurl("tests/http/**/scenario_cors_any.hurl", &[])?;
     drop(server);
 
     // Hosted mode is mutually exclusive with --api-key and uses ingress policy.

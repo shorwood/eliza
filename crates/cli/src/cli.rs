@@ -5,17 +5,18 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::{ArgMatches, Args, Parser, Subcommand, parser::ValueSource};
+use clap::parser::ValueSource;
+use clap::{ArgMatches, Args, Parser, Subcommand, ValueEnum};
 use eliza_http::context::{ApiKey, RequestLimits, RouteConfig};
 use eliza_http::hosted::{Hosted, HostedConfig, HostedSecrets};
 use eliza_http::model::{ModelAliases, ModelId, ModelNames};
 use eliza_server::serve::{CorsMode, LogFormat, ServerConfig};
-use figment::{
-    Figment,
-    providers::{Format as _, Serialized, Toml},
-    value::Dict,
-};
+use figment::Figment;
+use figment::providers::{Format as _, Serialized, Toml};
+use figment::value::Dict;
+use http::HeaderValue;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 // -----------------------------------------------------------------------------
 // ParsePositiveUsize: Parses request bounds without Rust type terminology.
@@ -47,6 +48,69 @@ fn parse_speech_workers(value: &str) -> Result<NonZeroUsize, String> {
         return Err("exceeds maximum speech worker count".to_owned());
     }
     Ok(workers)
+}
+
+// -----------------------------------------------------------------------------
+// CliCorsMode: Selects browser cross-origin access.
+// -----------------------------------------------------------------------------
+
+/// Browser cross-origin access policy.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+enum CliCorsMode {
+    /// Disable cross-origin browser access.
+    Off,
+    /// Allow every browser origin.
+    Any,
+    /// Allow only configured browser origins.
+    Origins,
+}
+
+/// Parse an exact HTTP origin into a safe response-header value.
+///
+/// # Errors
+/// Returns a diagnostic for a URL with an unsupported scheme or extra parts.
+fn parse_cors_origin(value: &str) -> Result<HeaderValue, String> {
+    let url = Url::parse(value).map_err(|_| format!("invalid CORS origin `{value}`"))?;
+
+    // Browser origins contain only an HTTP(S) scheme, host, and optional port.
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(format!("CORS origin must be an HTTP(S) origin: `{value}`"));
+    }
+
+    // Compare canonical values against the browser's serialized Origin header.
+    HeaderValue::from_str(&url.origin().ascii_serialization())
+        .map_err(|_| format!("invalid CORS origin `{value}`"))
+}
+
+// -----------------------------------------------------------------------------
+// CliLogFormat: Parses the CLI and TOML logging format.
+// -----------------------------------------------------------------------------
+
+/// Supported process log formats.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+enum CliLogFormat {
+    /// Human-readable tracing events.
+    Text,
+    /// Structured JSON tracing events.
+    Json,
+}
+
+impl From<CliLogFormat> for LogFormat {
+    fn from(format: CliLogFormat) -> Self {
+        match format {
+            CliLogFormat::Text => Self::Text,
+            CliLogFormat::Json => Self::Json,
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -147,9 +211,19 @@ pub(super) struct ServeArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hosted: Option<HostedConfig>,
 
-    /// Allow browser requests from any origin using permissive CORS.
-    #[arg(long = "allow-any-origin", help_heading = "Security")]
-    should_allow_any_origin: bool,
+    /// Browser cross-origin access policy.
+    #[arg(
+        long = "cors-mode",
+        value_name = "MODE",
+        value_enum,
+        default_value = "off",
+        help_heading = "Security"
+    )]
+    cors_mode: CliCorsMode,
+
+    /// Browser origin allowed when CORS mode is origins (repeatable).
+    #[arg(long = "cors-origin", value_name = "ORIGIN", help_heading = "Security")]
+    cors_origins: Vec<String>,
 
     /// Maximum combined text accepted per request, across every modality.
     #[arg(
@@ -170,12 +244,41 @@ pub(super) struct ServeArgs {
     )]
     stream_delay_ms: u64,
 
-    /// Render tracing events as JSON instead of human-readable text.
-    #[arg(long = "json-logs", help_heading = "Logging")]
-    should_use_json_logs: bool,
+    /// Format tracing events as text or JSON.
+    #[arg(
+        long = "log-format",
+        value_name = "FORMAT",
+        value_enum,
+        default_value = "text",
+        help_heading = "Logging"
+    )]
+    log_format: CliLogFormat,
 }
 
 impl ServeArgs {
+    /// Parse configured browser origins into response-header values.
+    ///
+    /// # Errors
+    /// Returns a diagnostic for an invalid origin value.
+    fn listed_cors_origins(&self) -> miette::Result<Vec<HeaderValue>> {
+        self.cors_origins
+            .iter()
+            .map(|value| parse_cors_origin(value).map_err(|message| miette::miette!("{message}")))
+            .collect()
+    }
+
+    /// Build the validated browser CORS policy from CLI or TOML values.
+    ///
+    /// # Errors
+    /// Returns a diagnostic when a listed origin is not an HTTP(S) origin.
+    fn cors_policy(&self) -> miette::Result<CorsMode> {
+        match self.cors_mode {
+            CliCorsMode::Off => Ok(CorsMode::Off),
+            CliCorsMode::Any => Ok(CorsMode::Any),
+            CliCorsMode::Origins => self.listed_cors_origins().map(CorsMode::Origins),
+        }
+    }
+
     /// Lower parsed arguments into runtime configuration.
     ///
     /// # Errors
@@ -184,6 +287,7 @@ impl ServeArgs {
     /// # Panics
     /// Panics if constructed without a chat name; Clap supplies its default.
     pub(super) fn into_server_config(self) -> miette::Result<ServerConfig> {
+        let cors = self.cors_policy()?;
         let hosted = if let Some(config) = self.hosted {
             let ingress = std::env::var("ELIZA_INGRESS_SECRET")
                 .map_err(|_| miette::miette!("ELIZA_INGRESS_SECRET is required"))?;
@@ -224,17 +328,8 @@ impl ServeArgs {
             .with_model_aliases(models)
             .with_speech_workers(self.speech_workers);
 
-        // Translate simple CLI switches into explicit server modes.
-        let cors = if self.should_allow_any_origin {
-            CorsMode::Permissive
-        } else {
-            CorsMode::None
-        };
-        let log = if self.should_use_json_logs {
-            LogFormat::Json
-        } else {
-            LogFormat::Text
-        };
+        // Apply the process-wide logging policy.
+        let log = self.log_format.into();
 
         let server = ServerConfig::new(self.bind, routes, cors, log);
         Ok(if let Some(hosted) = hosted {
@@ -249,6 +344,20 @@ impl ServeArgs {
     /// # Errors
     /// Rejects conflicting security settings and invalid model or worker counts.
     fn validate_config(&self) -> miette::Result<()> {
+        // An allowlist without origins cannot admit browser clients.
+        if matches!(self.cors_mode, CliCorsMode::Origins) && self.cors_origins.is_empty() {
+            return Err(miette::miette!(
+                "cors_mode = 'origins' requires cors_origins"
+            ));
+        }
+
+        // Other modes cannot silently ignore supplied origins.
+        if !matches!(self.cors_mode, CliCorsMode::Origins) && !self.cors_origins.is_empty() {
+            return Err(miette::miette!(
+                "cors_origins require cors_mode = 'origins'"
+            ));
+        }
+
         // Clap sees only flags, so enforce this conflict after merging the file.
         if self.api_key.is_some() && self.hosted.is_some() {
             return Err(miette::miette!("api_key and hosted cannot both be set"));
@@ -276,6 +385,7 @@ impl ServeArgs {
     pub(super) fn with_config(self, matches: &ArgMatches) -> miette::Result<Self> {
         // Keep the existing CLI-only path when no file is requested.
         let Some(path) = &self.config else {
+            self.validate_config()?;
             return Ok(self);
         };
 

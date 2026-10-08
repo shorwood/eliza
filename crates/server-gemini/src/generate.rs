@@ -198,6 +198,13 @@ impl GenerateRequestMode {
                 model: model.clone(),
             });
         }
+
+        // Text generation must use an advertised chat model.
+        if matches!(self, Self::Text) && !models.chat.has_model(model, config.chat_model.as_str()) {
+            return Err(GeminiError::ChatModelRequired {
+                expected: models.chat.expected(config.chat_model.as_str()),
+            });
+        }
         Ok(self)
     }
 }
