@@ -180,5 +180,5 @@ pub(super) fn run() -> std::io::Result<()> {
             ("ELIZA_ENTITLEMENT_SECRET", HOSTED_ENTITLEMENT_SECRET),
         ]),
     )?;
-    server.run_hurl("tests/http/hosted/*.hurl", &[])
+    server.run_hurl("tests/http/hosted/**/*.hurl", &[])
 }
