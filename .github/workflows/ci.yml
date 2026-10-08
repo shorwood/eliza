@@ -44,5 +44,7 @@ jobs:
         run: nix develop --command just ok
       - name: Check public documentation and SDK examples
         run: nix develop --command just check-public-docs
+      - name: Release checked build artifacts
+        run: nix develop --command cargo clean
       - name: Check flake
         run: nix flake check
