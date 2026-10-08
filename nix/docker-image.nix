@@ -31,7 +31,7 @@ dockerTools.buildLayeredImage {
     StopSignal = "SIGTERM";
     Labels = {
       "org.opencontainers.image.title" = "ELIZA Compatibility Server";
-      "org.opencontainers.image.description" = "Classic ELIZA through provider-compatible HTTP APIs";
+      "org.opencontainers.image.description" = "1966 ELIZA through AI provider-compatible HTTP APIs";
       "org.opencontainers.image.licenses" = "MIT";
       "org.opencontainers.image.source" = "https://github.com/shorwood/eliza";
       "org.opencontainers.image.version" = package.version;

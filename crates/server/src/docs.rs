@@ -63,11 +63,8 @@ fn document() -> OpenApi {
     OpenApi {
         info: Info {
             title: "ELIZA Compatibility Server".to_owned(),
-            summary: Some("Classic ELIZA served through provider-compatible HTTP APIs.".to_owned()),
-            description: Some(
-                "A standalone ELIZA server exposing OpenAI, Anthropic, Gemini, and Ollama-compatible endpoints."
-                    .to_owned(),
-            ),
+            summary: Some("1966 ELIZA through AI provider-compatible HTTP APIs".to_owned()),
+            description: Some("1966 ELIZA through AI provider-compatible HTTP APIs".to_owned()),
             license: Some(License {
                 name: "MIT License".to_owned(),
                 identifier: Some("MIT".to_owned()),
