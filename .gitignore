@@ -2,11 +2,3 @@
 /docs/
 /target/
 node_modules/
-/web/.nuxt/
-/web/.output/
-/web/generated/
-/web/test-results/
-/web/playwright-report/
-/web/tools/screenshots/
-/web/.env
-/web/.env.*

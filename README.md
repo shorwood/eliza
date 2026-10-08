@@ -25,8 +25,8 @@ Or run the flake directly without Docker:
 nix run github:shorwood/eliza/v1.0.0 -- serve
 ```
 
-See [self-hosting](web/content/docs/self-hosting.md) for a Testcontainers test,
-image pinning, and the distinction between local and hosted API URLs. 
+See the [self-hosting guide](https://eliza.nwrx.io/docs/self-hosting) for a
+Testcontainers test, image pinning, and local versus hosted API URLs.
 Then send an OpenAI Chat Completions request:
 
 ```sh
@@ -214,5 +214,5 @@ and Dylint.
 ## License
 
 ELIZA is available under the [MIT License](LICENSE).
-Bundled fonts, the API reference, and speech data retain their own terms; see
-the [third-party licences](licences) and the website's `/licences` page.
+The API reference and speech data retain their own terms; see the
+[third-party licences](licences).
