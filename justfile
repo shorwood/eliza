@@ -3,9 +3,6 @@ fmt:
     hurlfmt --in-place crates/cli/tests/http/*.hurl crates/cli/tests/http/*/*.hurl
     nixfmt flake.nix nix/*.nix
 
-check-public-docs:
-    bash web/tools/check-docs.sh
-
 bench-generation *args:
     cargo bench -p eliza-benches --bench generation --bench completion --bench speech --locked -- {{args}}
 
