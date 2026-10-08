@@ -295,37 +295,3 @@ impl IntoResponse for AnthropicRejection {
         response
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verify every neutral class maps to the intended Anthropic error type.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a class regresses to a non-native wire type.
-    #[test]
-    fn maps_problem_classes_to_native_kinds() {
-        assert_eq!(
-            AnthropicErrorKind::from(ProblemClass::InvalidRequest),
-            AnthropicErrorKind::InvalidRequestError
-        );
-        assert_eq!(
-            AnthropicErrorKind::from(ProblemClass::UnsupportedRequest),
-            AnthropicErrorKind::InvalidRequestError
-        );
-        assert_eq!(
-            AnthropicErrorKind::from(ProblemClass::Authentication),
-            AnthropicErrorKind::AuthenticationError
-        );
-        assert_eq!(
-            AnthropicErrorKind::from(ProblemClass::RequestTooLarge),
-            AnthropicErrorKind::RequestTooLarge
-        );
-        assert_eq!(
-            AnthropicErrorKind::from(ProblemClass::Internal),
-            AnthropicErrorKind::ApiError
-        );
-    }
-}

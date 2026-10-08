@@ -351,29 +351,5 @@ impl IntoResponse for NativeError {
     clippy::missing_panics_doc,
     reason = "test assertions define the panic contract"
 )]
-mod tests {
-    use super::*;
-    use crate::errors::ModelError;
-
-    /**************************************/
-    /* NativeError: Projection tests      */
-    /**************************************/
-
-    /// Internal source details never become a public report.
-    #[test]
-    fn native_error_internal_detail_is_private() {
-        let failure =
-            NativeError::from_diagnostic(&ModelError::Empty, ProblemClass::Internal, None);
-        assert_eq!(failure.message(), "Internal server error");
-        assert!(failure.report.as_details().detail().is_none());
-    }
-
-    /// Framework-selected statuses and stable SDK codes are retained.
-    #[test]
-    fn native_error_retains_metadata() {
-        let failure = NativeError::from_error(&ModelError::Empty);
-        assert_eq!(failure.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(failure.code(), "eliza::model::empty");
-        assert_eq!(failure.param(), Some("model"));
-    }
-}
+#[path = "../tests/unit/problem.rs"]
+mod tests;
