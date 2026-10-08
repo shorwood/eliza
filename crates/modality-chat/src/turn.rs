@@ -466,10 +466,21 @@ impl Request {
     ) -> Result<eliza_mad::engine::Response, Error> {
         let mut session = doctor()?.session()?;
         let mut output = None;
+        let mut preceding_text_turn = false;
         for (turn, turn_analyses) in self.turns.iter().zip(analyses) {
-            let Turn::User { text, .. } = turn else {
+            let Turn::User { text, images } = turn else {
+                preceding_text_turn = false;
                 continue;
             };
+            // Rig's Responses adapter sends text and image parts as consecutive
+            // user messages. Treat an image-only message as part of the preceding
+            // text turn while retaining both messages for request limits.
+            let image_continuation = preceding_text_turn && text.is_empty() && !images.is_empty();
+            preceding_text_turn = image_continuation
+                || (!text.is_empty() && images.is_empty() && !text.starts_with("@tool"));
+            if image_continuation {
+                continue;
+            }
             let text = Self::user_text(text, turn_analyses);
             if text.starts_with("@tool") {
                 continue;
