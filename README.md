@@ -1,7 +1,6 @@
 # ELIZA
 
-A small, deterministic compatibility server for OpenAI, Anthropic, Gemini, and
-Ollama clients, powered by the 1966 ELIZA/DOCTOR script.
+1966 ELIZA through AI provider-compatible HTTP APIs
 
 Use it as a local fixture for client development, demos, and contract tests.
 Responses are repeatable, and the server needs no model downloads, GPU,
@@ -25,8 +24,19 @@ Or run the flake directly without Docker:
 nix run github:shorwood/eliza/v1.0.0 -- serve
 ```
 
+The Nix package supports Linux x86_64/ARM64 and macOS ARM64. Intel macOS users
+can download the release archive below.
+
+Prebuilt Linux, macOS, and Windows executables are also attached to each
+[GitHub Release](https://github.com/shorwood/eliza/releases). Linux releases
+include Debian and Alpine packages for both x86_64 and ARM64. Check the
+download against the release's `SHA256SUMS` file before installing it. Package
+installs provide the `eliza` command and licence notices; run `eliza serve` to
+start the server.
+
 See the [self-hosting guide](https://eliza.nwrx.io/docs/self-hosting) for a
-Testcontainers test, image pinning, and local versus hosted API URLs.
+Testcontainers test, image pinning, download instructions, and local versus
+hosted API URLs.
 Then send an OpenAI Chat Completions request:
 
 ```sh

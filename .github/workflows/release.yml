@@ -43,7 +43,7 @@ jobs:
         run: nix develop --command just ok
 
   image:
-    needs: check
+    needs: [check, windows-smoke]
     strategy:
       matrix:
         include:
@@ -85,13 +85,122 @@ jobs:
           gh api "users/$GITHUB_REPOSITORY_OWNER/packages/container/${IMAGE##*/}" \
             --jq '.visibility' | grep -qx public
 
+  assets:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            architecture: x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            architecture: arm64
+          - runner: macos-15-intel
+            platform: macos
+            architecture: x86_64
+          - runner: macos-15
+            platform: macos
+            architecture: arm64
+          - runner: ubuntu-24.04
+            platform: windows
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Build release downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          if [ '${{ matrix.platform }}' = windows ]; then
+            nix build -o result-windows .#releaseWindowsArchive
+            cp result-windows/* release-assets/
+          else
+            nix build -o result-archive .#releaseArchive
+            cp result-archive/* release-assets/
+            if [ '${{ matrix.platform }}' = linux ]; then
+              nix build -o result-deb .#releaseDeb
+              nix build -o result-apk .#releaseApk
+              cp result-deb/* result-apk/* release-assets/
+            fi
+          fi
+      - name: Smoke-test release downloads
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: nix build .#releaseCheck --no-link
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.architecture }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  windows-smoke:
+    needs: assets
+    runs-on: windows-2025
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-windows-x86_64
+          path: release-assets
+      - name: Smoke-test Windows executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Get-ChildItem release-assets/*.zip | Select-Object -First 1
+          if (-not $archive) { throw 'Windows archive missing' }
+          Expand-Archive $archive.FullName -DestinationPath unpacked
+          $binary = Get-ChildItem unpacked -Recurse -Filter eliza.exe | Select-Object -First 1
+          if (-not $binary) { throw 'eliza.exe missing' }
+          & $binary.FullName --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'eliza.exe --help failed' }
+          $server = Start-Process -FilePath $binary.FullName -ArgumentList 'serve', '--bind', '127.0.0.1:18787' -PassThru -NoNewWindow
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 50; $i++) {
+              try {
+                Invoke-WebRequest 'http://127.0.0.1:18787/healthz' -TimeoutSec 1 | Out-Null
+                $healthy = $true
+                break
+              } catch { Start-Sleep -Milliseconds 100 }
+            }
+            if (-not $healthy) { throw 'Windows health check failed' }
+          } finally { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
+
   release:
-    needs: image
+    needs: [image, assets, windows-smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
       packages: write
     steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify release matrix and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          version="${GITHUB_REF_NAME}"
+          for arch in x86_64 arm64; do
+            test -f "eliza-$version-linux-$arch.tar.gz"
+            test -f "eliza-$version-macos-$arch.tar.gz"
+          done
+          for arch in amd64 arm64; do
+            test -f "eliza-$version-linux-$arch.deb"
+          done
+          for arch in x86_64 aarch64; do
+            test -f "eliza-$version-linux-$arch.apk"
+          done
+          test -f "eliza-$version-windows-x86_64.zip"
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 9
+          LC_ALL=C sha256sum ./* > SHA256SUMS
+          sha256sum --check SHA256SUMS
       - name: Log in to GHCR
         shell: bash
         env:
@@ -118,3 +227,5 @@ jobs:
               --generate-notes \
               --verify-tag
           fi
+          gh release upload "$GITHUB_REF_NAME" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" --clobber

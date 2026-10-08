@@ -1,6 +1,6 @@
 fmt:
     cargo-fmt fmt --all
-    hurlfmt --in-place crates/cli/tests/http/*.hurl crates/cli/tests/http/*/*.hurl
+    find crates/cli/tests/http -type f -name '*.hurl' -exec hurlfmt --in-place {} +
     nixfmt flake.nix nix/*.nix
 
 chat:
@@ -28,7 +28,7 @@ test-http:
 
 ok:
     cargo-fmt fmt --all -- --check
-    hurlfmt --check crates/cli/tests/http/*.hurl crates/cli/tests/http/*/*.hurl
+    find crates/cli/tests/http -type f -name '*.hurl' -exec hurlfmt --check {} +
     nixfmt --check flake.nix nix/*.nix
     deadnix --fail flake.nix nix
     statix check .

@@ -38,6 +38,28 @@
         "type": "github"
       }
     },
+    "fenixDarwin": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgsDarwin"
+        ],
+        "rust-analyzer-src": "rust-analyzer-src_2"
+      },
+      "locked": {
+        "lastModified": 1785750890,
+        "narHash": "sha256-hax+Dgq9/KtG0NPXEcyNIfKIJhzCfQVVIf6Ynu8bCRM=",
+        "owner": "nix-community",
+        "repo": "fenix",
+        "rev": "1635a532f6778304adfac2044c82992ece8a99d8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "fenix",
+        "rev": "1635a532f6778304adfac2044c82992ece8a99d8",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1785692966,
@@ -50,6 +72,22 @@
       "original": {
         "owner": "NixOS",
         "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgsDarwin": {
+      "locked": {
+        "lastModified": 1791244311,
+        "narHash": "sha256-cy5PsNucfXU5+KtLR+S9/zdkWOUplhL5Xr0LQWhSYbs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "2bd3427b41d10b8318383195efe502ed1baca6cd",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-26.05-darwin",
         "repo": "nixpkgs",
         "type": "github"
       }
@@ -82,11 +120,30 @@
     "root": {
       "inputs": {
         "fenix": "fenix",
+        "fenixDarwin": "fenixDarwin",
         "nixpkgs": "nixpkgs",
+        "nixpkgsDarwin": "nixpkgsDarwin",
         "rlib": "rlib"
       }
     },
     "rust-analyzer-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785701467,
+        "narHash": "sha256-+HtsUgRhJR1pYz8lhKK4ChfBmZTjwcTmiq0mWBcvrfo=",
+        "owner": "rust-lang",
+        "repo": "rust-analyzer",
+        "rev": "b54a82b321c9617c5cf0b07ac0f12c08f7bc5902",
+        "type": "github"
+      },
+      "original": {
+        "owner": "rust-lang",
+        "ref": "nightly",
+        "repo": "rust-analyzer",
+        "type": "github"
+      }
+    },
+    "rust-analyzer-src_2": {
       "flake": false,
       "locked": {
         "lastModified": 1785701467,
