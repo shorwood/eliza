@@ -40,10 +40,10 @@ impl WorkKinds {
         let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
 
         // Provider wire contracts require object requests, not Serde's positional struct form.
-        if value.is_array() {
+        if value.is_array() || value.get("generationConfig").is_some_and(Value::is_array) {
             return Err(NativeError::admission(
                 eliza_http::problem::ProblemClass::InvalidRequest,
-                "Expected a JSON request object.".into(),
+                "Expected JSON objects for the request and generationConfig.".into(),
                 None,
             ));
         }
@@ -104,9 +104,11 @@ impl WorkKinds {
     /// Identify native Gemini parts without traversing arbitrary tool response objects.
     fn has_gemini_parts(value: &Value) -> bool {
         value.as_array().is_some_and(|parts| {
-            parts
-                .iter()
-                .any(|part| part.get("inlineData").is_some() || part.get("fileData").is_some())
+            parts.iter().any(|part| {
+                ["inlineData", "fileData"]
+                    .into_iter()
+                    .any(|field| part.get(field).is_some_and(|value| !value.is_null()))
+            })
         })
     }
 

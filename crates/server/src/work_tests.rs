@@ -68,6 +68,39 @@ fn work_test_image_admission_follows_native_content() {
     ));
 }
 
+/// Nullable native Gemini inputs do not imply image decoding.
+///
+/// # Panics
+/// Panics if absent native Gemini image inputs consume image admission.
+#[test]
+fn work_test_nullable_gemini_images_are_not_image_work() {
+    let value = serde_json::json!({"contents": [{"parts": [{
+        "text": "Hello", "inlineData": null, "fileData": null
+    }]}]});
+    let image =
+        WorkKinds::has_request_images("/gemini/v1beta/models/eliza-1966:generateContent", &value);
+    assert!(!image);
+}
+
+/// Positional nested configs cannot hide native audio or image selectors.
+///
+/// # Panics
+/// Panics if alternate Serde structs bypass resource preflight.
+#[test]
+fn work_test_positional_generation_config_is_rejected() {
+    let value = serde_json::json!({"contents": [{"parts": [{"text": "Hello"}]}],
+        "generationConfig": [["AUDIO"], null, null, null, null]});
+    let body = Bytes::from(serde_json::to_vec(&value).unwrap());
+    let rejected = WorkKinds::new(
+        "/gemini/v1beta/models/eliza-1966:generateContent",
+        &Method::POST,
+        &body,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(rejected.status(), axum::http::StatusCode::BAD_REQUEST);
+}
+
 /// Ollama chat cannot charge images from an ignored top-level generate field.
 ///
 /// # Panics
