@@ -371,7 +371,7 @@ async fn gemini_embeddings_batch_embed(
 }
 
 // -----------------------------------------------------------------------------
-// ModelPathEncoding: Encodes literal model identifiers.
+// ModelPath: Encodes literal model identifiers.
 // -----------------------------------------------------------------------------
 
 /// Encode alias IDs as literal path segments, preserving URI-unreserved bytes.
@@ -381,6 +381,9 @@ const MODEL_PATH_ENCODING: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'.')
     .remove(b'~');
 
+/// Preserve path separators while escaping other reserved alias bytes.
+const MODEL_PATH_WITH_SLASH_ENCODING: &AsciiSet = &MODEL_PATH_ENCODING.remove(b'/');
+
 // -----------------------------------------------------------------------------
 // Router: Publishes native Gemini embedding endpoints.
 // -----------------------------------------------------------------------------
@@ -389,34 +392,42 @@ const MODEL_PATH_ENCODING: &AsciiSet = &NON_ALPHANUMERIC
 pub(super) fn router(models: impl Iterator<Item = ModelId>) -> ApiRouter<AppState> {
     let mut router = ApiRouter::new();
     for model in models {
-        let name = utf8_percent_encode(model.as_str(), MODEL_PATH_ENCODING).to_string();
+        let encoded = utf8_percent_encode(model.as_str(), MODEL_PATH_ENCODING).to_string();
+        let with_slashes =
+            utf8_percent_encode(model.as_str(), MODEL_PATH_WITH_SLASH_ENCODING).to_string();
+        let mut names = vec![encoded];
+        if with_slashes != names[0] {
+            names.push(with_slashes);
+        }
         let model = Arc::new(model);
-        router = router.api_route(
-            &format!("/v1beta/models/{name}:embedContent"),
-            post_with(gemini_embeddings_embed, |operation| {
-                operation
-                    .summary("Gemini embedding")
-                    .tag("gemini")
-                    .response::<200, Json<GeminiEmbedContentResponse>>()
-                    .response::<429, Json<GeminiFailureResponse>>()
-                    .response::<503, Json<GeminiFailureResponse>>()
-                    .default_response::<Json<GeminiFailureResponse>>()
-            })
-            .layer(Extension(Arc::clone(&model))),
-        );
-        router = router.api_route(
-            &format!("/v1beta/models/{name}:batchEmbedContents"),
-            post_with(gemini_embeddings_batch_embed, |operation| {
-                operation
-                    .summary("Gemini batch embeddings")
-                    .tag("gemini")
-                    .response::<200, Json<GeminiBatchEmbedContentsResponse>>()
-                    .response::<429, Json<GeminiFailureResponse>>()
-                    .response::<503, Json<GeminiFailureResponse>>()
-                    .default_response::<Json<GeminiFailureResponse>>()
-            })
-            .layer(Extension(model)),
-        );
+        for name in names {
+            router = router.api_route(
+                &format!("/v1beta/models/{name}:embedContent"),
+                post_with(gemini_embeddings_embed, |operation| {
+                    operation
+                        .summary("Gemini embedding")
+                        .tag("gemini")
+                        .response::<200, Json<GeminiEmbedContentResponse>>()
+                        .response::<429, Json<GeminiFailureResponse>>()
+                        .response::<503, Json<GeminiFailureResponse>>()
+                        .default_response::<Json<GeminiFailureResponse>>()
+                })
+                .layer(Extension(Arc::clone(&model))),
+            );
+            router = router.api_route(
+                &format!("/v1beta/models/{name}:batchEmbedContents"),
+                post_with(gemini_embeddings_batch_embed, |operation| {
+                    operation
+                        .summary("Gemini batch embeddings")
+                        .tag("gemini")
+                        .response::<200, Json<GeminiBatchEmbedContentsResponse>>()
+                        .response::<429, Json<GeminiFailureResponse>>()
+                        .response::<503, Json<GeminiFailureResponse>>()
+                        .default_response::<Json<GeminiFailureResponse>>()
+                })
+                .layer(Extension(Arc::clone(&model))),
+            );
+        }
     }
     router
 }
