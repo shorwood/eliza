@@ -19,16 +19,16 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Verify private release destination
+      - name: Verify public release destination
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility' | grep -qx private
+          gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility' | grep -qx public
           package_path="users/$GITHUB_REPOSITORY_OWNER/packages/container/${IMAGE##*/}"
           if gh api "$package_path" > "$RUNNER_TEMP/package.json"; then
-            jq -e '.visibility == "private"' "$RUNNER_TEMP/package.json"
+            jq -e '.visibility == "public"' "$RUNNER_TEMP/package.json"
           else
             jq -e '.status == "404"' "$RUNNER_TEMP/package.json"
           fi
@@ -78,12 +78,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           docker tag "eliza:$version" "$IMAGE:$version-${{ matrix.architecture }}"
           docker push "$IMAGE:$version-${{ matrix.architecture }}"
-      - name: Verify published package is private
+      - name: Verify published package is public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh api "users/$GITHUB_REPOSITORY_OWNER/packages/container/${IMAGE##*/}" \
-            --jq '.visibility' | grep -qx private
+            --jq '.visibility' | grep -qx public
 
   release:
     needs: image
