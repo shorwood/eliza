@@ -24,8 +24,10 @@ rustc-ice-*.txt
 #.idea/
 
 # Project-specific
+.env
 docs
 .agents
 .direnv
 AGENTS.md
 node_modules/
+result

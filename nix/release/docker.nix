@@ -1,5 +1,5 @@
-# This produces a reproducible Docker-compatible archive without contacting a
-# container daemon. Docker or Podman is only needed later to load and run it.
+# Package the tested Nix server as a Docker-compatible image archive.
+# Building the archive needs no Docker daemon; release CI loads and publishes it.
 {
   cacert,
   dockerTools,
@@ -10,13 +10,17 @@ dockerTools.buildLayeredImage {
   name = "eliza";
   tag = package.version;
 
-  # With no base image, the result contains only ELIZA and its Nix runtime
-  # closure. There is intentionally no shell or package manager in the image.
+  # --- Assemble the minimal filesystem from Nix store paths.
+  # No base image is declared. buildLayeredImage brings in the program, CA
+  # certificates, and their runtime dependencies; there is no shell or apk/apt.
   contents = [
     package
     cacert
   ];
+
+  # --- Define how the image starts and how it is identified in registries.
   config = {
+    # The server needs CA roots for outbound HTTPS requests.
     Env = [ "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt" ];
     User = "65532:65532";
     Entrypoint = [ (lib.getExe package) ];
@@ -29,6 +33,8 @@ dockerTools.buildLayeredImage {
       "8787/tcp" = { };
     };
     StopSignal = "SIGTERM";
+
+    # OCI labels are metadata for registries and image inspection tools.
     Labels = {
       "org.opencontainers.image.title" = "ELIZA Compatibility Server";
       "org.opencontainers.image.description" = "1966 ELIZA through AI provider-compatible HTTP APIs";

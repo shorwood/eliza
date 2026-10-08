@@ -27,6 +27,7 @@ jobs:
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility' | grep -qx public
           package_path="users/$GITHUB_REPOSITORY_OWNER/packages/container/${IMAGE##*/}"
+          # GHCR returns 404 before the first push; existing images must be public.
           if gh api "$package_path" > "$RUNNER_TEMP/package.json"; then
             jq -e '.visibility == "public"' "$RUNNER_TEMP/package.json"
           else
@@ -43,7 +44,7 @@ jobs:
         run: nix develop --command just ok
 
   image:
-    needs: [check, windows-smoke]
+    needs: check
     strategy:
       matrix:
         include:
@@ -94,18 +95,23 @@ jobs:
           - runner: ubuntu-24.04
             platform: linux
             architecture: x86_64
+            output: releaseAssets
           - runner: ubuntu-24.04-arm
             platform: linux
             architecture: arm64
+            output: releaseAssets
           - runner: macos-15-intel
             platform: macos
             architecture: x86_64
+            output: releaseAssets
           - runner: macos-15
             platform: macos
             architecture: arm64
+            output: releaseAssets
           - runner: ubuntu-24.04
             platform: windows
             architecture: x86_64
+            output: releaseWindowsExecutable
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -115,18 +121,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir release-assets
-          if [ '${{ matrix.platform }}' = windows ]; then
-            nix build -o result-windows .#releaseWindowsArchive
-            cp result-windows/* release-assets/
-          else
-            nix build -o result-archive .#releaseArchive
-            cp result-archive/* release-assets/
-            if [ '${{ matrix.platform }}' = linux ]; then
-              nix build -o result-deb .#releaseDeb
-              nix build -o result-apk .#releaseApk
-              cp result-deb/* result-apk/* release-assets/
-            fi
-          fi
+          nix build -o result-assets '.#${{ matrix.output }}'
+          # Nix's aggregate output contains symlinks into the store.
+          cp -L result-assets/* release-assets/
       - name: Smoke-test release downloads
         if: matrix.platform != 'windows'
         shell: bash
@@ -149,10 +146,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archive = Get-ChildItem release-assets/*.zip | Select-Object -First 1
-          if (-not $archive) { throw 'Windows archive missing' }
-          Expand-Archive $archive.FullName -DestinationPath unpacked
-          $binary = Get-ChildItem unpacked -Recurse -Filter eliza.exe | Select-Object -First 1
+          $binary = Get-ChildItem release-assets/*.exe | Select-Object -First 1
           if (-not $binary) { throw 'eliza.exe missing' }
           & $binary.FullName --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'eliza.exe --help failed' }
@@ -181,26 +175,25 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
-      - name: Verify release matrix and checksums
+      - name: Verify release matrix and write checksums
         shell: bash
         run: |
           set -euo pipefail
           cd release-assets
           version="${GITHUB_REF_NAME}"
           for arch in x86_64 arm64; do
-            test -f "eliza-$version-linux-$arch.tar.gz"
+            test -f "eliza-$version-linux-$arch"
             test -f "eliza-$version-macos-$arch.tar.gz"
-          done
-          for arch in amd64 arm64; do
             test -f "eliza-$version-linux-$arch.deb"
-          done
-          for arch in x86_64 aarch64; do
             test -f "eliza-$version-linux-$arch.apk"
           done
-          test -f "eliza-$version-windows-x86_64.zip"
+          test -f "eliza-$version-windows-x86_64.exe"
+          # Guard against an incomplete or unexpected download matrix.
           test "$(find . -maxdepth 1 -type f | wc -l)" -eq 9
-          LC_ALL=C sha256sum ./* > SHA256SUMS
-          sha256sum --check SHA256SUMS
+          for asset in eliza-*; do
+            sha256sum "$asset" > "$asset.sha256"
+            sha256sum --check "$asset.sha256"
+          done
       - name: Log in to GHCR
         shell: bash
         env:

@@ -27,12 +27,12 @@ nix run github:shorwood/eliza/v1.0.0 -- serve
 The Nix package supports Linux x86_64/ARM64 and macOS ARM64. Intel macOS users
 can download the release archive below.
 
-Prebuilt Linux, macOS, and Windows executables are also attached to each
-[GitHub Release](https://github.com/shorwood/eliza/releases). Linux releases
-include Debian and Alpine packages for both x86_64 and ARM64. Check the
-download against the release's `SHA256SUMS` file before installing it. Package
-installs provide the `eliza` command and licence notices; run `eliza serve` to
-start the server.
+Prebuilt Linux and Windows executables and macOS archives are also attached to
+each [GitHub Release](https://github.com/shorwood/eliza/releases). Linux
+releases include Debian and Alpine packages for both x86_64 and ARM64. Check
+the download against its matching `.sha256` file before installing it. Package
+installs provide the `eliza` command; run `eliza serve` to
+start the server. Direct Linux downloads need `chmod +x` before running.
 
 See the [self-hosting guide](https://eliza.nwrx.io/docs/self-hosting) for a
 Testcontainers test, image pinning, download instructions, and local versus
@@ -229,5 +229,3 @@ and Dylint.
 ## License
 
 ELIZA is available under the [MIT License](LICENSE).
-The API reference and speech data retain their own terms; see the
-[third-party licences](licences).

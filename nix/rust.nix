@@ -1,22 +1,17 @@
+# Shared arguments for the tested package and portable release binaries.
+# Both builds should use the same Cargo source and embedded API reference.
 {
   lib,
-  projectRoot ? ../.,
-  makeRustPlatform,
+  projectRoot,
   rustToolchain,
   scalarJs,
-  stdenv,
 }:
-let
-  rustPlatform = makeRustPlatform {
-    cargo = rustToolchain;
-    rustc = rustToolchain;
-  };
-in
-rustPlatform.buildRustPackage {
-  pname = "eliza-portable";
+{
+  # --- Use one Cargo version, lockfile, and source tree for both builds.
   version =
     (builtins.fromTOML (builtins.readFile (projectRoot + "/Cargo.toml"))).workspace.package.version;
-
+  # fileset selects only files Cargo needs, so changes elsewhere in the
+  # checkout do not invalidate this build's source input and cache key.
   src = lib.fileset.toSource {
     root = projectRoot;
     fileset = lib.fileset.unions [
@@ -24,10 +19,11 @@ rustPlatform.buildRustPackage {
       (projectRoot + "/Cargo.lock")
       (projectRoot + "/crates")
       (projectRoot + "/examples/rust-rig")
-      (projectRoot + "/licences")
     ];
   };
   cargoLock.lockFile = projectRoot + "/Cargo.lock";
+
+  # --- Build the server executable rather than every workspace package.
   cargoBuildFlags = [
     "--package"
     "eliza-cli"
@@ -35,16 +31,14 @@ rustPlatform.buildRustPackage {
     "eliza"
   ];
 
-  # The checked Nix package runs the suite. Cross-target executables are
-  # exercised on their target OS by the release workflow instead.
-  doCheck = false;
+  # --- Keep the output portable and include the offline API reference.
+  # Rust can embed its sysroot path in the executable. Remapping that path
+  # prevents the compiler from becoming a runtime dependency.
   RUSTFLAGS = "--remap-path-prefix=${rustToolchain}=/rust-toolchain";
+  # build.rs uses this hash-pinned file to embed Scalar into the server binary.
   ELIZA_SCALAR_JS = scalarJs;
-  postInstall = ''
-    install -Dm444 ${projectRoot + "/LICENSE"} "$out/share/licenses/eliza/LICENSE"
-    cp -R licences "$out/share/licenses/eliza/third-party"
-  '';
 
+  # Nix consumers use this metadata for descriptions, licenses, and the CLI name.
   meta = {
     description = "1966 ELIZA through AI provider-compatible HTTP APIs";
     license = [
@@ -52,6 +46,5 @@ rustPlatform.buildRustPackage {
       lib.licenses.asl20
     ];
     mainProgram = "eliza";
-    platforms = [ stdenv.hostPlatform.system ];
   };
 }

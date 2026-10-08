@@ -1,5 +1,5 @@
-# `pkgs.callPackage` fills these dependencies from nixpkgs. The flake passes
-# the pinned Rust toolchain and the systems that this repository supports.
+# The normal Nix package: build the server and run its Cargo checks.
+# Portable release binaries use release/binary.nix instead.
 {
   cacert,
   curl,
@@ -16,83 +16,65 @@
   supportedSystems,
 }:
 let
+  # --- Reuse the same Cargo source and embedded assets as release builds.
+  common = import ./rust.nix {
+    inherit
+      lib
+      projectRoot
+      rustToolchain
+      scalarJs
+      ;
+  };
+  # makeRustPlatform wires the pinned Cargo and rustc into buildRustPackage.
   rustPlatform = makeRustPlatform {
     cargo = rustToolchain;
     rustc = rustToolchain;
   };
 in
-rustPlatform.buildRustPackage {
-  pname = "eliza";
-  version =
-    (builtins.fromTOML (builtins.readFile (projectRoot + "/Cargo.toml"))).workspace.package.version;
+rustPlatform.buildRustPackage (
+  # `//` extends the shared attribute set with package-specific settings.
+  common
+  // {
+    pname = "eliza";
 
-  # A narrow source set keeps unrelated files from invalidating the build.
-  # Workspace crates and tests are included because `buildRustPackage` runs them.
-  src = lib.fileset.toSource {
-    root = projectRoot;
-    fileset = lib.fileset.unions [
-      (projectRoot + "/Cargo.toml")
-      (projectRoot + "/Cargo.lock")
-      (projectRoot + "/crates")
-      (projectRoot + "/examples/rust-rig")
-      (projectRoot + "/licences")
+    # --- Run the CLI tests in debug mode during the package build.
+    cargoTestFlags = [
+      "--package"
+      "eliza-cli"
     ];
-  };
-  cargoLock.lockFile = projectRoot + "/Cargo.lock";
-  cargoBuildFlags = [
-    "--package"
-    "eliza-cli"
-    "--bin"
-    "eliza"
-  ];
-  cargoTestFlags = [
-    "--package"
-    "eliza-cli"
-  ];
-  # Embedded Hurl is large enough to crash LLVM during release-profile tests.
-  checkType = "debug";
+    # Embedded Hurl is large enough to crash LLVM during release-profile tests.
+    checkType = "debug";
 
-  # Rust otherwise embeds its sysroot path in the executable, retaining the
-  # entire toolchain at runtime. Remapping it keeps the package closure small;
-  # the explicit prohibition makes a regression fail the build.
-  RUSTFLAGS = "--remap-path-prefix=${rustToolchain}=/rust-toolchain";
-  ELIZA_SCALAR_JS = scalarJs;
-  LIBCLANG_PATH = "${libclang.lib}/lib";
-  BINDGEN_EXTRA_CLANG_ARGS = lib.optionalString stdenv.isLinux "-isystem ${stdenv.cc.libc.dev}/include";
-  LD_LIBRARY_PATH = lib.makeLibraryPath [
-    curl
-    libxml2
-    openssl
-  ];
-  disallowedReferences = [ rustToolchain ];
-
-  nativeBuildInputs = [ pkg-config ];
-  buildInputs = [
-    openssl
-    libxml2
-  ];
-
-  # Embedded Hurl links libcurl when the package runs its tests.
-  nativeCheckInputs = [
-    cacert
-    curl
-  ];
-  SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
-
-  # Keep the license notice in binary distributions. The container image uses
-  # this package verbatim, so it receives the same notice automatically.
-  postInstall = ''
-    install -Dm444 ${projectRoot + "/LICENSE"} "$out/share/licenses/eliza/LICENSE"
-    cp -R licences "$out/share/licenses/eliza/third-party"
-  '';
-
-  meta = {
-    description = "1966 ELIZA through AI provider-compatible HTTP APIs";
-    license = [
-      lib.licenses.mit
-      lib.licenses.asl20
+    # --- Supply native libraries used by Rust dependencies and test fixtures.
+    # Bindgen needs libclang; Linux also needs the libc headers at build time.
+    LIBCLANG_PATH = "${libclang.lib}/lib";
+    BINDGEN_EXTRA_CLANG_ARGS = lib.optionalString stdenv.isLinux "-isystem ${stdenv.cc.libc.dev}/include";
+    LD_LIBRARY_PATH = lib.makeLibraryPath [
+      curl
+      libxml2
+      openssl
     ];
-    mainProgram = "eliza";
-    platforms = supportedSystems;
-  };
-}
+    # Catch any remaining reference that would retain the Rust toolchain in the
+    # installed package's runtime closure.
+    disallowedReferences = [ rustToolchain ];
+
+    # pkg-config runs at build time; OpenSSL and libxml2 are linked dependencies.
+    nativeBuildInputs = [ pkg-config ];
+    buildInputs = [
+      openssl
+      libxml2
+    ];
+
+    # Embedded Hurl links libcurl during tests and HTTPS fixtures need CA roots.
+    nativeCheckInputs = [
+      cacert
+      curl
+    ];
+    SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+
+    # --- Advertise only the systems with an exposed normal Nix package.
+    meta = common.meta // {
+      platforms = supportedSystems;
+    };
+  }
+)
