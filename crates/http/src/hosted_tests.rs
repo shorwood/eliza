@@ -231,6 +231,22 @@ fn hosted_test_account_allowance_and_concurrency_are_shared() {
     assert!(headers.contains_key("retry-after"));
 }
 
+/// Discovery limits never promote support because catalogs are not generation.
+#[test]
+fn hosted_test_discovery_limits_never_offer_support() {
+    let mut hosted = hosted_test_policy();
+    hosted.config.public.discovery.burst = 1;
+    let caller = Caller {
+        identity: "ip:192.0.2.1".into(),
+        is_supporter: false,
+    };
+    drop(hosted.admit(&caller, Modality::Discovery).unwrap());
+    let rejected = hosted.admit(&caller, Modality::Discovery).err().unwrap();
+    assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+    let has_offer = rejected.message().contains("$5");
+    assert!(!has_offer);
+}
+
 /// Idle cleanup cannot replenish an active or recently depleted identity.
 #[test]
 fn hosted_test_cleanup_does_not_reset_allowance() {
