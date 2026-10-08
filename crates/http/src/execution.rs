@@ -1,4 +1,4 @@
-//! Retains hosted admission inside native workers after HTTP cancellation.
+//! Retains an optional request guard inside native workers after HTTP cancellation.
 
 use std::sync::Arc;
 
@@ -6,7 +6,7 @@ use std::sync::Arc;
 // Execution: Transfers opaque owned permits into transport-neutral workers.
 // -----------------------------------------------------------------------------
 
-/// Request extension retaining hosted work admission through actual completion.
+/// Request extension retaining owned work through actual completion.
 #[derive(Clone)]
 pub struct Execution {
     /// Owned admission; its concrete transport policy is private to the origin.

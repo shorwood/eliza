@@ -1,8 +1,5 @@
 //! Runs the embedded Hurl contracts against isolated ELIZA configurations.
 
-#[path = "support/hosted.rs"]
-mod hosted;
-
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -227,9 +224,13 @@ fn http_test() -> io::Result<()> {
     // Generate large payloads here; Hurl owns their requests and assertions.
     let encoded_image = "A".repeat(2 * 1024 * 1024 + 4);
     let oversized_prompt = "x".repeat(8_001);
+    let oversized_request = "x".repeat(8 * 1024 * 1024 + 1);
+
+    // Share generated payloads with both public server configurations.
     let public_variables = [
         HurlVariable::new("oversized_image", &encoded_image),
         HurlVariable::new("oversized_prompt", &oversized_prompt),
+        HurlVariable::new("oversized_request", &oversized_request),
     ];
 
     // Default configuration covers the public API and large generated bodies.
@@ -278,6 +279,5 @@ fn http_test() -> io::Result<()> {
     server.run_hurl("tests/http/**/scenario_cors_any.hurl", &[])?;
     drop(server);
 
-    // Hosted mode is mutually exclusive with --api-key and uses ingress policy.
-    hosted::run()
+    Ok(())
 }

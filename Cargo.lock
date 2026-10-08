@@ -829,27 +829,19 @@ version = "1.0.0"
 dependencies = [
  "aide",
  "axum",
- "bytes",
  "eliza-http",
- "eliza-modality-embedding",
- "eliza-modality-image",
  "eliza-modality-speech",
  "eliza-server-anthropic",
  "eliza-server-gemini",
  "eliza-server-ollama",
  "eliza-server-openai",
- "futures-util",
  "http-body",
  "http-body-util",
  "miette",
- "percent-encoding",
  "schemars 0.9.0",
  "serde",
- "serde_json",
  "thiserror",
  "tokio",
- "tokio-io-timeout",
- "tokio-util",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
@@ -3082,16 +3074,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-io-timeout"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bd86198d9ee903fedd2f9a2e72014287c0d9167e4ae43b5853007205dda1b76"
-dependencies = [
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
 name = "tokio-macros"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3137,7 +3119,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
- "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

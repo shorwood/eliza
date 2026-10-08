@@ -3,12 +3,10 @@
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Args, Parser, Subcommand, ValueEnum};
 use eliza_http::context::{ApiKey, RequestLimits, RouteConfig};
-use eliza_http::hosted::{Hosted, HostedConfig, HostedSecrets};
 use eliza_http::model::{ModelAliases, ModelId, ModelNames};
 use eliza_server::serve::{CorsMode, LogFormat, ServerConfig};
 use figment::Figment;
@@ -206,11 +204,6 @@ pub(super) struct ServeArgs {
     #[arg(long, value_name = "KEY", help_heading = "Security")]
     api_key: Option<ApiKey>,
 
-    /// Hosted admission policy supplied by the TOML configuration file.
-    #[arg(skip)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    hosted: Option<HostedConfig>,
-
     /// Browser cross-origin access policy.
     #[arg(
         long = "cors-mode",
@@ -282,30 +275,12 @@ impl ServeArgs {
     /// Lower parsed arguments into runtime configuration.
     ///
     /// # Errors
-    /// Rejects missing secrets and invalid hosted deployment policy.
+    /// Rejects invalid route configuration.
     ///
     /// # Panics
     /// Panics if constructed without a chat name; Clap supplies its default.
     pub(super) fn into_server_config(self) -> miette::Result<ServerConfig> {
         let cors = self.cors_policy()?;
-        let hosted = if let Some(config) = self.hosted {
-            let ingress = std::env::var("ELIZA_INGRESS_SECRET")
-                .map_err(|_| miette::miette!("ELIZA_INGRESS_SECRET is required"))?;
-            let entitlement = std::env::var("ELIZA_ENTITLEMENT_SECRET")
-                .map_err(|_| miette::miette!("ELIZA_ENTITLEMENT_SECRET is required"))?;
-            Some(Arc::new(
-                Hosted::new(
-                    config,
-                    HostedSecrets {
-                        ingress_secret: ingress,
-                        entitlement_secret: entitlement,
-                    },
-                )
-                .map_err(|message| miette::miette!("{message}"))?,
-            ))
-        } else {
-            None
-        };
         let limits = RequestLimits::new(self.max_input_chars, self.max_history_messages);
 
         // Retain the first chat name for existing Rust configuration callers.
@@ -331,12 +306,7 @@ impl ServeArgs {
         // Apply the process-wide logging policy.
         let log = self.log_format.into();
 
-        let server = ServerConfig::new(self.bind, routes, cors, log);
-        Ok(if let Some(hosted) = hosted {
-            server.with_hosted(hosted)
-        } else {
-            server
-        })
+        Ok(ServerConfig::new(self.bind, routes, cors, log))
     }
 
     /// Check constraints that Clap cannot see in file-sourced values.
@@ -356,11 +326,6 @@ impl ServeArgs {
             return Err(miette::miette!(
                 "cors_origins require cors_mode = 'origins'"
             ));
-        }
-
-        // Clap sees only flags, so enforce this conflict after merging the file.
-        if self.api_key.is_some() && self.hosted.is_some() {
-            return Err(miette::miette!("api_key and hosted cannot both be set"));
         }
 
         // File values must fit the same semaphore bound as CLI values.
@@ -433,7 +398,7 @@ pub(super) enum Commands {
 #[derive(Debug, Parser)]
 #[command(name = "eliza")]
 #[command(
-    about = "Serve classic ELIZA through OpenAI, Anthropic, Gemini, and Ollama-compatible HTTP APIs.",
+    about = "1966 ELIZA through AI provider-compatible HTTP APIs",
     long_about = None
 )]
 pub(super) struct Cli {

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::HeaderValue;
 use eliza_http::context::RouteConfig;
-use eliza_http::hosted::Hosted;
 use miette::Diagnostic;
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -93,9 +92,6 @@ pub struct ServerError(
 // ServerConfig: Owns validated route and process behavior.
 // -----------------------------------------------------------------------------
 
-/// Interval between bounded identity maintenance passes.
-const SERVER_CONFIG_CLEANUP_SECONDS: u64 = 30;
-
 /// Runtime configuration for one ELIZA HTTP server process.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -107,8 +103,6 @@ pub struct ServerConfig {
     cors: CorsMode,
     /// Log rendering mode.
     log: LogFormat,
-    /// Optional explicit hosted policy.
-    hosted: Option<Arc<Hosted>>,
 }
 
 impl ServerConfig {
@@ -125,48 +119,17 @@ impl ServerConfig {
             routes,
             cors,
             log,
-            hosted: None,
         }
     }
 
-    /// Enable an explicitly validated hosted deployment.
-    #[must_use]
-    pub fn with_hosted(mut self, hosted: Arc<Hosted>) -> Self {
-        let workers = std::num::NonZeroUsize::new(hosted.config().speech_jobs)
-            .unwrap_or(std::num::NonZeroUsize::MIN);
-        self.routes = self.routes.with_speech_workers(workers);
-        self.hosted = Some(hosted);
-        self
-    }
-
     /// Build the complete provider-compatible router.
-    fn into_router(self) -> Router {
-        let models = Arc::new(self.routes.models.clone());
-        let router = crate::routes::Routes::for_config(self.routes).into_router();
-        let router = if let Some(hosted) = self.hosted {
-            let cleanup = Arc::downgrade(&hosted);
-            tokio::spawn(async move {
-                let mut timer = tokio::time::interval(std::time::Duration::from_secs(
-                    SERVER_CONFIG_CLEANUP_SECONDS,
-                ));
-                loop {
-                    timer.tick().await;
-                    // Stop maintenance once the router and its active requests are gone.
-                    let Some(hosted) = cleanup.upgrade() else {
-                        break;
-                    };
-                    hosted.cleanup();
-                }
-            });
-            router
-                .layer(axum::middleware::from_fn_with_state(
-                    hosted,
-                    crate::admission::Admission::handle,
-                ))
-                .layer(axum::Extension(models))
-        } else {
-            router
-        };
+    pub fn into_router(self) -> Router {
+        let router = crate::routes::Routes::for_config(self.routes)
+            .into_router()
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::new(crate::limits::Limits::new()),
+                crate::limits::handle,
+            ));
         match self.cors {
             CorsMode::Off => router,
             CorsMode::Any => router.layer(CorsLayer::permissive()),
@@ -188,22 +151,8 @@ impl ServerConfig {
             })
         })?;
         tracing::info!(address = %self.address, "serving ELIZA compatibility server");
-        let config = self.hosted.as_ref().map(|hosted| hosted.config().clone());
         let router = self.into_router();
-        let result = if let Some(config) = config {
-            let listener = crate::connection::OriginListener::new(listener, Some(&config));
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<crate::connection::Peer>(),
-            )
-            .await
-        } else {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-        };
+        let result = axum::serve(listener, router.into_make_service()).await;
         result.map_err(|source| ServerError(ServerErrorKind::Serve(source)))?;
         Ok(())
     }

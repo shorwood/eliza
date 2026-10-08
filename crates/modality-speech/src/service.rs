@@ -121,7 +121,7 @@ impl Service {
         }
     }
 
-    /// Run hosted work with owned admission retained until actual completion.
+    /// Run work with an optional owned guard retained until actual completion.
     ///
     /// # Errors
     /// Returns validation, saturation, synthesis or encoding failures.
@@ -179,7 +179,7 @@ impl Service {
         self.render_guarded(request, format, max_chars, None).await
     }
 
-    /// Run hosted work with owned admission retained until actual completion.
+    /// Run work with an optional owned guard retained until actual completion.
     ///
     /// # Errors
     /// Returns validation, saturation, synthesis or encoding failures.

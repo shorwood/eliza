@@ -68,7 +68,7 @@ pub enum ApiProblem {
         title = "Internal server error"
     )]
     Internal,
-    /// A caller has exhausted its own allowance.
+    /// A caller has exhausted an allowance.
     #[error("{message}")]
     #[problem(
         type_uri = "urn:eliza:problem:rate-limit",
@@ -76,7 +76,7 @@ pub enum ApiProblem {
         detail = "{message}"
     )]
     RateLimit {
-        /// Safe retry guidance, with an offer only for anonymous allowances.
+        /// Safe retry guidance.
         message: String,
     },
     /// Shared capacity or a required service is unavailable.
@@ -106,9 +106,9 @@ pub enum ProblemClass {
     RequestTooLarge,
     /// Internal implementation failure.
     Internal,
-    /// Personal allowance exceeded.
+    /// Request allowance exceeded.
     RateLimit,
-    /// Shared capacity or entitlement lookup unavailable.
+    /// Shared capacity or a required service is unavailable.
     Unavailable,
 }
 
@@ -172,12 +172,12 @@ pub struct NativeError {
 }
 
 impl NativeError {
-    /// Explicit hosted encoded input or output size rejection.
+    /// Explicit encoded input or output size rejection.
     #[must_use]
     pub fn too_large() -> Self {
         Self::admission(
             ProblemClass::RequestTooLarge,
-            "Request exceeds hosted size limits.".into(),
+            "Request exceeds size limits.".into(),
             None,
         )
     }
@@ -245,7 +245,7 @@ impl NativeError {
         }
     }
 
-    /// Construct a hosted policy rejection without exposing credentials or provider causes.
+    /// Construct a transport rejection without exposing provider causes.
     #[must_use]
     pub fn admission(class: ProblemClass, message: String, retry_after: Option<u64>) -> Self {
         let report = class.problem(message).into_report();

@@ -162,8 +162,9 @@ Run `eliza serve --config eliza.toml`. Omitted keys use the CLI defaults.
 Use `cors_mode = "any"` only when every browser origin should be allowed.
 An explicit list of `--cors-origin` values replaces the TOML list. Origin
 values must be HTTP(S) origins without paths, queries, or fragments.
-For hosted admission, put the policy under `[hosted]` in the same TOML file.
-Secrets still come from `ELIZA_INGRESS_SECRET` and `ELIZA_ENTITLEMENT_SECRET`.
+The server applies universal 8 MiB request, 32 MiB response, and 180-second
+response bounds. Hosted account and rate policies belong to the site that
+forwards requests to ELIZA; the public binary requires no hosted secrets.
 
 Container arguments replace its default command. Start custom arguments with
 `serve --bind 0.0.0.0:8787` so the mapped port remains reachable.
