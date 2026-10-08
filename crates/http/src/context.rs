@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use axum::http::HeaderMap;
 use miette::Diagnostic;
+use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::model::{ModelAliases, ModelId};
@@ -24,11 +25,22 @@ pub enum ApiKeyError {
 }
 
 /// Shared bearer/API-key token used when authentication is enabled.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct ApiKey(
     /// Validated nonempty secret value.
     String,
 );
+
+impl<'de> Deserialize<'de> for ApiKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.try_into().map_err(de::Error::custom)
+    }
+}
 
 impl ApiKey {
     /// Return the raw token value for header comparison.

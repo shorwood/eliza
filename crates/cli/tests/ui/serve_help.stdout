@@ -6,6 +6,10 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+Configuration:
+      --config <PATH>
+          TOML file supplying server options below explicit CLI flags
+
 Listener:
       --bind <IP:PORT>
           IP address and port on which to listen

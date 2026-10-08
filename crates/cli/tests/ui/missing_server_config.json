@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--config", "missing.toml"],
+  "code": 1
+}
