@@ -2,6 +2,7 @@
 import { cp, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { publicExamples } from './public-examples.mjs';
 
 const [schemaURL, apiRoot, destination] = process.argv.slice(2);
 if (!schemaURL || !apiRoot || !destination) {
@@ -45,12 +46,7 @@ for (const name of docs.filter(name => name.endsWith('.md')).sort()) {
   if (await realpath(source) !== source) throw new Error(`Symlink rejected: ${name}`);
   await cp(source, join(output, 'docs', name));
 }
-const examples = [
-  'smoke.sh',
-  'vercel-ai/package.json', 'vercel-ai/pnpm-lock.yaml', 'vercel-ai/tsconfig.json', 'vercel-ai/main.ts',
-  'rust-rig/Cargo.toml', 'rust-rig/Cargo.lock', 'rust-rig/.gitignore', 'rust-rig/src/main.rs',
-];
-for (const name of examples) {
+for (const name of publicExamples) {
   const source = join(web, 'public/examples', name);
   if (await realpath(source) !== source) throw new Error(`Symlink rejected: ${name}`);
   await mkdir(dirname(join(output, 'examples', name)), { recursive: true });
