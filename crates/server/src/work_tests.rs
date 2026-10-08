@@ -9,6 +9,36 @@ use super::*;
 /// Largest vector dimension exercised by resource preflight scenarios.
 const WORK_TEST_VECTOR_DIMENSIONS: usize = 1024;
 
+/// Configured aliases retain heavy-work admission, including encoded colons.
+///
+/// # Panics
+/// Panics if merging alias support weakens hosted resource classification.
+#[test]
+fn work_test_configured_aliases_keep_media_admission() {
+    let models = ModelAliases {
+        images: eliza_http::model::ModelNames::new(vec!["image:fixture".parse().unwrap()]),
+        speech: eliza_http::model::ModelNames::new(vec!["voice-fixture".parse().unwrap()]),
+        ..ModelAliases::default()
+    };
+    let body = Bytes::from_static(b"{}");
+    let image = WorkKinds::new(
+        "/gemini/v1beta/models/image%3Afixture:generateContent",
+        &Method::POST,
+        &body,
+        Some(&models),
+    )
+    .unwrap();
+    assert!(image.has_image_work);
+    let speech = WorkKinds::new(
+        "/gemini/v1beta/models/voice-fixture:generateContent",
+        &Method::POST,
+        &body,
+        Some(&models),
+    )
+    .unwrap();
+    assert_eq!(speech.primary, Modality::Speech);
+}
+
 /// Native Gemini batches always count one vector per request and use native dimensions.
 ///
 /// # Panics

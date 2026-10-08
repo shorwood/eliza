@@ -35,7 +35,16 @@ impl WorkKinds {
     ///
     /// # Errors
     /// Rejects positional request structs outside provider object wire contracts.
-    fn new(path: &str, method: &Method, body: &Bytes, models: Option<&ModelAliases>) -> Result<Self, NativeError> {
+    #[expect(
+        clippy::manual_unwrap_or_default,
+        reason = "explicitly defer malformed model names to the provider's native validation"
+    )]
+    fn new(
+        path: &str,
+        method: &Method,
+        body: &Bytes,
+        models: Option<&ModelAliases>,
+    ) -> Result<Self, NativeError> {
         let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
         let path = decoded.as_ref();
         let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
@@ -53,17 +62,36 @@ impl WorkKinds {
         let modalities = value
             .pointer("/generationConfig/responseModalities")
             .and_then(Value::as_array);
-        let model = path
+
+        // Decode the model identifier independently of generation controls.
+        let model_name = path
             .split_once("/models/")
             .and_then(|(_, action)| action.rsplit_once(':').map(|(name, _)| name));
+        let parsed_model = model_name
+            .map(str::parse::<eliza_http::model::ModelId>)
+            .transpose();
+
+        // Native adapters validate malformed names; preflight recognizes only valid aliases.
+        let model = match parsed_model {
+            Ok(model) => model,
+            Err(_) => None,
+        };
         let defaults = ModelAliases::default();
         let models = models.unwrap_or(&defaults);
 
         // Classify the primary resource before any native lowering.
-        let audio = model.is_some_and(|name| models.speech.has_name(name, eliza_modality_speech::core::MODEL_ID))
-            || modalities.is_some_and(|values| values.iter().any(|value| value == "AUDIO"));
-        let image = model.is_some_and(|name| models.images.has_name(name, eliza_modality_image::generation::MODEL_ID))
-            || modalities.is_some_and(|values| values.iter().any(|value| value == "IMAGE"));
+        let audio = model.as_ref().is_some_and(|model| {
+            models
+                .speech
+                .has_model(model, eliza_modality_speech::core::MODEL_ID)
+        }) || modalities
+            .is_some_and(|values| values.iter().any(|value| value == "AUDIO"));
+        let image = model.as_ref().is_some_and(|model| {
+            models
+                .images
+                .has_model(model, eliza_modality_image::generation::MODEL_ID)
+        }) || modalities
+            .is_some_and(|values| values.iter().any(|value| value == "IMAGE"));
 
         // Select the allowance associated with the requested generation engine.
         let primary = if *method == Method::GET {
@@ -496,7 +524,10 @@ impl Work {
         bytes: Bytes,
         next: Next,
     ) -> Result<PreparedWork, NativeError> {
-        let models = request.extensions().get::<Arc<ModelAliases>>().map(Arc::as_ref);
+        let models = request
+            .extensions()
+            .get::<Arc<ModelAliases>>()
+            .map(Arc::as_ref);
         let kinds = WorkKinds::new(request.uri().path(), request.method(), &bytes, models)?;
         let output = self.hosted.config().output_bytes;
         kinds.validate_output(output)?;

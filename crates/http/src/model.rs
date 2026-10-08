@@ -102,16 +102,10 @@ impl ModelNames {
     /// Check a requested name without allocating.
     #[must_use]
     pub fn has_model(&self, model: &ModelId, builtin: &str) -> bool {
-        self.has_name(model.as_str(), builtin)
-    }
-
-    /// Check a wire model name without allocating an owned identifier.
-    #[must_use]
-    pub fn has_name(&self, name: &str, builtin: &str) -> bool {
         if self.0.is_empty() {
-            name == builtin
+            model.as_str() == builtin
         } else {
-            self.0.iter().any(|model| model.as_str() == name)
+            self.0.contains(model)
         }
     }
 

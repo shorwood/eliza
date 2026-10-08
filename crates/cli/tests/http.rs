@@ -214,6 +214,17 @@ fn http_contracts_public() -> io::Result<()> {
     server.run_hurl(&contracts, None)
 }
 
+/// Run provider and documentation contracts with explicitly configured workers.
+///
+/// # Errors
+/// Returns an I/O error when the server or Hurl fails.
+#[test]
+fn http_contracts_configured_workers() -> io::Result<()> {
+    let server = TestServer::spawn(&["--runtime-workers", "1", "--speech-workers", "4"])?;
+    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/public");
+    server.run_hurl(&contracts, None)
+}
+
 /// Run the authenticated HTTP contracts.
 ///
 /// # Errors

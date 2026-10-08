@@ -15,7 +15,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 eliza-http = { path = "../http" }
 eliza-server = { path = "../server" }
 miette = { version = "7.6.0", features = ["derive", "fancy"] }
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync"] }
 
 [dev-dependencies]
 sha2 = "0.10"

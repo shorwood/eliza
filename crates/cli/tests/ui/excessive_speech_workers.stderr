@@ -1,0 +1,3 @@
+error: invalid value '18446744073709551615' for '--speech-workers <JOBS>': exceeds maximum speech worker count
+
+For more information, try '--help'.

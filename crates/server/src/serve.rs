@@ -145,10 +145,12 @@ impl ServerConfig {
                     hosted.cleanup();
                 }
             });
-            router.layer(axum::middleware::from_fn_with_state(
-                hosted,
-                crate::admission::Admission::handle,
-            )).layer(axum::Extension(models))
+            router
+                .layer(axum::middleware::from_fn_with_state(
+                    hosted,
+                    crate::admission::Admission::handle,
+                ))
+                .layer(axum::Extension(models))
         } else {
             router
         };

@@ -12,6 +12,15 @@ Listener:
           
           [default: 127.0.0.1:8787]
 
+Workers:
+      --runtime-workers <THREADS>
+          Number of async runtime threads (default: Tokio automatic sizing)
+
+      --speech-workers <JOBS>
+          Maximum simultaneous speech jobs across all providers
+          
+          [default: 2]
+
 Models:
       --model-chat <ID>
           Chat model name advertised by provider catalogs (repeatable)
@@ -39,15 +48,6 @@ Chat:
           Maximum chat transcript entries accepted per request
           
           [default: 200]
-
-Workers:
-      --runtime-workers <THREADS>
-          Number of async runtime threads (default: Tokio automatic sizing)
-
-      --speech-workers <JOBS>
-          Maximum simultaneous speech jobs across all providers
-          
-          [default: 2]
 
 Security:
       --api-key <KEY>
