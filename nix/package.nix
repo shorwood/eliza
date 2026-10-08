@@ -3,11 +3,16 @@
 {
   cacert,
   curl,
-  hurl,
   lib,
+  libclang,
+  libxml2,
   makeRustPlatform,
+  openssl,
+  pkg-config,
   projectRoot ? ../.,
   rustToolchain,
+  scalarJs,
+  stdenv,
   supportedSystems,
 }:
 let
@@ -31,6 +36,7 @@ rustPlatform.buildRustPackage {
       (projectRoot + "/crates")
       (projectRoot + "/benches")
       (projectRoot + "/config")
+      (projectRoot + "/licences")
       (projectRoot + "/examples/rust-rig")
     ];
   };
@@ -45,18 +51,33 @@ rustPlatform.buildRustPackage {
     "--package"
     "eliza-cli"
   ];
+  # Embedded Hurl is large enough to crash LLVM during release-profile tests.
+  checkType = "debug";
 
   # Rust otherwise embeds its sysroot path in the executable, retaining the
   # entire toolchain at runtime. Remapping it keeps the package closure small;
   # the explicit prohibition makes a regression fail the build.
   RUSTFLAGS = "--remap-path-prefix=${rustToolchain}=/rust-toolchain";
+  ELIZA_SCALAR_JS = scalarJs;
+  LIBCLANG_PATH = "${libclang.lib}/lib";
+  BINDGEN_EXTRA_CLANG_ARGS = lib.optionalString stdenv.isLinux "-isystem ${stdenv.cc.libc.dev}/include";
+  LD_LIBRARY_PATH = lib.makeLibraryPath [
+    curl
+    libxml2
+    openssl
+  ];
   disallowedReferences = [ rustToolchain ];
 
-  # The Rust integration tests invoke Hurl to verify the HTTP contracts.
+  nativeBuildInputs = [ pkg-config ];
+  buildInputs = [
+    openssl
+    libxml2
+  ];
+
+  # Embedded Hurl links libcurl when the package runs its tests.
   nativeCheckInputs = [
     cacert
     curl
-    hurl
   ];
   SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
@@ -64,6 +85,7 @@ rustPlatform.buildRustPackage {
   # this package verbatim, so it receives the same notice automatically.
   postInstall = ''
     install -Dm444 ${projectRoot + "/LICENSE"} "$out/share/licenses/eliza/LICENSE"
+    cp -R licences "$out/share/licenses/eliza/third-party"
   '';
 
   meta = {

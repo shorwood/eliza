@@ -9,6 +9,8 @@
   jq,
   just,
   lib,
+  libclang,
+  libxml2,
   mkShell,
   nodejs_22,
   nixfmt,
@@ -16,11 +18,15 @@
   pkg-config,
   pnpm,
   rlibShell,
+  scalarJs,
   shellcheck,
   statix,
   stdenv,
 }:
 mkShell {
+  ELIZA_SCALAR_JS = scalarJs;
+  LIBCLANG_PATH = "${libclang.lib}/lib";
+  BINDGEN_EXTRA_CLANG_ARGS = lib.optionalString stdenv.isLinux "-isystem ${stdenv.cc.libc.dev}/include";
   inputsFrom = [ rlibShell ];
   packages = [
     curl
@@ -30,6 +36,7 @@ mkShell {
     hurl
     jq
     just
+    libxml2
     nodejs_22
     nixfmt
     openssl
@@ -40,9 +47,10 @@ mkShell {
     stdenv.cc
   ];
 
-  # Native Rust dependencies need OpenSSL and the C++ runtime at execution
-  # time as well as during compilation.
+  # Native Rust dependencies also need their shared libraries during tests.
   LD_LIBRARY_PATH = lib.makeLibraryPath [
+    curl
+    libxml2
     openssl
     stdenv.cc.cc.lib
   ];
