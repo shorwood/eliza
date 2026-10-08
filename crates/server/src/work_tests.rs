@@ -94,7 +94,8 @@ fn work_test_percent_encoded_model_actions_keep_admission() {
         "/gemini/v1beta/models/%65liza-retro-image%3AgenerateContent",
         &Method::POST,
         &body,
-    );
+    )
+    .unwrap();
     assert!(image.has_image_work);
     let value = serde_json::json!({"requests": [{"outputDimensionality": WORK_TEST_VECTOR_DIMENSIONS,
         "content": {"parts": [{"text": "Hello"}]}}]});
@@ -103,9 +104,38 @@ fn work_test_percent_encoded_model_actions_keep_admission() {
         "/gemini/v1beta/models/fnv-embed%3AbatchEmbedContents",
         &Method::POST,
         &body,
-    );
+    )
+    .unwrap();
     assert_eq!(
         batch.estimated_output_bytes,
+        Some(WORK_TEST_VECTOR_DIMENSIONS * WORK_POLICY_FLOAT_BYTES)
+    );
+}
+
+/// Serde's alternate representations cannot escape heavy media or output admission.
+///
+/// # Panics
+/// Panics if numeric image tags, positional messages or request tuples bypass admission.
+#[test]
+fn work_test_alternate_serde_shapes_remain_bounded() {
+    let numeric = serde_json::json!({"messages": [{"content": [{"type": 1, "image_url": {"url": "fixture"}}]}]});
+    assert!(WorkKinds::has_request_images(
+        "/openai/v1/chat/completions",
+        &numeric
+    ));
+    let positional = serde_json::json!({"messages": [["user", []]]});
+    assert!(WorkKinds::has_request_images(
+        "/openai/v1/chat/completions",
+        &positional
+    ));
+    let root = Bytes::from_static(br#"["fnv-embed", ["Hello"], 8, null, null]"#);
+    let rejected = WorkKinds::new("/openai/v1/embeddings", &Method::POST, &root).is_err();
+    assert!(rejected);
+    let batch = serde_json::json!({"requests": [[null, null, null, null, WORK_TEST_VECTOR_DIMENSIONS, null]]});
+    let output =
+        WorkKinds::embedding_output("/gemini/v1beta/models/fnv-embed:batchEmbedContents", &batch);
+    assert_eq!(
+        output,
         Some(WORK_TEST_VECTOR_DIMENSIONS * WORK_POLICY_FLOAT_BYTES)
     );
 }
