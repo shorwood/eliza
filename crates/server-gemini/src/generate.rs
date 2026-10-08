@@ -3,13 +3,14 @@ use std::str::FromStr;
 
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
-use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use eliza_http::context::{ProviderAuth, RouteConfig};
+use eliza_http::execution::Execution;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks};
@@ -628,6 +629,7 @@ impl IntoResponse for GenerateTransport {
 async fn generate(
     State(state): State<AppState>,
     headers: HeaderMap,
+    execution: Option<Extension<Execution>>,
     model_action: Result<Path<String>, PathRejection>,
     query: Result<Query<GenerateQuery>, QueryRejection>,
     payload: Result<Json<GenerateContentRequest>, JsonRejection>,
@@ -692,10 +694,12 @@ async fn generate(
         Err(error) => return GeminiRejection::from_error(&error).into_response(),
     };
 
+    let execution = execution.map(|Extension(value)| value);
     match mode {
         // Audio generation owns its provider-native response.
         GenerateRequestMode::Audio => {
-            return super::speech::generate(&state, action.model, delivery, payload).await;
+            return super::speech::generate(&state, action.model, delivery, payload, execution)
+                .await;
         }
         // Image generation owns its provider-native multipart response.
         GenerateRequestMode::Image { composition } => {
@@ -747,6 +751,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Gemini content")
                 .tag("gemini")
                 .response::<200, Json<GenerateContentResponse>>()
+                .response::<429, Json<GeminiFailureResponse>>()
+                .response::<503, Json<GeminiFailureResponse>>()
                 .default_response::<Json<GeminiFailureResponse>>()
         })
         .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),

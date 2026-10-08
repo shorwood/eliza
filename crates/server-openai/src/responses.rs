@@ -727,6 +727,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("OpenAI response")
                 .tag("openai")
                 .response::<200, Json<ResponsesResponse>>()
+                .response::<429, Json<OpenAiFailureResponse>>()
+                .response::<503, Json<OpenAiFailureResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
         })
         .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),

@@ -21,6 +21,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("OpenAI-compatible chat completion")
                 .tag("openai")
                 .response::<200, Json<ChatResponse>>()
+                .response::<429, Json<OpenAiFailureResponse>>()
+                .response::<503, Json<OpenAiFailureResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
         })
         .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
@@ -32,6 +34,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("OpenAI-compatible embeddings")
                 .tag("openai")
                 .response::<200, Json<OpenAiEmbeddingResponse>>()
+                .response::<429, Json<OpenAiFailureResponse>>()
+                .response::<503, Json<OpenAiFailureResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
         }),
     )

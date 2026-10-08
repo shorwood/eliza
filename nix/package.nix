@@ -1,6 +1,7 @@
 # `pkgs.callPackage` fills these dependencies from nixpkgs. The flake passes
 # the pinned Rust toolchain and the systems that this repository supports.
 {
+  cacert,
   curl,
   hurl,
   lib,
@@ -29,6 +30,7 @@ rustPlatform.buildRustPackage {
       (projectRoot + "/Cargo.lock")
       (projectRoot + "/crates")
       (projectRoot + "/benches")
+      (projectRoot + "/config")
       (projectRoot + "/examples/rust-rig")
     ];
   };
@@ -52,9 +54,11 @@ rustPlatform.buildRustPackage {
 
   # The Rust integration tests invoke Hurl to verify the HTTP contracts.
   nativeCheckInputs = [
+    cacert
     curl
     hurl
   ];
+  SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
   # Keep the license notice in binary distributions. The container image uses
   # this package verbatim, so it receives the same notice automatically.

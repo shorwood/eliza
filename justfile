@@ -1,6 +1,6 @@
 fmt:
     cargo-fmt fmt --all
-    hurlfmt --in-place crates/cli/tests/http/*.hurl crates/cli/tests/http/public/*.hurl crates/cli/tests/http/auth/*.hurl
+    hurlfmt --in-place crates/cli/tests/http/*.hurl crates/cli/tests/http/*/*.hurl
     nixfmt flake.nix nix/*.nix
 
 bench-generation *args:
@@ -14,6 +14,9 @@ bench-e2e *args:
 bench-smoke:
     just bench-generation --test
     just bench-e2e --smoke
+
+check-public-docs:
+    bash web/tools/check-docs.sh
 
 chat:
     sh examples/open-webui/run.sh
@@ -40,7 +43,7 @@ test-http:
 
 ok:
     cargo-fmt fmt --all -- --check
-    hurlfmt --check crates/cli/tests/http/*.hurl crates/cli/tests/http/public/*.hurl crates/cli/tests/http/auth/*.hurl
+    hurlfmt --check crates/cli/tests/http/*.hurl crates/cli/tests/http/*/*.hurl
     nixfmt --check flake.nix nix/*.nix
     deadnix --fail flake.nix nix
     statix check .

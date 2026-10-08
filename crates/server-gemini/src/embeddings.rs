@@ -398,6 +398,8 @@ pub(super) fn router(models: impl Iterator<Item = ModelId>) -> ApiRouter<AppStat
                     .summary("Gemini embedding")
                     .tag("gemini")
                     .response::<200, Json<GeminiEmbedContentResponse>>()
+                    .response::<429, Json<GeminiFailureResponse>>()
+                    .response::<503, Json<GeminiFailureResponse>>()
                     .default_response::<Json<GeminiFailureResponse>>()
             })
             .layer(Extension(Arc::clone(&model))),
@@ -409,6 +411,8 @@ pub(super) fn router(models: impl Iterator<Item = ModelId>) -> ApiRouter<AppStat
                     .summary("Gemini batch embeddings")
                     .tag("gemini")
                     .response::<200, Json<GeminiBatchEmbedContentsResponse>>()
+                    .response::<429, Json<GeminiFailureResponse>>()
+                    .response::<503, Json<GeminiFailureResponse>>()
                     .default_response::<Json<GeminiFailureResponse>>()
             })
             .layer(Extension(model)),

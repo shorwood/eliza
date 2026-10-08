@@ -40,9 +40,21 @@ Chat:
           
           [default: 200]
 
+Workers:
+      --runtime-workers <THREADS>
+          Number of async runtime threads (default: Tokio automatic sizing)
+
+      --speech-workers <JOBS>
+          Maximum simultaneous speech jobs across all providers
+          
+          [default: 2]
+
 Security:
       --api-key <KEY>
           Require this key through each provider's native authentication scheme
+
+      --hosted-config <PATH>
+          Enable explicit hosted admission using a JSON policy file
 
       --allow-any-origin
           Allow browser requests from any origin using permissive CORS
