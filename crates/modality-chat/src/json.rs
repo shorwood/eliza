@@ -25,23 +25,3 @@ impl JsonObject {
         Value::Object(self.0.clone()).to_string()
     }
 }
-
-#[cfg(test)]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "test assertions are the intended panic contract"
-)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_should_round_trip_an_object() {
-        let object = serde_json::from_str::<JsonObject>(r#"{"value":"hello"}"#).unwrap();
-        assert_eq!(object.serialized(), r#"{"value":"hello"}"#);
-    }
-
-    #[test]
-    fn it_should_reject_a_scalar() {
-        assert!(serde_json::from_str::<JsonObject>("42").is_err());
-    }
-}

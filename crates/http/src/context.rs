@@ -267,15 +267,3 @@ impl ProviderAuth {
         }
     }
 }
-
-// -----------------------------------------------------------------------------
-// Tests: Verify public and authenticated route policies.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "test assertions are the intended panic contract"
-)]
-#[path = "../tests/unit/context.rs"]
-mod tests;

@@ -164,16 +164,6 @@ impl Peer {
     }
 }
 
-#[cfg(test)]
-impl From<SocketAddr> for Peer {
-    fn from(address: SocketAddr) -> Self {
-        Self {
-            address,
-            shutdown: CancellationToken::new(),
-        }
-    }
-}
-
 impl Connected<IncomingStream<'_, OriginListener>> for Peer {
     fn connect_info(stream: IncomingStream<'_, OriginListener>) -> Self {
         Self {

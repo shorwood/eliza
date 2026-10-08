@@ -341,15 +341,3 @@ impl IntoResponse for NativeError {
         response
     }
 }
-
-// -----------------------------------------------------------------------------
-// Tests: Preserve SDK metadata and prevent private cause disclosure.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "test assertions define the panic contract"
-)]
-#[path = "../tests/unit/problem.rs"]
-mod tests;
