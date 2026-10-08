@@ -31,20 +31,38 @@ struct WorkKinds {
 
 impl WorkKinds {
     /// Classify native Gemini media selectors and other provider media endpoints.
-    fn new(path: &str, method: &Method, body: &Bytes) -> Self {
+    ///
+    /// # Errors
+    /// Rejects positional request structs outside provider object wire contracts.
+    fn new(path: &str, method: &Method, body: &Bytes) -> Result<Self, NativeError> {
         let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
         let path = decoded.as_ref();
         let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+
+        // Provider wire contracts require object requests, not Serde's positional struct form.
+        if value.is_array() {
+            return Err(NativeError::admission(
+                eliza_http::problem::ProblemClass::InvalidRequest,
+                "Expected a JSON request object.".into(),
+                None,
+            ));
+        }
+
+        // Resolve native model defaults and explicit generation controls.
         let modalities = value
             .pointer("/generationConfig/responseModalities")
             .and_then(Value::as_array);
         let model = path
             .split_once("/models/")
             .and_then(|(_, action)| action.split(':').next());
+
+        // Classify the primary resource before any native lowering.
         let audio = model == Some(eliza_modality_speech::core::MODEL_ID)
             || modalities.is_some_and(|values| values.iter().any(|value| value == "AUDIO"));
         let image = model == Some(eliza_modality_image::generation::MODEL_ID)
             || modalities.is_some_and(|values| values.iter().any(|value| value == "IMAGE"));
+
+        // Select the allowance associated with the requested generation engine.
         let primary = if *method == Method::GET {
             Modality::Discovery
         } else if path.ends_with("/audio/speech") || audio {
@@ -54,21 +72,31 @@ impl WorkKinds {
         } else {
             Modality::Text
         };
+
+        // Identify additional image work and conservative output admission.
         let has_image_work = primary == Modality::Image || Self::has_request_images(path, &value);
         let estimated_output_bytes = Self::embedding_output(path, &value);
-        Self {
+
+        // Retain classification without retaining the parsed input tree.
+        Ok(Self {
             primary,
             has_image_work,
             estimated_output_bytes,
-        }
+        })
     }
 
     /// Identify actual tagged image content parts, excluding tool definitions and JSON schemas.
     fn has_image_parts(value: &Value) -> bool {
         value.as_array().is_some_and(|parts| {
             parts.iter().any(|part| {
-                let kind = part.get("type").and_then(Value::as_str);
-                kind.is_some_and(|kind| matches!(kind, "image" | "image_url" | "input_image"))
+                let kind = part.get("type");
+                part.is_array()
+                    || kind.is_some_and(|kind| {
+                        kind.is_number()
+                            || kind.as_str().is_some_and(|kind| {
+                                matches!(kind, "image" | "image_url" | "input_image")
+                            })
+                    })
             })
         })
     }
@@ -96,9 +124,9 @@ impl WorkKinds {
         if path.ends_with(":generateContent") || path.ends_with(":streamGenerateContent") {
             let contents = value.get("contents").and_then(Value::as_array);
             return contents.is_some_and(|contents| {
-                contents
-                    .iter()
-                    .any(|content| content.get("parts").is_some_and(Self::has_gemini_parts))
+                contents.iter().any(|content| {
+                    content.is_array() || content.get("parts").is_some_and(Self::has_gemini_parts)
+                })
             });
         }
 
@@ -110,7 +138,11 @@ impl WorkKinds {
         // Ollama chat reads image arrays only from messages.
         if path.ends_with("/api/chat") {
             let messages = value.get("messages").and_then(Value::as_array);
-            return messages.is_some_and(|messages| messages.iter().any(Self::has_ollama_images));
+            return messages.is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message.is_array() || Self::has_ollama_images(message))
+            });
         }
 
         // Other generation DTOs cannot decode image-bearing message content.
@@ -126,17 +158,26 @@ impl WorkKinds {
         // Inspect only actual message content, excluding definitions and metadata.
         let messages = value.get(field).and_then(Value::as_array);
         messages.is_some_and(|messages| {
-            messages
-                .iter()
-                .any(|message| message.get("content").is_some_and(Self::has_image_parts))
+            messages.iter().any(|message| {
+                message.is_array() || message.get("content").is_some_and(Self::has_image_parts)
+            })
         })
     }
 
     /// Estimate only valid embedding dimensions; native DTOs retain their own invalid-input errors.
     fn embedding_bytes(path: &str, value: &Value) -> Option<usize> {
-        let default = eliza_modality_embedding::engine::MODEL_DEFAULT_DIMENSIONS;
+        // Bound alternate struct representations at the maximum native vector size.
         let is_native_gemini =
             path.ends_with("embedContent") || path.ends_with("batchEmbedContents");
+        let sequence =
+            value.is_array() || value.get("embedContentConfig").is_some_and(Value::is_array);
+        let default = if is_native_gemini && sequence {
+            eliza_modality_embedding::engine::MODEL_MAX_DIMENSIONS
+        } else {
+            eliza_modality_embedding::engine::MODEL_DEFAULT_DIMENSIONS
+        };
+
+        // Read only dimension fields belonging to this provider contract.
         let requested = if is_native_gemini {
             value
                 .get("outputDimensionality")
@@ -450,7 +491,7 @@ impl Work {
         bytes: Bytes,
         next: Next,
     ) -> Result<PreparedWork, NativeError> {
-        let kinds = WorkKinds::new(request.uri().path(), request.method(), &bytes);
+        let kinds = WorkKinds::new(request.uri().path(), request.method(), &bytes)?;
         let output = self.hosted.config().output_bytes;
         kinds.validate_output(output)?;
 
