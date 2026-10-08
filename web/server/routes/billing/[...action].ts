@@ -1,4 +1,4 @@
-import { authenticated, restricted, safely, sameOrigin } from '../../billing/http'
+import { authenticated, limitedBody, restricted, safely, sameOrigin } from '../../billing/http'
 import { billingRuntime } from '../../billing/runtime'
 import { webhookCustomer } from '../../billing/stripe'
 
@@ -8,7 +8,7 @@ export default defineEventHandler(event => safely(event, async () => {
   const config = useRuntimeConfig()
   if (action === 'entitlement') {
     restricted(event, config.entitlementSecret)
-    const raw = await readRawBody(event)
+    const raw = await limitedBody(event, 64)
     // Hash only: raw keys must never appear in URLs, access logs or this database query.
     if (!raw || !/^[\da-f]{64}$/.test(raw)) throw createError({ statusCode: 400 })
     return billingRuntime().billing.entitlement(raw)
@@ -19,8 +19,8 @@ export default defineEventHandler(event => safely(event, async () => {
   }
   if (action === 'webhook') {
     const { billing, stripe } = billingRuntime()
-    const raw = await readRawBody(event)
-    if (!raw || Buffer.byteLength(raw) > 1_048_576) throw createError({ statusCode: 413 })
+    const raw = await limitedBody(event, 1_048_576)
+    if (!raw) throw createError({ statusCode: 413 })
     let notification
     try { notification = stripe.webhooks.constructEvent(raw, getHeader(event, 'stripe-signature') ?? '', config.stripeWebhookSecret) }
     catch { throw createError({ statusCode: 400, statusMessage: 'Invalid webhook signature.' }) }
