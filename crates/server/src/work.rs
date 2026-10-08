@@ -32,6 +32,8 @@ struct WorkKinds {
 impl WorkKinds {
     /// Classify native Gemini media selectors and other provider media endpoints.
     fn new(path: &str, method: &Method, body: &Bytes) -> Self {
+        let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
+        let path = decoded.as_ref();
         let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let modalities = value
             .pointer("/generationConfig/responseModalities")
@@ -52,7 +54,7 @@ impl WorkKinds {
         } else {
             Modality::Text
         };
-        let has_image_work = primary == Modality::Image || Self::has_inline_image(&value);
+        let has_image_work = primary == Modality::Image || Self::has_request_images(path, &value);
         let estimated_output_bytes = Self::embedding_output(path, &value);
         Self {
             primary,
@@ -61,25 +63,73 @@ impl WorkKinds {
         }
     }
 
-    /// Recognize image-bearing content objects without decoding their bytes.
-    fn has_image_fields(fields: &serde_json::Map<String, Value>) -> bool {
-        let images = fields.get("images").and_then(Value::as_array);
-        let kind = fields.get("type").and_then(Value::as_str);
-        fields.contains_key("inlineData")
-            || fields.contains_key("inline_data")
-            || images.is_some_and(|images| !images.is_empty())
-            || kind.is_some_and(|kind| matches!(kind, "image" | "image_url" | "input_image"))
+    /// Identify actual tagged image content parts, excluding tool definitions and JSON schemas.
+    fn has_image_parts(value: &Value) -> bool {
+        value.as_array().is_some_and(|parts| {
+            parts.iter().any(|part| {
+                let kind = part.get("type").and_then(Value::as_str);
+                kind.is_some_and(|kind| matches!(kind, "image" | "image_url" | "input_image"))
+            })
+        })
     }
 
-    /// Recognize actual media shapes without decoding their binary payloads.
-    fn has_inline_image(value: &Value) -> bool {
-        match value {
-            Value::Array(values) => values.iter().any(Self::has_inline_image),
-            Value::Object(fields) => {
-                Self::has_image_fields(fields) || fields.values().any(Self::has_inline_image)
-            }
-            _ => false,
+    /// Identify native Gemini parts without traversing arbitrary tool response objects.
+    fn has_gemini_parts(value: &Value) -> bool {
+        value.as_array().is_some_and(|parts| {
+            parts
+                .iter()
+                .any(|part| part.get("inlineData").is_some() || part.get("fileData").is_some())
+        })
+    }
+
+    /// Identify actual Ollama image arrays without inspecting ignored metadata.
+    fn has_ollama_images(value: &Value) -> bool {
+        value
+            .get("images")
+            .and_then(Value::as_array)
+            .is_some_and(|images| !images.is_empty())
+    }
+
+    /// Follow each native request's image locations before decoding.
+    fn has_request_images(path: &str, value: &Value) -> bool {
+        // Native Gemini generation reads image inputs only from content parts.
+        if path.ends_with(":generateContent") || path.ends_with(":streamGenerateContent") {
+            let contents = value.get("contents").and_then(Value::as_array);
+            return contents.is_some_and(|contents| {
+                contents
+                    .iter()
+                    .any(|content| content.get("parts").is_some_and(Self::has_gemini_parts))
+            });
         }
+
+        // Ollama generate reads only its top-level image array.
+        if path.ends_with("/api/generate") {
+            return Self::has_ollama_images(value);
+        }
+
+        // Ollama chat reads image arrays only from messages.
+        if path.ends_with("/api/chat") {
+            let messages = value.get("messages").and_then(Value::as_array);
+            return messages.is_some_and(|messages| messages.iter().any(Self::has_ollama_images));
+        }
+
+        // Other generation DTOs cannot decode image-bearing message content.
+        let field = match path {
+            path if path.ends_with("/responses") => "input",
+            path if path.ends_with("/chat/completions") || path.ends_with("/messages") => {
+                "messages"
+            }
+            // Non-message DTOs have no image content to lower.
+            _ => return false,
+        };
+
+        // Inspect only actual message content, excluding definitions and metadata.
+        let messages = value.get(field).and_then(Value::as_array);
+        messages.is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| message.get("content").is_some_and(Self::has_image_parts))
+        })
     }
 
     /// Estimate only valid embedding dimensions; native DTOs retain their own invalid-input errors.
