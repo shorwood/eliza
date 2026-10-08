@@ -16,5 +16,7 @@ jobs:
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
       - name: Check source
         run: nix develop --command just ok
+      - name: Check public documentation and SDK examples
+        run: nix develop --command just check-public-docs
       - name: Check flake
         run: nix flake check
