@@ -1157,7 +1157,7 @@ impl Hosted {
             "Your account allowance is temporarily exhausted; retry shortly.".into()
         } else {
             format!(
-                "Public allowance temporarily exhausted; retry shortly. Support ELIZA for $5/month: {}",
+                "Public allowance temporarily exhausted; retry shortly. Support ELIZA for $3/month: {}",
                 self.config.support_url
             )
         };
