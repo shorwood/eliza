@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--log-format", "binary"],
+  "code": 2
+}

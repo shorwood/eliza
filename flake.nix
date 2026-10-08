@@ -38,8 +38,10 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          scalarJs = pkgs.callPackage ./nix/scalar.nix { };
           package = pkgs.callPackage ./nix/package.nix {
             rustToolchain = rlib.packages.${system}.rust-toolchain;
+            inherit scalarJs;
             supportedSystems = systems;
           };
         in
@@ -48,6 +50,7 @@
           dockerImage = pkgs.callPackage ./nix/docker-image.nix { inherit package; };
           devShell = pkgs.callPackage ./nix/dev-shell.nix {
             rlibShell = rlib.devShells.${system}.consumer;
+            inherit scalarJs;
           };
         };
     in

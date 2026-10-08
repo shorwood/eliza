@@ -6,16 +6,17 @@ use std::time::Duration;
 
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
-use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use base64::Engine as _;
 use eliza_http::context::ProviderAuth;
 use eliza_http::errors::EncodingError;
+use eliza_http::execution::Execution;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_modality_speech as speech;
@@ -381,14 +382,23 @@ impl LoweredSpeech {
     /// # Errors
     ///
     /// Returns failures detected before HTTP response delivery begins.
-    async fn respond(self, state: &SpeechState) -> Result<SpeechResponse, speech::errors::Error> {
+    async fn respond(
+        self,
+        state: &SpeechState,
+        execution: Option<Execution>,
+    ) -> Result<SpeechResponse, speech::errors::Error> {
         let input_tokens = self.request.input_tokens();
         let configured_limit = state.config.limits.max_input_chars();
         let input_limit = configured_limit.get().min(OPENAI_INPUT_LIMIT);
         let input_limit = NonZeroUsize::new(input_limit).unwrap_or(configured_limit);
         let audio = state
             .speech
-            .stream(self.request, self.format, input_limit)
+            .stream_guarded(
+                self.request,
+                self.format,
+                input_limit,
+                execution.map(|value| value.guard()),
+            )
             .await?;
         let delay_ms = state.config.stream_delay_ms;
         Ok(match self.delivery {
@@ -410,6 +420,7 @@ impl LoweredSpeech {
 async fn handle(
     State(state): State<SpeechState>,
     headers: HeaderMap,
+    execution: Option<Extension<Execution>>,
     payload: Result<Json<SpeechPayload>, JsonRejection>,
 ) -> Response {
     // Authentication failures take precedence over request-body details.
@@ -442,7 +453,10 @@ async fn handle(
         Err(error) => return OpenAiRejection::from_error(&error).into_response(),
     };
 
-    match lowered.respond(&state).await {
+    match lowered
+        .respond(&state, execution.map(|Extension(value)| value))
+        .await
+    {
         Ok(response) => response.into_response(),
         // Engine failures map through the OpenAI rejection contract.
         Err(error) => OpenAiRejection::from(&error).into_response(),
@@ -462,6 +476,8 @@ pub(super) fn router() -> ApiRouter<SpeechState> {
                 .summary("OpenAI text to speech")
                 .tag("openai")
                 .response::<200, Bytes>()
+                .response::<429, Json<OpenAiFailureResponse>>()
+                .response::<503, Json<OpenAiFailureResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
         }),
     )

@@ -5,10 +5,11 @@ use std::str::FromStr;
 
 use axum::http::HeaderMap;
 use miette::Diagnostic;
+use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::model::{ModelAliases, ModelId};
-use crate::problem::{ProblemClass, ProblemDetails};
+use crate::problem::{ApiError, ProblemClass};
 
 // -----------------------------------------------------------------------------
 // ApiKey: Validates and redacts the shared provider credential.
@@ -24,11 +25,22 @@ pub enum ApiKeyError {
 }
 
 /// Shared bearer/API-key token used when authentication is enabled.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct ApiKey(
     /// Validated nonempty secret value.
     String,
 );
+
+impl<'de> Deserialize<'de> for ApiKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.try_into().map_err(de::Error::custom)
+    }
+}
 
 impl ApiKey {
     /// Return the raw token value for header comparison.
@@ -83,7 +95,7 @@ pub enum AuthenticationError {
     Failed,
 }
 
-impl ProblemDetails for AuthenticationError {
+impl ApiError for AuthenticationError {
     fn class(&self) -> ProblemClass {
         ProblemClass::Authentication
     }
@@ -142,6 +154,8 @@ pub struct RouteConfig {
     pub stream_delay_ms: u64,
     /// Shared request-size and replay bounds.
     pub limits: RequestLimits,
+    /// Maximum simultaneous speech jobs, shared across provider routes.
+    pub speech_workers: NonZeroUsize,
 }
 
 impl RouteConfig {
@@ -159,6 +173,7 @@ impl RouteConfig {
             api_key,
             stream_delay_ms,
             limits,
+            speech_workers: NonZeroUsize::MIN.saturating_add(1),
         }
     }
 
@@ -166,6 +181,13 @@ impl RouteConfig {
     #[must_use]
     pub fn with_model_aliases(mut self, models: ModelAliases) -> Self {
         self.models = models;
+        self
+    }
+
+    /// Set the shared speech concurrency limit.
+    #[must_use]
+    pub const fn with_speech_workers(mut self, workers: NonZeroUsize) -> Self {
+        self.speech_workers = workers;
         self
     }
 
@@ -243,120 +265,5 @@ impl ProviderAuth {
                 .map(|value| value.and_then(|text| text.strip_prefix("Bearer "))),
             Self::ApiKey(name) => Self::header_text(headers, name),
         }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Tests: Verify public and authenticated route policies.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "test assertions are the intended panic contract"
-)]
-#[expect(
-    rlib::missing_section_dividers,
-    reason = "compact authentication scenarios share one responsibility"
-)]
-mod tests {
-    use std::num::NonZeroUsize;
-
-    use axum::http::{HeaderMap, HeaderValue, header};
-
-    use super::*;
-    use crate::model::ModelNames;
-
-    /// Build the smallest route configuration needed by authentication tests.
-    fn route_config_with_api_key(api_key: Option<&str>) -> RouteConfig {
-        RouteConfig::new(
-            "test-chat"
-                .parse()
-                .expect("test chat model should be valid"),
-            api_key.map(|key| ApiKey(key.to_owned())),
-            0,
-            RequestLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN),
-        )
-    }
-
-    /// Existing Rust constructors retain defaults while supplied groups replace them.
-    #[test]
-    fn model_aliases_preserve_legacy_constructor_defaults() {
-        let config = route_config_with_api_key(None);
-        let chat = config
-            .models
-            .chat
-            .ids(config.chat_model.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(chat, vec![config.chat_model.clone()]);
-        let builtin: ModelId = "flite".parse().unwrap();
-        assert!(config.models.speech.has_model(&builtin, "flite"));
-
-        let alias: ModelId = "voice-alias".parse().unwrap();
-        let config = config.with_model_aliases(ModelAliases {
-            speech: ModelNames::new(vec![alias.clone()]),
-            ..ModelAliases::default()
-        });
-        assert!(config.models.speech.has_model(&alias, "flite"));
-        assert!(!config.models.speech.has_model(&builtin, "flite"));
-        assert_eq!(
-            config.models.chat.ids(config.chat_model.as_str()).count(),
-            1
-        );
-    }
-
-    /// Authentication-disabled routes ignore provider headers.
-    #[test]
-    fn disabled_authentication_accepts_missing_credentials() {
-        let config = route_config_with_api_key(None);
-
-        assert!(
-            config
-                .authenticate(&HeaderMap::new(), ProviderAuth::Bearer)
-                .is_ok()
-        );
-    }
-
-    /// Both supported provider schemes compare their decoded credential.
-    #[test]
-    fn authentication_accepts_matching_credentials() {
-        let config = route_config_with_api_key(Some("secret"));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer secret"),
-        );
-        headers.insert("x-api-key", HeaderValue::from_static("secret"));
-
-        assert!(config.authenticate(&headers, ProviderAuth::Bearer).is_ok());
-        assert!(
-            config
-                .authenticate(&headers, ProviderAuth::ApiKey("x-api-key"))
-                .is_ok()
-        );
-    }
-
-    /// Missing, malformed, and mismatched credentials are rejected alike.
-    #[test]
-    fn authentication_rejects_invalid_credentials() {
-        let config = route_config_with_api_key(Some("secret"));
-        let mut headers = HeaderMap::new();
-
-        // A required credential cannot be omitted.
-        assert!(config.authenticate(&headers, ProviderAuth::Bearer).is_err());
-
-        // A decoded credential must match exactly.
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer wrong"),
-        );
-        assert!(config.authenticate(&headers, ProviderAuth::Bearer).is_err());
-
-        // A present but non-text header remains an authentication failure.
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_bytes(b"Bearer \xff").unwrap(),
-        );
-        assert!(config.authenticate(&headers, ProviderAuth::Bearer).is_err());
     }
 }

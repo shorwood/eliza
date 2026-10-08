@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--allow-any-origin"],
+  "code": 2
+}

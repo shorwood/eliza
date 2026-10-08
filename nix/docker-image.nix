@@ -1,6 +1,7 @@
 # This produces a reproducible Docker-compatible archive without contacting a
 # container daemon. Docker or Podman is only needed later to load and run it.
 {
+  cacert,
   dockerTools,
   lib,
   package,
@@ -11,8 +12,12 @@ dockerTools.buildLayeredImage {
 
   # With no base image, the result contains only ELIZA and its Nix runtime
   # closure. There is intentionally no shell or package manager in the image.
-  contents = [ package ];
+  contents = [
+    package
+    cacert
+  ];
   config = {
+    Env = [ "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt" ];
     User = "65532:65532";
     Entrypoint = [ (lib.getExe package) ];
     Cmd = [

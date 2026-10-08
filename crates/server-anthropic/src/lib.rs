@@ -4,7 +4,7 @@
 #![register_tool(rlib)]
 
 mod context;
-mod errors;
+pub mod errors;
 mod messages;
 mod models;
 pub mod router;

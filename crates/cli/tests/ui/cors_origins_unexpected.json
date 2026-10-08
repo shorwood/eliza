@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--cors-mode", "any", "--cors-origin", "http://localhost:3000"],
+  "code": 1
+}

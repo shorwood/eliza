@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--json-logs"],
+  "code": 2
+}

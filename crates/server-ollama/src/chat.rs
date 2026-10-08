@@ -253,8 +253,19 @@ async fn chat(
         }
     };
 
-    // Capture transport policy before lowering consumes the request body.
+    // Read the requested model and configured names before lowering.
     let model = payload.model.clone();
+    let chat_names = &state.config.models.chat;
+    let builtin = state.config.chat_model.as_str();
+
+    // Reject unlisted models before executing a local chat turn.
+    if !chat_names.has_model(&model, builtin) {
+        let expected = chat_names.expected(builtin);
+        return OllamaRejection::from_error(&OllamaError::ChatModelRequired { expected })
+            .into_response();
+    }
+
+    // Capture transport policy before lowering consumes the request body.
     let should_stream = payload.should_stream.unwrap_or(true);
     let request: chat::turn::Request = match payload.try_into() {
         Ok(request) => request,
@@ -303,6 +314,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Ollama chat")
                 .tag("ollama")
                 .response::<200, Json<ChatResponse>>()
+                .response::<429, Json<OllamaFailureResponse>>()
+                .response::<503, Json<OllamaFailureResponse>>()
                 .default_response::<Json<OllamaFailureResponse>>()
         })
         .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),

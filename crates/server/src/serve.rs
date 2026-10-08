@@ -1,13 +1,15 @@
 //! Server configuration, listener, CORS, and tracing.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::Router;
+use axum::http::HeaderValue;
 use eliza_http::context::RouteConfig;
 use miette::Diagnostic;
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
 // -----------------------------------------------------------------------------
@@ -15,12 +17,24 @@ use tracing_subscriber::EnvFilter;
 // -----------------------------------------------------------------------------
 
 /// CORS policy installed around the complete HTTP surface.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum CorsMode {
     /// Do not install a CORS layer.
-    None,
+    Off,
     /// Permit requests from any browser origin.
-    Permissive,
+    Any,
+    /// Permit requests from the listed browser origins.
+    Origins(
+        /// Exact `Origin` header values allowed to read browser responses.
+        Vec<HeaderValue>,
+    ),
+}
+
+/// Build a CORS layer that admits only the supplied browser origins.
+fn origin_cors_layer(origins: Vec<HeaderValue>) -> CorsLayer {
+    let allowed = AllowOrigin::predicate(move |origin, _| origins.contains(origin));
+    let layer = CorsLayer::new().allow_origin(allowed).allow_methods(Any);
+    layer.allow_headers(Any).expose_headers(Any)
 }
 
 // -----------------------------------------------------------------------------
@@ -109,11 +123,17 @@ impl ServerConfig {
     }
 
     /// Build the complete provider-compatible router.
-    fn into_router(self) -> Router {
-        let router = crate::routes::Routes::for_config(self.routes).into_router();
+    pub fn into_router(self) -> Router {
+        let router = crate::routes::Routes::for_config(self.routes)
+            .into_router()
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::new(crate::limits::Limits::new()),
+                crate::limits::handle,
+            ));
         match self.cors {
-            CorsMode::None => router,
-            CorsMode::Permissive => router.layer(CorsLayer::permissive()),
+            CorsMode::Off => router,
+            CorsMode::Any => router.layer(CorsLayer::permissive()),
+            CorsMode::Origins(origins) => router.layer(origin_cors_layer(origins)),
         }
     }
 
@@ -131,9 +151,9 @@ impl ServerConfig {
             })
         })?;
         tracing::info!(address = %self.address, "serving ELIZA compatibility server");
-        axum::serve(listener, self.into_router())
-            .await
-            .map_err(|source| ServerError(ServerErrorKind::Serve(source)))?;
+        let router = self.into_router();
+        let result = axum::serve(listener, router.into_make_service()).await;
+        result.map_err(|source| ServerError(ServerErrorKind::Serve(source)))?;
         Ok(())
     }
 }

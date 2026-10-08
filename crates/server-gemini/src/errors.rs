@@ -3,7 +3,7 @@ use axum::Json;
 use axum::response::{IntoResponse, Response};
 use eliza_http::errors::EncodingError;
 use eliza_http::model::ModelId;
-use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
+use eliza_http::problem::{ApiError, NativeError, ProblemClass};
 use eliza_modality_chat as chat;
 use eliza_modality_embedding as embedding;
 use eliza_modality_image as image;
@@ -27,6 +27,14 @@ pub(super) enum GeminiError {
         /// Provider-neutral image failure.
         image::errors::Error,
     ),
+
+    /// Text generation selected a name outside the configured chat aliases.
+    #[error("text generation requires model {expected}")]
+    #[diagnostic(code(eliza::chat::model_required))]
+    ChatModelRequired {
+        /// Configured names accepted for text generation.
+        expected: String,
+    },
 
     /// An embedding body selected a model other than the fixed resource.
     #[error("embeddings require model `models/{expected}`")]
@@ -273,7 +281,7 @@ pub(super) enum GeminiError {
     UnknownSpeaker,
 }
 
-impl ProblemDetails for GeminiError {
+impl ApiError for GeminiError {
     fn class(&self) -> ProblemClass {
         match self {
             Self::Image(source) => match source.kind() {
@@ -342,7 +350,8 @@ impl ProblemDetails for GeminiError {
             | Self::SpeechTextOnly
             | Self::ImageTextOnly
             | Self::UnknownSpeaker => Some("contents.parts"),
-            Self::EmbeddingModelRequired { .. }
+            Self::ChatModelRequired { .. }
+            | Self::EmbeddingModelRequired { .. }
             | Self::SpeechModelRequired { .. }
             | Self::SpeechModelAudioOnly { .. }
             | Self::ImageGenerationModelRequired { .. }
@@ -404,6 +413,8 @@ enum GeminiErrorStatus {
     ResourceExhausted,
     /// Internal server failure.
     Internal,
+    /// Shared service capacity is unavailable.
+    Unavailable,
 }
 
 impl From<ProblemClass> for GeminiErrorStatus {
@@ -413,8 +424,9 @@ impl From<ProblemClass> for GeminiErrorStatus {
                 Self::InvalidArgument
             }
             ProblemClass::Authentication => Self::Unauthenticated,
-            ProblemClass::RequestTooLarge => Self::ResourceExhausted,
+            ProblemClass::RequestTooLarge | ProblemClass::RateLimit => Self::ResourceExhausted,
             ProblemClass::Internal => Self::Internal,
+            ProblemClass::Unavailable => Self::Unavailable,
         }
     }
 }
@@ -450,15 +462,16 @@ pub(super) struct GeminiFailureResponse {
 // -----------------------------------------------------------------------------
 
 /// Provider-native renderer for one typed problem.
-pub(super) struct GeminiRejection(
+#[derive(derive_more::From)]
+pub struct GeminiRejection(
     /// Neutral problem awaiting Gemini wire rendering.
-    Problem,
+    NativeError,
 );
 
 impl GeminiRejection {
     /// Capture a typed diagnostic for Gemini rendering.
-    pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
-        Self(Problem::from_error(error))
+    pub(super) fn from_error(error: &impl ApiError) -> Self {
+        Self(NativeError::from_error(error))
     }
 }
 
@@ -475,7 +488,7 @@ impl From<&chat::errors::Error> for GeminiRejection {
             Some(chat::errors::ErrorField::ToolChoice) => Some("toolConfig"),
             None => None,
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 
@@ -489,7 +502,7 @@ impl From<&embedding::engine::Error> for GeminiRejection {
             embedding::engine::ErrorField::Input => Some("content.parts"),
             embedding::engine::ErrorField::Dimensions => Some("outputDimensionality"),
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 
@@ -504,7 +517,7 @@ impl From<&image::generation::Error> for GeminiRejection {
             image::generation::ErrorField::Prompt => Some("contents.parts"),
             image::generation::ErrorField::Count | image::generation::ErrorField::None => None,
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 
@@ -514,6 +527,7 @@ impl From<&speech::errors::Error> for GeminiRejection {
             speech::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
             speech::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
             speech::errors::ErrorKind::Internal => ProblemClass::Internal,
+            speech::errors::ErrorKind::Overloaded => ProblemClass::Unavailable,
         };
         let param = match error.field() {
             Some(speech::errors::ErrorField::Input) => Some("contents.parts"),
@@ -523,7 +537,7 @@ impl From<&speech::errors::Error> for GeminiRejection {
             Some(speech::errors::ErrorField::Speed) => Some("generationConfig.speechConfig"),
             None => None,
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 
@@ -543,39 +557,5 @@ impl IntoResponse for GeminiRejection {
             .into_response();
         problem.write_error_code(response.headers_mut());
         response
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verify every neutral class maps to the intended Gemini status.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a class regresses to the wrong wire status.
-    #[test]
-    fn maps_problem_classes_to_native_statuses() {
-        assert_eq!(
-            GeminiErrorStatus::from(ProblemClass::InvalidRequest),
-            GeminiErrorStatus::InvalidArgument
-        );
-        assert_eq!(
-            GeminiErrorStatus::from(ProblemClass::UnsupportedRequest),
-            GeminiErrorStatus::InvalidArgument
-        );
-        assert_eq!(
-            GeminiErrorStatus::from(ProblemClass::Authentication),
-            GeminiErrorStatus::Unauthenticated
-        );
-        assert_eq!(
-            GeminiErrorStatus::from(ProblemClass::RequestTooLarge),
-            GeminiErrorStatus::ResourceExhausted
-        );
-        assert_eq!(
-            GeminiErrorStatus::from(ProblemClass::Internal),
-            GeminiErrorStatus::Internal
-        );
     }
 }

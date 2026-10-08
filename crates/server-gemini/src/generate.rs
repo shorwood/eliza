@@ -3,19 +3,22 @@ use std::str::FromStr;
 
 use aide::axum::ApiRouter;
 use aide::axum::routing::post_with;
-use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::Event;
 use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use axum::{Extension, Json};
 use eliza_http::context::{ProviderAuth, RouteConfig};
+use eliza_http::execution::Execution;
 use eliza_http::extraction::ExtractionError;
 use eliza_http::model::ModelId;
 use eliza_http::response::{SseEvents, json_event, stream_chunks};
 use eliza_modality_chat as chat;
 use eliza_modality_image as image;
 use eliza_modality_speech as speech;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use super::errors::{GeminiError, GeminiFailureResponse, GeminiRejection};
@@ -84,6 +87,15 @@ impl FromStr for GeminiAction {
             kind: action.parse()?,
         })
     }
+}
+
+/// Captured path parts for a model name containing literal slashes.
+#[derive(Deserialize)]
+struct GeminiActionPath {
+    /// First model path segment.
+    first: String,
+    /// Remaining model path segments and action.
+    rest: String,
 }
 
 // -----------------------------------------------------------------------------
@@ -184,6 +196,13 @@ impl GenerateRequestMode {
         if matches!(self, Self::Text) && models.speech.has_model(model, speech::core::MODEL_ID) {
             return Err(GeminiError::SpeechModelAudioOnly {
                 model: model.clone(),
+            });
+        }
+
+        // Text generation must use an advertised chat model.
+        if matches!(self, Self::Text) && !models.chat.has_model(model, config.chat_model.as_str()) {
+            return Err(GeminiError::ChatModelRequired {
+                expected: models.chat.expected(config.chat_model.as_str()),
             });
         }
         Ok(self)
@@ -628,6 +647,7 @@ impl IntoResponse for GenerateTransport {
 async fn generate(
     State(state): State<AppState>,
     headers: HeaderMap,
+    execution: Option<Extension<Execution>>,
     model_action: Result<Path<String>, PathRejection>,
     query: Result<Query<GenerateQuery>, QueryRejection>,
     payload: Result<Json<GenerateContentRequest>, JsonRejection>,
@@ -692,10 +712,12 @@ async fn generate(
         Err(error) => return GeminiRejection::from_error(&error).into_response(),
     };
 
+    let execution = execution.map(|Extension(value)| value);
     match mode {
         // Audio generation owns its provider-native response.
         GenerateRequestMode::Audio => {
-            return super::speech::generate(&state, action.model, delivery, payload).await;
+            return super::speech::generate(&state, action.model, delivery, payload, execution)
+                .await;
         }
         // Image generation owns its provider-native multipart response.
         GenerateRequestMode::Image { composition } => {
@@ -734,21 +756,42 @@ async fn generate(
         .into_response()
 }
 
+/// Join a nested model name before using the normal generation handler.
+async fn generate_nested(
+    state: State<AppState>,
+    headers: HeaderMap,
+    execution: Option<Extension<Execution>>,
+    path: Result<Path<GeminiActionPath>, PathRejection>,
+    query: Result<Query<GenerateQuery>, QueryRejection>,
+    payload: Result<Json<GenerateContentRequest>, JsonRejection>,
+) -> Response {
+    let model_action =
+        path.map(|Path(GeminiActionPath { first, rest })| Path(format!("{first}/{rest}")));
+    generate(state, headers, execution, model_action, query, payload).await
+}
+
 // -----------------------------------------------------------------------------
 // Router: Publishes native Gemini generation endpoints.
 // -----------------------------------------------------------------------------
 
 /// Build unary and streaming model actions.
 pub(super) fn router() -> ApiRouter<AppState> {
-    ApiRouter::new().api_route(
-        "/v1beta/models/{model_action}",
-        post_with(generate, |operation| {
-            operation
-                .summary("Gemini content")
-                .tag("gemini")
-                .response::<200, Json<GenerateContentResponse>>()
-                .default_response::<Json<GeminiFailureResponse>>()
-        })
-        .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
-    )
+    ApiRouter::new()
+        .api_route(
+            "/v1beta/models/{model_action}",
+            post_with(generate, |operation| {
+                operation
+                    .summary("Gemini content")
+                    .tag("gemini")
+                    .response::<200, Json<GenerateContentResponse>>()
+                    .response::<429, Json<GeminiFailureResponse>>()
+                    .response::<503, Json<GeminiFailureResponse>>()
+                    .default_response::<Json<GeminiFailureResponse>>()
+            })
+            .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
+        )
+        .route(
+            "/v1beta/models/{first}/{*rest}",
+            post(generate_nested).layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),
+        )
 }

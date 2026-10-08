@@ -1,0 +1,8 @@
+{
+  "args": [
+    "serve",
+    "--speech-workers",
+    "0"
+  ],
+  "code": 2
+}

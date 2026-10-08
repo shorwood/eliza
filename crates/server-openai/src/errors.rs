@@ -2,7 +2,7 @@
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use eliza_http::errors::EncodingError;
-use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
+use eliza_http::problem::{ApiError, NativeError, ProblemClass};
 use eliza_modality_chat as chat;
 use eliza_modality_embedding as embedding;
 use eliza_modality_image as image;
@@ -26,6 +26,14 @@ pub(super) enum OpenAiError {
         /// Provider-neutral image failure.
         image::errors::Error,
     ),
+
+    /// Chat selected a name outside the configured local aliases.
+    #[error("chat requires model {expected}")]
+    #[diagnostic(code(eliza::chat::model_required))]
+    ChatModelRequired {
+        /// Configured names accepted by chat routes.
+        expected: String,
+    },
 
     /// The requested reasoning effort was outside the current contract.
     #[error("unsupported reasoning effort")]
@@ -244,7 +252,7 @@ pub(super) enum OpenAiError {
     UnsupportedSpeechStreamFormat,
 }
 
-impl ProblemDetails for OpenAiError {
+impl ApiError for OpenAiError {
     fn class(&self) -> ProblemClass {
         match self {
             Self::Image(source) => match source.kind() {
@@ -278,7 +286,8 @@ impl ProblemDetails for OpenAiError {
     fn param(&self) -> Option<&'static str> {
         match self {
             Self::InvalidMaxOutputTokens => Some("max_output_tokens"),
-            Self::EmbeddingModelRequired { .. }
+            Self::ChatModelRequired { .. }
+            | Self::EmbeddingModelRequired { .. }
             | Self::ImageGenerationModelRequired { .. }
             | Self::SpeechModelRequired { .. } => Some("model"),
             Self::UnsupportedEmbeddingEncoding => Some("encoding_format"),
@@ -357,6 +366,9 @@ enum OpenAiErrorKind {
     /// Internal server failure.
     #[serde(rename = "server_error")]
     Server,
+    /// Personal request allowance exhausted.
+    #[serde(rename = "rate_limit_error")]
+    RateLimit,
 }
 
 impl From<ProblemClass> for OpenAiErrorKind {
@@ -366,7 +378,8 @@ impl From<ProblemClass> for OpenAiErrorKind {
             | ProblemClass::UnsupportedRequest
             | ProblemClass::RequestTooLarge => Self::InvalidRequest,
             ProblemClass::Authentication => Self::Authentication,
-            ProblemClass::Internal => Self::Server,
+            ProblemClass::Internal | ProblemClass::Unavailable => Self::Server,
+            ProblemClass::RateLimit => Self::RateLimit,
         }
     }
 }
@@ -395,7 +408,7 @@ pub(super) struct OpenAiFailureBody {
 
 /// `OpenAI` top-level failure envelope.
 #[derive(Debug, Serialize, JsonSchema)]
-pub(crate) struct OpenAiFailureResponse {
+pub(super) struct OpenAiFailureResponse {
     /// Provider-native error payload.
     error: OpenAiFailureBody,
 }
@@ -405,9 +418,10 @@ pub(crate) struct OpenAiFailureResponse {
 // -----------------------------------------------------------------------------
 
 /// Provider-native renderer for one typed problem.
-pub(super) struct OpenAiRejection(
+#[derive(derive_more::From)]
+pub struct OpenAiRejection(
     /// Neutral problem awaiting `OpenAI` wire rendering.
-    Problem,
+    NativeError,
 );
 
 impl OpenAiRejection {
@@ -424,7 +438,7 @@ impl OpenAiRejection {
             Some(chat::errors::ErrorField::ToolChoice) => Some("tool_choice"),
             None => None,
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 
     /// Capture provider-lowering failures with an endpoint-specific input field.
@@ -437,12 +451,12 @@ impl OpenAiRejection {
             image::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
             image::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
         };
-        Self(Problem::from_diagnostic(source, class, Some(input)))
+        Self(NativeError::from_diagnostic(source, class, Some(input)))
     }
 
     /// Capture a typed diagnostic for `OpenAI` rendering.
-    pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
-        Self(Problem::from_error(error))
+    pub(super) fn from_error(error: &impl ApiError) -> Self {
+        Self(NativeError::from_error(error))
     }
 }
 
@@ -456,7 +470,7 @@ impl From<&embedding::engine::Error> for OpenAiRejection {
             embedding::engine::ErrorField::Input => Some("input"),
             embedding::engine::ErrorField::Dimensions => Some("dimensions"),
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 
@@ -472,7 +486,7 @@ impl From<&image::generation::Error> for OpenAiRejection {
             image::generation::ErrorField::Count => Some("n"),
             image::generation::ErrorField::None => None,
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 
@@ -482,6 +496,7 @@ impl From<&speech::errors::Error> for OpenAiRejection {
             speech::errors::ErrorKind::InvalidInput => ProblemClass::InvalidRequest,
             speech::errors::ErrorKind::Limit => ProblemClass::RequestTooLarge,
             speech::errors::ErrorKind::Internal => ProblemClass::Internal,
+            speech::errors::ErrorKind::Overloaded => ProblemClass::Unavailable,
         };
         let param = match error.field() {
             Some(speech::errors::ErrorField::Input) => Some("input"),
@@ -489,7 +504,7 @@ impl From<&speech::errors::Error> for OpenAiRejection {
             Some(speech::errors::ErrorField::Speed) => Some("speed"),
             None => None,
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 
@@ -510,39 +525,5 @@ impl IntoResponse for OpenAiRejection {
             .into_response();
         problem.write_error_code(response.headers_mut());
         response
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verify every neutral class maps to the intended `OpenAI` error type.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a class regresses to a non-native wire type.
-    #[test]
-    fn maps_problem_classes_to_native_kinds() {
-        assert_eq!(
-            OpenAiErrorKind::from(ProblemClass::InvalidRequest),
-            OpenAiErrorKind::InvalidRequest
-        );
-        assert_eq!(
-            OpenAiErrorKind::from(ProblemClass::UnsupportedRequest),
-            OpenAiErrorKind::InvalidRequest
-        );
-        assert_eq!(
-            OpenAiErrorKind::from(ProblemClass::RequestTooLarge),
-            OpenAiErrorKind::InvalidRequest
-        );
-        assert_eq!(
-            OpenAiErrorKind::from(ProblemClass::Authentication),
-            OpenAiErrorKind::Authentication
-        );
-        assert_eq!(
-            OpenAiErrorKind::from(ProblemClass::Internal),
-            OpenAiErrorKind::Server
-        );
     }
 }

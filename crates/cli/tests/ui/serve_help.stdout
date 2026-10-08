@@ -6,11 +6,24 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+Configuration:
+      --config <PATH>
+          TOML file supplying server options below explicit CLI flags
+
 Listener:
       --bind <IP:PORT>
           IP address and port on which to listen
           
           [default: 127.0.0.1:8787]
+
+Workers:
+      --runtime-workers <THREADS>
+          Number of async runtime threads (default: Tokio automatic sizing)
+
+      --speech-workers <JOBS>
+          Maximum simultaneous speech jobs across all providers
+          
+          [default: 2]
 
 Models:
       --model-chat <ID>
@@ -44,8 +57,18 @@ Security:
       --api-key <KEY>
           Require this key through each provider's native authentication scheme
 
-      --allow-any-origin
-          Allow browser requests from any origin using permissive CORS
+      --cors-mode <MODE>
+          Browser cross-origin access policy
+
+          Possible values:
+          - off:     Disable cross-origin browser access
+          - any:     Allow every browser origin
+          - origins: Allow only configured browser origins
+          
+          [default: off]
+
+      --cors-origin <ORIGIN>
+          Browser origin allowed when CORS mode is origins (repeatable)
 
 Requests:
       --max-input-chars <CHARS>
@@ -60,8 +83,14 @@ Streaming:
           [default: 0]
 
 Logging:
-      --json-logs
-          Render tracing events as JSON instead of human-readable text
+      --log-format <FORMAT>
+          Format tracing events as text or JSON
+
+          Possible values:
+          - text: Human-readable tracing events
+          - json: Structured JSON tracing events
+          
+          [default: text]
 
 Built-in modality models:
   Chat:       eliza-1966

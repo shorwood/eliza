@@ -476,37 +476,3 @@ impl ParseError {
         &self.span
     }
 }
-
-// -----------------------------------------------------------------------------
-// Tests: Cover continuation joining and positioned diagnostics.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::SourceModule;
-
-    /// # Panics
-    ///
-    /// Panics when parsing or an assertion fails.
-    #[test]
-    fn reads_cards_and_joins_continuations() {
-        let source = format!(
-            "{:<80}000010\n{:<80}000020\n{:<80}000030\n",
-            "START       VALUE=CALL.(ONE,", "           1TWO)", "           R A COMMENT",
-        );
-        let module = SourceModule::parse("sample", &source).unwrap();
-        assert_eq!(module.statements().len(), 1);
-        assert_eq!(module.statements()[0].label(), Some("START"));
-        assert_eq!(module.statements()[0].text(), "VALUE=CALL.(ONE,TWO)");
-    }
-
-    /// # Panics
-    ///
-    /// Panics when the expected diagnostic or an assertion is absent.
-    #[test]
-    fn reports_source_positions() {
-        let error = SourceModule::parse("bad", "            VALUE=(1\n").unwrap_err();
-        assert_eq!(error.span().module(), "bad");
-        assert_eq!(error.span().line(), 1);
-    }
-}

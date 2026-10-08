@@ -1,12 +1,18 @@
 # `pkgs.callPackage` fills these dependencies from nixpkgs. The flake passes
 # the pinned Rust toolchain and the systems that this repository supports.
 {
+  cacert,
   curl,
-  hurl,
   lib,
+  libclang,
+  libxml2,
   makeRustPlatform,
+  openssl,
+  pkg-config,
   projectRoot ? ../.,
   rustToolchain,
+  scalarJs,
+  stdenv,
   supportedSystems,
 }:
 let
@@ -28,8 +34,8 @@ rustPlatform.buildRustPackage {
       (projectRoot + "/Cargo.toml")
       (projectRoot + "/Cargo.lock")
       (projectRoot + "/crates")
-      (projectRoot + "/benches")
       (projectRoot + "/examples/rust-rig")
+      (projectRoot + "/licences")
     ];
   };
   cargoLock.lockFile = projectRoot + "/Cargo.lock";
@@ -43,28 +49,49 @@ rustPlatform.buildRustPackage {
     "--package"
     "eliza-cli"
   ];
+  # Embedded Hurl is large enough to crash LLVM during release-profile tests.
+  checkType = "debug";
 
   # Rust otherwise embeds its sysroot path in the executable, retaining the
   # entire toolchain at runtime. Remapping it keeps the package closure small;
   # the explicit prohibition makes a regression fail the build.
   RUSTFLAGS = "--remap-path-prefix=${rustToolchain}=/rust-toolchain";
+  ELIZA_SCALAR_JS = scalarJs;
+  LIBCLANG_PATH = "${libclang.lib}/lib";
+  BINDGEN_EXTRA_CLANG_ARGS = lib.optionalString stdenv.isLinux "-isystem ${stdenv.cc.libc.dev}/include";
+  LD_LIBRARY_PATH = lib.makeLibraryPath [
+    curl
+    libxml2
+    openssl
+  ];
   disallowedReferences = [ rustToolchain ];
 
-  # The Rust integration tests invoke Hurl to verify the HTTP contracts.
-  nativeCheckInputs = [
-    curl
-    hurl
+  nativeBuildInputs = [ pkg-config ];
+  buildInputs = [
+    openssl
+    libxml2
   ];
+
+  # Embedded Hurl links libcurl when the package runs its tests.
+  nativeCheckInputs = [
+    cacert
+    curl
+  ];
+  SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
   # Keep the license notice in binary distributions. The container image uses
   # this package verbatim, so it receives the same notice automatically.
   postInstall = ''
     install -Dm444 ${projectRoot + "/LICENSE"} "$out/share/licenses/eliza/LICENSE"
+    cp -R licences "$out/share/licenses/eliza/third-party"
   '';
 
   meta = {
-    description = "Standalone classic ELIZA server with provider-compatible HTTP APIs";
-    license = lib.licenses.mit;
+    description = "1966 ELIZA through AI provider-compatible HTTP APIs";
+    license = [
+      lib.licenses.mit
+      lib.licenses.asl20
+    ];
     mainProgram = "eliza";
     platforms = supportedSystems;
   };

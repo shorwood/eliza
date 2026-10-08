@@ -24,7 +24,7 @@ impl Routes {
     /// Build every provider route and generate its `OpenAPI` document.
     pub(super) fn into_router(self) -> Router {
         let config = Arc::new(self.config);
-        let speech = SpeechService::default();
+        let speech = SpeechService::with_worker_limit(config.speech_workers);
         let router = health::router();
         let openai = eliza_server_openai::router::Routes::new(Arc::clone(&config), speech.clone())
             .into_router();

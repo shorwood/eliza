@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::problem::{ProblemClass, ProblemDetails};
+use crate::problem::{ApiError, ProblemClass};
 
 // -----------------------------------------------------------------------------
 // ExtractionError: Normalizes Axum request extraction failures.
@@ -139,7 +139,7 @@ impl From<PathRejection> for ExtractionError {
     }
 }
 
-impl ProblemDetails for ExtractionError {
+impl ApiError for ExtractionError {
     fn class(&self) -> ProblemClass {
         match self {
             Self::BodyRead { status, .. } if *status == StatusCode::PAYLOAD_TOO_LARGE.as_u16() => {

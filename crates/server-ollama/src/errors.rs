@@ -1,7 +1,7 @@
 //! Typed Ollama adapter failures and wire rendering.
 use axum::Json;
 use axum::response::{IntoResponse, Response};
-use eliza_http::problem::{Problem, ProblemClass, ProblemDetails};
+use eliza_http::problem::{ApiError, NativeError, ProblemClass};
 use eliza_modality_chat as chat;
 use eliza_modality_embedding as embedding;
 use eliza_modality_image as image;
@@ -25,6 +25,14 @@ pub(super) enum OllamaError {
         #[from]
         image::errors::Error,
     ),
+
+    /// Chat selected a name outside the configured local aliases.
+    #[error("chat requires model {expected}")]
+    #[diagnostic(code(eliza::chat::model_required))]
+    ChatModelRequired {
+        /// Configured names accepted by the chat route.
+        expected: String,
+    },
 
     /// An embedding request selected a model other than the fixed fixture.
     #[error("embeddings require model {expected}")]
@@ -112,7 +120,7 @@ pub(super) enum OllamaError {
     MissingNamedToolChoice,
 }
 
-impl ProblemDetails for OllamaError {
+impl ApiError for OllamaError {
     fn class(&self) -> ProblemClass {
         match self {
             Self::Image(source) => match source.kind() {
@@ -132,7 +140,7 @@ impl ProblemDetails for OllamaError {
     fn param(&self) -> Option<&'static str> {
         match self {
             Self::Image(_) | Self::ImagesRequireUserRole => Some("messages.images"),
-            Self::EmbeddingModelRequired { .. } => Some("model"),
+            Self::ChatModelRequired { .. } | Self::EmbeddingModelRequired { .. } => Some("model"),
             Self::UnsupportedEmbeddingInput => Some("input"),
             Self::InvalidResponseSchema { .. }
             | Self::UnsupportedResponseFormat
@@ -166,15 +174,16 @@ pub(super) struct OllamaFailureResponse {
 // -----------------------------------------------------------------------------
 
 /// Provider-native renderer for one typed problem.
-pub(super) struct OllamaRejection(
+#[derive(derive_more::From)]
+pub struct OllamaRejection(
     /// Neutral problem awaiting Ollama wire rendering.
-    Problem,
+    NativeError,
 );
 
 impl OllamaRejection {
     /// Capture a typed diagnostic for Ollama rendering.
-    pub(super) fn from_error(error: &impl ProblemDetails) -> Self {
-        Self(Problem::from_error(error))
+    pub(super) fn from_error(error: &impl ApiError) -> Self {
+        Self(NativeError::from_error(error))
     }
 }
 
@@ -191,7 +200,7 @@ impl From<&chat::errors::Error> for OllamaRejection {
             Some(chat::errors::ErrorField::ToolChoice) => Some("tool_choice"),
             None => None,
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 
@@ -205,7 +214,7 @@ impl From<&embedding::engine::Error> for OllamaRejection {
             embedding::engine::ErrorField::Input => Some("input"),
             embedding::engine::ErrorField::Dimensions => Some("dimensions"),
         };
-        Self(Problem::from_diagnostic(error, class, param))
+        Self(NativeError::from_diagnostic(error, class, param))
     }
 }
 

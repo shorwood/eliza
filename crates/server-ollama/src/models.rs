@@ -95,6 +95,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("Ollama models")
                 .tag("ollama")
                 .response::<200, Json<ModelListResponse>>()
+                .response::<429, Json<OllamaFailureResponse>>()
+                .response::<503, Json<OllamaFailureResponse>>()
                 .default_response::<Json<OllamaFailureResponse>>()
         }),
     )

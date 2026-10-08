@@ -1,0 +1,4 @@
+{
+  "args": ["serve", "--config", "tests/ui/config_unknown.toml"],
+  "code": 1
+}

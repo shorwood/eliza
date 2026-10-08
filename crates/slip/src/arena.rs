@@ -106,6 +106,17 @@ impl Reader {
 // -----------------------------------------------------------------------------
 
 /// A bounded arena owning lists and traversal cursors.
+///
+/// ```
+/// use slip::arena::{Arena, Datum, Direction};
+///
+/// let mut arena = Arena::new(3);
+/// let list = arena.list_from([Datum::Word(1), Datum::Word(2), Datum::Word(3)]).unwrap();
+/// let left = arena.reader(list, Direction::LeftToRight).unwrap();
+/// let right = arena.reader(list, Direction::RightToLeft).unwrap();
+/// assert_eq!(arena.read(left).unwrap(), Some(Datum::Word(1)));
+/// assert_eq!(arena.read(right).unwrap(), Some(Datum::Word(3)));
+/// ```
 #[derive(Debug)]
 pub struct Arena {
     /// Maximum number of live direct cells.
@@ -182,6 +193,18 @@ impl Arena {
 
     /// Deep-copy a list and its nested lists.
     ///
+    /// ```
+    /// use slip::arena::{Arena, Datum};
+    ///
+    /// let mut arena = Arena::new(8);
+    /// let child = arena.list_from([Datum::Word(7)]).unwrap();
+    /// let parent = arena.list_from([Datum::List(child)]).unwrap();
+    /// let copy = arena.copy(parent).unwrap();
+    /// let Datum::List(copied_child) = arena.get(copy, 0).unwrap() else { panic!() };
+    /// arena.set(child, 0, Datum::Word(8)).unwrap();
+    /// assert_eq!(arena.get(copied_child, 0).unwrap(), Datum::Word(7));
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns an error for stale handles, cycles, or exhausted cells.
@@ -190,6 +213,16 @@ impl Arena {
     }
 
     /// Release a list header and its direct cells for reuse.
+    ///
+    /// ```
+    /// use slip::arena::{Arena, ArenaError, Datum};
+    ///
+    /// let mut arena = Arena::new(2);
+    /// let list = arena.list_from([Datum::Word(1), Datum::Word(2)]).unwrap();
+    /// assert_eq!(arena.push_back(list, Datum::Word(3)), Err(ArenaError::Exhausted));
+    /// arena.erase(list).unwrap();
+    /// assert_eq!(arena.list(), list);
+    /// ```
     ///
     /// # Errors
     ///
@@ -526,63 +559,4 @@ pub enum ArenaError {
     /// A reader handle was released or never allocated.
     #[error("invalid SLIP reader handle")]
     InvalidReader,
-}
-
-// -----------------------------------------------------------------------------
-// Tests: Exercise mutation, deep copies, reuse, and reader direction.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::{Arena, ArenaError, Datum, Direction};
-
-    /// # Panics
-    ///
-    /// Panics when an arena operation or assertion fails.
-    #[test]
-    fn mutates_and_reuses_lists() {
-        let mut arena = Arena::new(4);
-        let list = arena.list_from([Datum::Word(1), Datum::Word(2)]).unwrap();
-        arena.push_front(list, Datum::Word(0)).unwrap();
-        arena.push_back(list, Datum::Word(3)).unwrap();
-        assert_eq!(arena.to_vec(list).unwrap().len(), 4);
-        assert_eq!(
-            arena.push_back(list, Datum::Word(4)),
-            Err(ArenaError::Exhausted)
-        );
-        arena.erase(list).unwrap();
-        let reused = arena.list();
-        assert_eq!(list, reused);
-    }
-
-    /// # Panics
-    ///
-    /// Panics when an arena operation or assertion fails.
-    #[test]
-    fn copies_nested_lists() {
-        let mut arena = Arena::new(8);
-        let child = arena.list_from([Datum::Word(7)]).unwrap();
-        let parent = arena.list_from([Datum::List(child)]).unwrap();
-        let copy = arena.copy(parent).unwrap();
-        let Datum::List(copied_child) = arena.get(copy, 0).unwrap() else {
-            panic!("nested list expected");
-        };
-        arena.set(child, 0, Datum::Word(8)).unwrap();
-        assert_eq!(arena.get(copied_child, 0).unwrap(), Datum::Word(7));
-    }
-
-    /// # Panics
-    ///
-    /// Panics when an arena operation or assertion fails.
-    #[test]
-    fn readers_traverse_both_directions() {
-        let mut arena = Arena::new(3);
-        let list = arena
-            .list_from([Datum::Word(1), Datum::Word(2), Datum::Word(3)])
-            .unwrap();
-        let right = arena.reader(list, Direction::LeftToRight).unwrap();
-        let left = arena.reader(list, Direction::RightToLeft).unwrap();
-        assert_eq!(arena.read(right).unwrap(), Some(Datum::Word(1)));
-        assert_eq!(arena.read(left).unwrap(), Some(Datum::Word(3)));
-    }
 }

@@ -1,19 +1,7 @@
 fmt:
     cargo-fmt fmt --all
-    hurlfmt --in-place crates/cli/tests/http/*.hurl crates/cli/tests/http/public/*.hurl crates/cli/tests/http/auth/*.hurl
+    hurlfmt --in-place crates/cli/tests/http/*.hurl crates/cli/tests/http/*/*.hurl
     nixfmt flake.nix nix/*.nix
-
-bench-generation *args:
-    cargo bench -p eliza-benches --bench generation --bench completion --bench speech --locked -- {{args}}
-
-bench-e2e *args:
-    cargo build --release -p eliza-cli --bin eliza --locked
-    cargo build --release -p eliza-benches --bin eliza-bench --locked
-    target/release/eliza-bench {{args}}
-
-bench-smoke:
-    just bench-generation --test
-    just bench-e2e --smoke
 
 chat:
     sh examples/open-webui/run.sh
@@ -40,7 +28,7 @@ test-http:
 
 ok:
     cargo-fmt fmt --all -- --check
-    hurlfmt --check crates/cli/tests/http/*.hurl crates/cli/tests/http/public/*.hurl crates/cli/tests/http/auth/*.hurl
+    hurlfmt --check crates/cli/tests/http/*.hurl crates/cli/tests/http/*/*.hurl
     nixfmt --check flake.nix nix/*.nix
     deadnix --fail flake.nix nix
     statix check .

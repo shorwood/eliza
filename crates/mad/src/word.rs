@@ -16,6 +16,13 @@ const WORD_SIGN_BIT: u64 = 1_u64 << 35;
 const WORD_MAGNITUDE_MASK: u64 = WORD_SIGN_BIT - 1;
 
 /// One IBM 7094 sign-magnitude word.
+///
+/// ```
+/// use mad::word::{Word, WORD_MASK};
+///
+/// assert_eq!(Word::from_i64(-123).to_i64(), -123);
+/// assert_eq!(Word::from_raw(u64::MAX).raw(), WORD_MASK);
+/// ```
 #[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
 pub struct Word(
     /// Raw value, always masked to 36 bits by the constructors.
@@ -76,32 +83,5 @@ impl fmt::Debug for Word {
 impl From<i64> for Word {
     fn from(value: i64) -> Self {
         Self::from_i64(value)
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Tests: Verify raw bounds and sign-magnitude conversion.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::{WORD_MASK, Word};
-
-    /// # Panics
-    ///
-    /// Panics when a signed value does not round-trip.
-    #[test]
-    fn sign_magnitude_round_trips() {
-        for value in [-123, -1, 0, 1, 123] {
-            assert_eq!(Word::from_i64(value).to_i64(), value);
-        }
-    }
-
-    /// # Panics
-    ///
-    /// Panics when raw construction exceeds the machine-word mask.
-    #[test]
-    fn raw_words_are_bounded() {
-        assert_eq!(Word::from_raw(u64::MAX).raw(), WORD_MASK);
     }
 }

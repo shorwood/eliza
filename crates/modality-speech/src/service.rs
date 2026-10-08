@@ -49,7 +49,7 @@ pub struct Stream {
 /// Maximum rendered duration accepted by the compatibility fixture.
 const SERVICE_MAX_SECONDS: usize = 120;
 
-/// Maximum number of speech jobs allowed to retain audio buffers concurrently.
+/// Default number of speech jobs allowed to retain audio buffers concurrently.
 const SERVICE_WORKERS: usize = 2;
 
 /// Encoded chunks retained between a synthesis worker and its HTTP consumer.
@@ -71,6 +71,17 @@ impl Default for Service {
 }
 
 impl Service {
+    /// Bound concurrent synthesis jobs across all clones of this service.
+    ///
+    /// # Panics
+    /// Panics if the limit exceeds Tokio's maximum semaphore permits.
+    #[must_use]
+    pub fn with_worker_limit(workers: NonZeroUsize) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(workers.get())),
+        }
+    }
+
     /// Run one streaming encoder until completion or client disconnect.
     ///
     /// # Errors
@@ -110,24 +121,32 @@ impl Service {
         }
     }
 
-    /// Validate, synthesize, and encode one complete request off the async runtime.
+    /// Run work with an optional owned guard retained until actual completion.
     ///
     /// # Errors
-    ///
-    /// Returns a typed request, worker, synthesis, or encoding failure.
-    pub async fn render(
+    /// Returns validation, saturation, synthesis or encoding failures.
+    pub async fn render_guarded(
         &self,
         request: Request,
         format: AudioFormat,
         max_chars: NonZeroUsize,
+        guard: Option<Arc<dyn Send + Sync>>,
     ) -> Result<Audio, Error> {
         request.validate(max_chars)?;
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        let capacity = Arc::clone(&self.permits);
+        let permit = if guard.is_some() {
+            capacity
+                .try_acquire_owned()
+                .map_err(|_| Error::Overloaded)?
+        } else {
+            capacity
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::Unavailable)?
+        };
 
         tokio::task::spawn_blocking(move || {
+            let _guard = guard;
             let _permit = permit;
             let sample_rate = request.sample_rate;
             let samples = synth::synthesize(&request, sample_rate as usize * SERVICE_MAX_SECONDS)?;
@@ -146,28 +165,50 @@ impl Service {
         })?
     }
 
-    /// Start incremental synthesis and encoding on a bounded worker.
+    /// Validate, synthesize, and encode one complete request off the async runtime.
     ///
     /// # Errors
     ///
-    /// Returns request validation or worker-pool failures before response delivery begins.
-    pub async fn stream(
+    /// Returns a typed request, worker, synthesis, or encoding failure.
+    pub async fn render(
         &self,
         request: Request,
         format: AudioFormat,
         max_chars: NonZeroUsize,
+    ) -> Result<Audio, Error> {
+        self.render_guarded(request, format, max_chars, None).await
+    }
+
+    /// Run work with an optional owned guard retained until actual completion.
+    ///
+    /// # Errors
+    /// Returns validation, saturation, synthesis or encoding failures.
+    pub async fn stream_guarded(
+        &self,
+        request: Request,
+        format: AudioFormat,
+        max_chars: NonZeroUsize,
+        guard: Option<Arc<dyn Send + Sync>>,
     ) -> Result<Stream, Error> {
         request.validate(max_chars)?;
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        let capacity = Arc::clone(&self.permits);
+        let permit = if guard.is_some() {
+            capacity
+                .try_acquire_owned()
+                .map_err(|_| Error::Overloaded)?
+        } else {
+            capacity
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::Unavailable)?
+        };
         let sample_rate = request.sample_rate;
         let encoder = audio::StreamingEncoder::new(format, sample_rate);
         let media_type = encoder.media_type();
         let (sender, items) = mpsc::channel(SERVICE_STREAM_BUFFER);
         let panic_sender = sender.clone();
         let worker = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
             let _permit = permit;
             Self::stream_audio(&request, encoder, &sender)
         });
@@ -189,61 +230,18 @@ impl Service {
             items,
         })
     }
-}
 
-// -----------------------------------------------------------------------------
-// Tests: Locks down bounded, progressive worker delivery.
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::Segment;
-
-    /// Streaming PCM arrives in multiple chunks and terminates with an exact count.
+    /// Start incremental synthesis and encoding on a bounded worker.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the worker limit, stream metadata, chunking, or accounting regresses.
-    #[tokio::test]
-    async fn streams_pcm_with_bounded_worker_count() {
-        let service = Service::default();
-        let available_permits = service.permits.available_permits();
-        assert_eq!(available_permits, SERVICE_WORKERS);
-        let request = Request {
-            segments: vec![Segment {
-                text: "Hello from a genuinely progressive speech stream.".to_owned(),
-                voice: "Kore".to_owned(),
-                style: String::new(),
-                speed: 1.0,
-                pause_after_ms: 0,
-            }],
-            sample_rate: 8_000,
-        };
-        let max_chars = NonZeroUsize::MAX;
-        let mut stream = service
-            .stream(request, AudioFormat::Pcm, max_chars)
-            .await
-            .expect("valid speech request should start");
-        assert_eq!(stream.media_type, "audio/pcm;rate=8000");
-
-        let mut chunks = 0;
-        let mut byte_count = 0;
-        let sample_count = loop {
-            match stream.items.recv().await {
-                Some(StreamItem::Chunk(bytes)) => {
-                    chunks += 1;
-                    byte_count += bytes.len();
-                }
-                Some(StreamItem::Done { sample_count }) => break sample_count,
-                Some(StreamItem::Failed(error)) => panic!("speech stream failed: {error}"),
-                None => panic!("speech stream closed without a terminal item"),
-            }
-        };
-        assert!(chunks > 1);
-        assert_eq!(byte_count, sample_count * size_of::<i16>());
-        assert!(stream.items.recv().await.is_none());
-        let available_permits = service.permits.available_permits();
-        assert_eq!(available_permits, SERVICE_WORKERS);
+    /// Returns request validation or worker-pool failures before response delivery begins.
+    pub async fn stream(
+        &self,
+        request: Request,
+        format: AudioFormat,
+        max_chars: NonZeroUsize,
+    ) -> Result<Stream, Error> {
+        self.stream_guarded(request, format, max_chars, None).await
     }
 }

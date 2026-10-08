@@ -7,7 +7,7 @@ mod chat_completions;
 mod compatibility;
 mod context;
 mod embeddings;
-mod errors;
+pub mod errors;
 mod images;
 mod models;
 mod responses;

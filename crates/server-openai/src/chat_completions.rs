@@ -509,8 +509,19 @@ pub(crate) async fn handle(
         }
     };
 
-    // Capture transport options before lowering consumes the request body.
+    // Read the requested model and configured names before lowering.
     let model = payload.model.clone();
+    let chat_names = &state.config.models.chat;
+    let builtin = state.config.chat_model.as_str();
+
+    // Reject unlisted models before executing a local chat turn.
+    if !chat_names.has_model(&model, builtin) {
+        let expected = chat_names.expected(builtin);
+        return OpenAiRejection::from_error(&OpenAiError::ChatModelRequired { expected })
+            .into_response();
+    }
+
+    // Capture transport options before lowering consumes the request body.
     let should_stream = payload.should_stream.unwrap_or(false);
     let usage_stream = UsageStream::for_options(payload.stream_options);
 
@@ -561,6 +572,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("OpenAI chat completion")
                 .tag("openai")
                 .response::<200, Json<ChatResponse>>()
+                .response::<429, Json<OpenAiFailureResponse>>()
+                .response::<503, Json<OpenAiFailureResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
         })
         .layer(DefaultBodyLimit::max(image::limits::LIMIT_JSON_BODY)),

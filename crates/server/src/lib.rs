@@ -5,5 +5,6 @@
 
 mod docs;
 mod health;
+mod limits;
 mod routes;
 pub mod serve;
