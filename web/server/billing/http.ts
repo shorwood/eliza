@@ -21,10 +21,30 @@ export function restricted(event: H3Event, expected: string) {
   }
 }
 
+export async function limitedBody(event: H3Event, maximum: number) {
+  const checkSize = (size: number) => {
+    if (size > maximum) {
+      // Leave the socket alive long enough to send 413, then close the unread upload.
+      setHeader(event, 'Connection', 'close')
+      throw new BillingError(413, 'Request body is too large.')
+    }
+  }
+  checkSize(Number(getHeader(event, 'content-length') ?? 0))
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of event.node.req.iterator({ destroyOnReturn: false })) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += bytes.length
+    checkSize(size)
+    chunks.push(bytes)
+  }
+  return Buffer.concat(chunks, size).toString('utf8')
+}
+
 export async function fields(event: H3Event): Promise<Record<string, unknown>> {
   if (!getHeader(event, 'content-type')?.startsWith('application/json')) throw createError({ statusCode: 415 })
-  const raw = await readRawBody(event)
-  if (!raw || Buffer.byteLength(raw) > 4096) throw createError({ statusCode: 413 })
+  const raw = await limitedBody(event, 4096)
+  if (!raw) throw createError({ statusCode: 413 })
   try {
     const body: unknown = JSON.parse(raw)
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error()

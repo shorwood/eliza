@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
+import { request as httpRequest } from 'node:http'
 import postgres from 'postgres'
 import { expect, test } from '@playwright/test'
 import { hash } from '../server/billing/service'
@@ -7,7 +8,8 @@ import { testStripe } from '../server/billing/stripe'
 if (!process.env.TEST_DATABASE_URL || !new URL(process.env.TEST_DATABASE_URL).pathname.endsWith('_test')) {
   throw new Error('TEST_DATABASE_URL must point to a disposable database ending in _test. Run test:billing first.')
 }
-const sql = postgres(process.env.TEST_DATABASE_URL, { max: 2 })
+let sql: ReturnType<typeof postgres>
+test.beforeAll(() => { sql = postgres(process.env.TEST_DATABASE_URL!, { max: 2 }) })
 const origin = 'http://127.0.0.1:18880'
 test.afterAll(async () => { await sql.end() })
 
@@ -101,4 +103,28 @@ test('entitlement endpoint is restricted, no-store and does not call Stripe', as
   await sql`UPDATE api_keys SET revoked_at = now() WHERE id = ${id}`
   expect(await (await request.post(`${origin}/billing/entitlement`, options)).json()).toMatchObject({ eligible: false })
   expect(await (await request.post(`${origin}/billing/entitlement`, { ...options, data: hash('unknown') })).json()).toMatchObject({ eligible: false })
+})
+
+test('account and billing reject oversized uploads before the client finishes', async () => {
+  for (const [path, maximum, headers] of [
+    ['/account/login', 4096, { Origin: origin, 'Content-Type': 'application/json' }],
+    ['/billing/entitlement', 64, { Authorization: 'Bearer local-entitlement-fixture-32-bytes-only' }],
+    ['/billing/webhook', 1_048_576, { 'Stripe-Signature': 'invalid' }],
+  ] as const) {
+    for (const declared of [true, false]) {
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = httpRequest(`${origin}${path}`, { method: 'POST',
+          headers: { ...headers, ...(declared ? { 'Content-Length': String(maximum + 1) } : {}) },
+          signal: AbortSignal.timeout(3000) }, (response) => {
+          response.resume()
+          response.on('end', () => { resolve(response.statusCode!); request.destroy() })
+        })
+        request.on('error', reject)
+        // Deliberately omit end(): both declared and chunked limits must reject before EOF.
+        if (declared) request.flushHeaders()
+        else request.write(Buffer.alloc(maximum + 1, 32))
+      })
+      expect(status).toBe(413)
+    }
+  }
 })

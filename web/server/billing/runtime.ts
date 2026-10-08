@@ -7,7 +7,8 @@ let runtime: ReturnType<typeof createRuntime> | undefined
 
 function createRuntime(config: ReturnType<typeof useRuntimeConfig>) {
   const origin = new URL(config.billingOrigin)
-  if (origin.origin !== config.billingOrigin || (origin.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(origin.hostname))) {
+  const localHttp = origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)
+  if (origin.origin !== config.billingOrigin || (origin.protocol !== 'https:' && !localHttp)) {
     throw new Error('Billing origin must be an HTTPS origin (HTTP loopback allowed locally).')
   }
   if (!config.databaseUrl || !config.stripePrice || !config.stripeWebhookSecret || !config.smtpUrl || !config.mailFrom
