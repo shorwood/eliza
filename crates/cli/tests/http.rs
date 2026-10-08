@@ -218,32 +218,32 @@ fn http_test() -> io::Result<()> {
 
     // Default configuration covers the public API and large generated bodies.
     let server = TestServer::spawn(&[])?;
-    server.run_hurl("tests/http/public/*.hurl", &public_variables)?;
+    server.run_hurl("tests/http/public/**/*.hurl", &public_variables)?;
     drop(server);
 
     // Repeat public contracts with explicit worker counts.
     let server = TestServer::spawn(&["--runtime-workers", "1", "--speech-workers", "4"])?;
-    server.run_hurl("tests/http/public/*.hurl", &public_variables)?;
+    server.run_hurl("tests/http/public/**/*.hurl", &public_variables)?;
     drop(server);
 
     // Authentication changes the expected result of unauthenticated requests.
     let server = TestServer::spawn(&["--api-key", "secret"])?;
-    server.run_hurl("tests/http/auth/*.hurl", HURL_VARIABLE_TOKEN)?;
+    server.run_hurl("tests/http/auth/**/*.hurl", HURL_VARIABLE_TOKEN)?;
     drop(server);
 
     // Alias replacement requires catalogs different from the public defaults.
     let server = TestServer::spawn(ALIAS_ARGS)?;
-    server.run_hurl("tests/http/aliases.hurl", HURL_VARIABLE_TOKEN)?;
+    server.run_hurl("tests/http/aliases/default/**/*.hurl", HURL_VARIABLE_TOKEN)?;
     drop(server);
 
     // Slash aliases have their own exact catalog expectations.
     let server = TestServer::spawn(ALIAS_SLASH_ARGS)?;
-    server.run_hurl("tests/http/aliases_slash.hurl", &[])?;
+    server.run_hurl("tests/http/aliases/slash/**/*.hurl", &[])?;
     drop(server);
 
     // Shared names require an intentional chat/embedding collision.
     let server = TestServer::spawn(&["--chat-model", "fnv-embed"])?;
-    server.run_hurl("tests/http/aliases_shared.hurl", &[])?;
+    server.run_hurl("tests/http/aliases/shared/**/*.hurl", &[])?;
     drop(server);
 
     // Hosted mode is mutually exclusive with --api-key and uses ingress policy.
