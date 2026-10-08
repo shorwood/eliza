@@ -9,6 +9,18 @@ permissions:
   contents: read
 
 jobs:
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Check Nuxt site
+        run: |
+          nix develop --command pnpm --dir web install --frozen-lockfile
+          nix develop --command pnpm --dir web check
+          nix develop --command pnpm --dir web build
+          nix develop --command pnpm --dir web exec playwright install --with-deps chromium
+          nix develop --command env -u LD_LIBRARY_PATH pnpm --dir web test
   check:
     runs-on: ubuntu-24.04
     steps:
