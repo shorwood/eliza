@@ -148,14 +148,13 @@ impl Drop for EntitlementFixture {
 }
 
 // -----------------------------------------------------------------------------
-// HostedContracts: Verify native hosted wire behavior.
+// Run: Verify native hosted wire behavior.
 // -----------------------------------------------------------------------------
 
 /// Run all hosted provider fixtures under one deterministic allowance profile.
 /// # Errors
 /// Returns fixture, child process or Hurl contract failures.
-#[test]
-fn hosted_contracts() -> std::io::Result<()> {
+pub(super) fn run() -> std::io::Result<()> {
     let billing = EntitlementFixture::start()?;
     let mut config: HostedConfig =
         serde_json::from_str(include_str!("../../../../config/hosted-staging.json"))?;
@@ -181,10 +180,5 @@ fn hosted_contracts() -> std::io::Result<()> {
             ("ELIZA_ENTITLEMENT_SECRET", HOSTED_ENTITLEMENT_SECRET),
         ]),
     )?;
-    server.run_hurl(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/http/hosted")
-            .as_path(),
-        None,
-    )
+    server.run_hurl("tests/http/hosted/*.hurl", &[])
 }

@@ -1,11 +1,9 @@
-//! Runs the Hurl HTTP contracts against a compiled ELIZA server.
+//! Runs the embedded Hurl contracts against isolated ELIZA configurations.
 
 #[path = "support/hosted.rs"]
 mod hosted;
 
-use std::io::Write as _;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use std::{io, thread};
@@ -21,17 +19,68 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const STARTUP_RETRY: Duration = Duration::from_millis(20);
 
 // -----------------------------------------------------------------------------
-// JsonRequest: Distinguishes one direct test path from its body.
+// HurlVariable: Pass generated and shared values to fixtures.
 // -----------------------------------------------------------------------------
 
-/// Raw JSON request submitted outside the Hurl contract runner.
-#[derive(Clone, Copy)]
-struct JsonRequest<'request> {
-    /// Route path below the test server's root URL.
-    path: &'request str,
-    /// Complete JSON request body.
-    body: &'request str,
+/// Value injected into an HTTP fixture.
+struct HurlVariable<'value> {
+    /// Placeholder name without braces.
+    name: &'value str,
+    /// String substituted into the fixture.
+    value: &'value str,
 }
+
+impl<'value> HurlVariable<'value> {
+    /// Name one value passed to a Hurl fixture.
+    const fn new(name: &'value str, value: &'value str) -> Self {
+        Self { name, value }
+    }
+}
+
+/// Authentication value shared by the secured fixture groups.
+const HURL_VARIABLE_TOKEN: &[HurlVariable<'static>] = &[HurlVariable::new("token", "secret")];
+
+// -----------------------------------------------------------------------------
+// Alias: Exercise renamed, repeated, and deduplicated model IDs.
+// -----------------------------------------------------------------------------
+
+/// CLI options for the complete alias contract.
+const ALIAS_ARGS: &[&str] = &[
+    "--api-key",
+    "secret",
+    "--chat-model",
+    "chat-one",
+    "--model-chat",
+    "chat-two",
+    "--model-chat",
+    "chat-one",
+    "--model-embeddings",
+    "embed-one",
+    "--model-embeddings",
+    "embed-two",
+    "--model-embeddings",
+    "embed{three}",
+    "--model-embeddings",
+    "embed-one",
+    "--model-speech",
+    "voice-one",
+    "--model-speech",
+    "voice-two",
+    "--model-speech",
+    "voice-one",
+    "--model-images",
+    "image-one",
+    "--model-images",
+    "image-two",
+];
+
+/// CLI options for slash-containing model aliases.
+const ALIAS_SLASH_ARGS: &[&str] = &[
+    "--model-chat",
+    "acme/chat",
+    "--model-embeddings",
+    "acme/embed",
+];
 
 // -----------------------------------------------------------------------------
 // TestServer: Owns one isolated HTTP test process.
@@ -85,67 +134,18 @@ impl TestServer {
         })
     }
 
-    /// Submit one raw JSON request and collect the closed HTTP response.
+    /// Run one fixture selection against this server.
     ///
     /// # Errors
-    ///
-    /// Returns an I/O error when the socket cannot send or receive the request.
-    fn post_json(&self, request: JsonRequest<'_>) -> io::Result<String> {
-        // Configure curl to expose headers and consume an exact stdin body.
-        let url = format!("{}{}", self.base_url, request.path);
-        let mut command = Command::new("curl");
-        command.args(["--silent", "--include", "--request", "POST"]);
-        command.args(["--header", "Content-Type: application/json"]);
-        command.args(["--data-binary", "@-", &url]);
-        command.stdin(Stdio::piped());
-        command.stdout(Stdio::piped());
-
-        // Submit the body and wait for curl to close the HTTP exchange.
-        let mut child = command.spawn()?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("curl stdin was not piped"))?
-            .write_all(request.body.as_bytes())?;
-        let output = child.wait_with_output()?;
-
-        // A failed curl process cannot yield a trustworthy HTTP response.
-        if !output.status.success() {
-            return Err(io::Error::other("curl failed to submit image body"));
+    /// Returns an error when fixture discovery or a contract fails.
+    fn run_hurl(&self, pattern: &str, variables: &[HurlVariable<'_>]) -> io::Result<()> {
+        let cases = hurl_test::TestCases::new();
+        cases.variable("base_url", &self.base_url);
+        for variable in variables {
+            cases.variable(variable.name, variable.value);
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-
-    /// Run every Hurl file below `contracts` against this server.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when Hurl cannot run or a contract fails.
-    fn run_hurl(&self, contracts: &Path, token: Option<&str>) -> io::Result<()> {
-        let mut command = Command::new("hurl");
-        command.args(["--test", "--jobs", "1", "--error-format", "long"]);
-        command.args(["--connect-timeout", "2s", "--max-time", "5s"]);
-        command.args(["--variable", &format!("base_url={}", self.base_url)]);
-        if let Some(token) = token {
-            command.args(["--variable", &format!("token={token}")]);
-        }
-        command.arg(contracts);
-
-        let output = command.output().map_err(|error| {
-            io::Error::other(format!(
-                "failed to run Hurl; install it or enter `nix develop`: {error}"
-            ))
-        })?;
-
-        // Preserve Hurl's detailed diagnostics when a contract fails.
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "Hurl contracts failed\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-        Ok(())
+        cases.include(pattern).map_err(io::Error::other)?;
+        cases.run().map_err(io::Error::other)
     }
 }
 
@@ -199,185 +199,53 @@ fn wait_until_ready(child: &mut Child, address: SocketAddr) -> io::Result<()> {
 }
 
 // -----------------------------------------------------------------------------
-// HttpContracts: Exercises public and authenticated route surfaces.
+// HttpTest: Runs every fixture against its required server profile.
 // -----------------------------------------------------------------------------
 
-/// Run the unauthenticated HTTP contracts.
+/// Run every HTTP contract through one integration test.
 ///
 /// # Errors
-///
-/// Returns an I/O error when the server or Hurl fails.
+/// Returns an I/O error when a server or contract fails.
 #[test]
-fn http_contracts_public() -> io::Result<()> {
-    let server = TestServer::spawn(&[])?;
-    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/public");
-    server.run_hurl(&contracts, None)
-}
+fn http_test() -> io::Result<()> {
+    // Generate large payloads here; Hurl owns their requests and assertions.
+    let encoded_image = "A".repeat(2 * 1024 * 1024 + 4);
+    let oversized_prompt = "x".repeat(8_001);
+    let public_variables = [
+        HurlVariable::new("oversized_image", &encoded_image),
+        HurlVariable::new("oversized_prompt", &oversized_prompt),
+    ];
 
-/// Run provider and documentation contracts with explicitly configured workers.
-///
-/// # Errors
-/// Returns an I/O error when the server or Hurl fails.
-#[test]
-fn http_contracts_configured_workers() -> io::Result<()> {
+    // Default configuration covers the public API and large generated bodies.
+    let server = TestServer::spawn(&[])?;
+    server.run_hurl("tests/http/public/*.hurl", &public_variables)?;
+    drop(server);
+
+    // Repeat public contracts with explicit worker counts.
     let server = TestServer::spawn(&["--runtime-workers", "1", "--speech-workers", "4"])?;
-    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/public");
-    server.run_hurl(&contracts, None)
-}
+    server.run_hurl("tests/http/public/*.hurl", &public_variables)?;
+    drop(server);
 
-/// Run the authenticated HTTP contracts.
-///
-/// # Errors
-///
-/// Returns an I/O error when the server or Hurl fails.
-#[test]
-fn http_contracts_authenticated() -> io::Result<()> {
+    // Authentication changes the expected result of unauthenticated requests.
     let server = TestServer::spawn(&["--api-key", "secret"])?;
-    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/auth");
-    server.run_hurl(&contracts, Some("secret"))
-}
+    server.run_hurl("tests/http/auth/*.hurl", HURL_VARIABLE_TOKEN)?;
+    drop(server);
 
-/// Verify repeated aliases across catalogs and modality routes with authentication.
-///
-/// # Errors
-/// Returns an I/O error when the server or an alias contract fails.
-#[test]
-fn http_contracts_model_aliases() -> io::Result<()> {
-    let server = TestServer::spawn(&[
-        "--api-key",
-        "secret",
-        "--chat-model",
-        "chat-one",
-        "--model-chat",
-        "chat-two",
-        "--model-chat",
-        "chat-one",
-        "--model-embeddings",
-        "embed-one",
-        "--model-embeddings",
-        "embed-two",
-        "--model-embeddings",
-        "embed{three}",
-        "--model-embeddings",
-        "embed-one",
-        "--model-speech",
-        "voice-one",
-        "--model-speech",
-        "voice-two",
-        "--model-speech",
-        "voice-one",
-        "--model-images",
-        "image-one",
-        "--model-images",
-        "image-two",
-    ])?;
-    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/aliases.hurl");
-    server.run_hurl(&contracts, Some("secret"))
-}
+    // Alias replacement requires catalogs different from the public defaults.
+    let server = TestServer::spawn(ALIAS_ARGS)?;
+    server.run_hurl("tests/http/aliases.hurl", HURL_VARIABLE_TOKEN)?;
+    drop(server);
 
-/// Gemini resource paths accept both literal and encoded slashes in aliases.
-///
-/// # Errors
-/// Returns an I/O error when the server or a slash-alias contract fails.
-#[test]
-fn http_contracts_slash_model_aliases() -> io::Result<()> {
-    let server = TestServer::spawn(&[
-        "--model-chat",
-        "acme/chat",
-        "--model-embeddings",
-        "acme/embed",
-    ])?;
-    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/aliases_slash.hurl");
-    server.run_hurl(&contracts, None)
-}
+    // Slash aliases have their own exact catalog expectations.
+    let server = TestServer::spawn(ALIAS_SLASH_ARGS)?;
+    server.run_hurl("tests/http/aliases_slash.hurl", &[])?;
+    drop(server);
 
-/// A shared chat/embedding name retains one descriptor and both endpoint bindings.
-///
-/// # Errors
-/// Returns an I/O error when the server or shared-name contract fails.
-#[test]
-fn http_contracts_shared_model_alias() -> io::Result<()> {
+    // Shared names require an intentional chat/embedding collision.
     let server = TestServer::spawn(&["--chat-model", "fnv-embed"])?;
-    let contracts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http/aliases_shared.hurl");
-    server.run_hurl(&contracts, None)
-}
+    server.run_hurl("tests/http/aliases_shared.hurl", &[])?;
+    drop(server);
 
-/// Prove image routes raise Axum's former two-mebibyte JSON body limit.
-///
-/// # Errors
-///
-/// Returns an I/O error when the server cannot process the direct request.
-///
-/// # Panics
-///
-/// Panics when the route does not accept the body or loses its typed failure.
-#[test]
-fn http_contracts_image_json_body_exceeds_default_limit() -> io::Result<()> {
-    // Build malformed image input beyond Axum's former two-mebibyte limit.
-    let server = TestServer::spawn(&[])?;
-    let encoded = "A".repeat(2 * 1024 * 1024 + 4);
-    let body = format!(
-        "{{\"model\":\"eliza-1966\",\"messages\":[{{\"role\":\"user\",\"content\":[{{\"type\":\"image_url\",\"image_url\":{{\"url\":\"data:image/png;base64,{encoded}\"}}}}]}}]}}"
-    );
-
-    // The route must reach image validation instead of rejecting body size.
-    let response = server.post_json(JsonRequest {
-        path: "/openai/v1/chat/completions",
-        body: &body,
-    })?;
-
-    assert!(
-        response.contains("HTTP/1.1 400 Bad Request"),
-        "unexpected response: {response}"
-    );
-    assert!(
-        response.contains("x-eliza-error-code: eliza::image::malformed"),
-        "unexpected response: {response}"
-    );
-    Ok(())
-}
-
-/// Prove image-generation prompt limits retain provider-native 413 envelopes.
-///
-/// # Errors
-///
-/// Returns an I/O error when the server cannot process either direct request.
-///
-/// # Panics
-///
-/// Panics when a provider loses the shared limit diagnostic.
-#[test]
-fn http_contracts_image_generation_prompt_limit() -> io::Result<()> {
-    let server = TestServer::spawn(&[])?;
-    let prompt = "x".repeat(8_001);
-    let openai_body = format!("{{\"model\":\"eliza-retro-image\",\"prompt\":\"{prompt}\"}}");
-    let openai = server.post_json(JsonRequest {
-        path: "/openai/v1/images/generations",
-        body: &openai_body,
-    })?;
-    assert!(
-        openai.contains("HTTP/1.1 413 Payload Too Large"),
-        "unexpected response: {openai}"
-    );
-    assert!(
-        openai.contains("x-eliza-error-code: eliza::image::generation::prompt_too_large"),
-        "unexpected response: {openai}"
-    );
-
-    let gemini_body = format!(
-        "{{\"contents\":[{{\"role\":\"user\",\"parts\":[{{\"text\":\"{prompt}\"}}]}}],\"generationConfig\":{{\"responseModalities\":[\"IMAGE\"]}}}}"
-    );
-    let gemini = server.post_json(JsonRequest {
-        path: "/gemini/v1beta/models/eliza-retro-image:generateContent",
-        body: &gemini_body,
-    })?;
-    assert!(
-        gemini.contains("HTTP/1.1 413 Payload Too Large"),
-        "unexpected response: {gemini}"
-    );
-    assert!(
-        gemini.contains("x-eliza-error-code: eliza::image::generation::prompt_too_large"),
-        "unexpected response: {gemini}"
-    );
-    Ok(())
+    // Hosted mode is mutually exclusive with --api-key and uses ingress policy.
+    hosted::run()
 }
