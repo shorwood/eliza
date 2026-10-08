@@ -1,12 +1,10 @@
 # Client examples
 
-These examples exercise ELIZA through real provider libraries. Each command
-builds and starts the server, runs every SDK-native example, and stops the
-server afterward.
+The smoke recipe exercises ELIZA through real provider libraries. It builds
+the server once, then starts and stops it for each SDK client.
 
 ```sh
-nix develop -c just example-vercel-ai
-nix develop -c just example-rust-rig
+nix develop -c just smoke
 ```
 
 Set `ELIZA_EXAMPLE_PORT` to use a port other than `8787`.

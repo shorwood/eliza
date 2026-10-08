@@ -202,17 +202,13 @@ tracing filter.
 
 ## Client examples
 
-An Open WebUI stack and working Vercel AI SDK and Rig clients live under
-[`examples/`](examples/README.md):
+Working Vercel AI SDK and Rig clients live under [`examples/`](examples/README.md):
 
 ```sh
-nix develop -c just chat
-nix develop -c just example-vercel-ai
-nix develop -c just example-rust-rig
+nix develop -c just smoke
 ```
 
-The commands build and start ELIZA for the example, then stop it when finished.
-The Open WebUI example requires a running Docker daemon.
+The recipe builds ELIZA once and runs both SDK clients against fresh local servers.
 
 ## Development
 
