@@ -10,6 +10,8 @@ use thiserror::Error;
 /// Broad failure category exposed to provider adapters.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ErrorKind {
+    /// Hosted native capacity is occupied and cannot queue more work.
+    Overloaded,
     /// Provider input cannot be synthesized.
     InvalidInput,
     /// Provider input or output exceeds a configured bound.
@@ -32,6 +34,11 @@ pub enum ErrorField {
 /// Typed failures raised by provider-neutral speech handling.
 #[derive(Debug, Diagnostic, Error)]
 pub enum Error {
+    /// Hosted native worker capacity is occupied; no generation queue is allowed.
+    #[error("speech capacity temporarily exhausted")]
+    #[diagnostic(code(eliza::speech::overloaded))]
+    Overloaded,
+
     /// No pronounceable input was provided.
     #[error("speech input must not be empty")]
     #[diagnostic(code(eliza::speech::empty_input))]
@@ -105,6 +112,7 @@ impl Error {
     #[must_use]
     pub const fn kind(&self) -> ErrorKind {
         match self {
+            Self::Overloaded => ErrorKind::Overloaded,
             Self::InputTooLarge { .. } | Self::OutputTooLong => ErrorKind::Limit,
             Self::EmptyInput
             | Self::InvalidSpeed
@@ -130,6 +138,7 @@ impl Error {
             | Self::Mp3NoFrames
             | Self::OutputTooLong
             | Self::Unavailable
+            | Self::Overloaded
             | Self::Worker { .. } => None,
         }
     }

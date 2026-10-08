@@ -7,6 +7,7 @@ use axum::http::{HeaderValue, header};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+use eliza_http::execution::Execution;
 use eliza_http::model::ModelId;
 use eliza_http::response::json_event;
 use eliza_modality_speech as speech;
@@ -533,13 +534,15 @@ impl LoweredSpeech {
         state: &AppState,
         model: ModelId,
         prompt_tokens: usize,
+        execution: Option<Execution>,
     ) -> Result<SpeechResponse, speech::errors::Error> {
         let audio = state
             .speech
-            .render(
+            .render_guarded(
                 self.request,
                 self.format,
                 state.config.limits.max_input_chars(),
+                execution.map(|value| value.guard()),
             )
             .await?;
         Ok(SpeechResponse::Unary {
@@ -560,13 +563,15 @@ impl LoweredSpeech {
         model: ModelId,
         delivery: GenerateDelivery,
         prompt_tokens: usize,
+        execution: Option<Execution>,
     ) -> Result<SpeechResponse, speech::errors::Error> {
         let audio = state
             .speech
-            .stream(
+            .stream_guarded(
                 self.request,
                 self.format,
                 state.config.limits.max_input_chars(),
+                execution.map(|value| value.guard()),
             )
             .await?;
         let delay_ms = state.config.stream_delay_ms;
@@ -597,12 +602,16 @@ impl LoweredSpeech {
         state: &AppState,
         model: ModelId,
         delivery: GenerateDelivery,
+        execution: Option<Execution>,
     ) -> Result<SpeechResponse, speech::errors::Error> {
         let prompt_tokens = self.request.input_tokens();
         match delivery {
-            GenerateDelivery::Unary => self.respond_unary(state, model, prompt_tokens).await,
+            GenerateDelivery::Unary => {
+                self.respond_unary(state, model, prompt_tokens, execution)
+                    .await
+            }
             GenerateDelivery::JsonStream | GenerateDelivery::Sse => {
-                self.respond_streaming(state, model, delivery, prompt_tokens)
+                self.respond_streaming(state, model, delivery, prompt_tokens, execution)
                     .await
             }
         }
@@ -615,6 +624,7 @@ pub(super) async fn generate(
     model: ModelId,
     delivery: GenerateDelivery,
     payload: GenerateContentRequest,
+    execution: Option<Execution>,
 ) -> Response {
     // Only the dedicated speech model can execute AUDIO requests.
     if !state
@@ -637,7 +647,7 @@ pub(super) async fn generate(
     };
 
     // Render validated input through the bounded speech service.
-    match lowered.respond(state, model, delivery).await {
+    match lowered.respond(state, model, delivery, execution).await {
         Ok(response) => response.into_response(),
         // Engine failures map directly through the Gemini rejection contract.
         Err(error) => GeminiRejection::from(&error).into_response(),

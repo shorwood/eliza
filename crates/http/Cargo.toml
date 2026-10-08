@@ -6,6 +6,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+reqwest = { version = "=0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
+sha2 = "0.10"
+problems = { version = "=0.1.1", features = ["axum"] }
 aide = { version = "0.15.1", features = ["axum", "axum-json"] }
 axum = "0.8.9"
 derive_more = { version = "2.1.1", features = ["from"] }
@@ -15,7 +18,7 @@ schemars = "0.9.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
-tokio = { version = "1.52.3", features = ["time"] }
+tokio = { version = "1.52.3", features = ["time", "sync"] }
 tracing = "0.1"
 
 [lints]

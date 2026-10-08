@@ -2,9 +2,12 @@
 
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
 use eliza_http::context::{ApiKey, RequestLimits, RouteConfig};
+use eliza_http::hosted::{Hosted, HostedConfig, HostedSecrets};
 use eliza_http::model::{ModelAliases, ModelId, ModelNames};
 use eliza_server::serve::{CorsMode, LogFormat, ServerConfig};
 
@@ -20,6 +23,24 @@ use eliza_server::serve::{CorsMode, LogFormat, ServerConfig};
 fn parse_positive_usize(value: &str) -> Result<NonZeroUsize, String> {
     let value = value.parse::<usize>().map_err(|error| error.to_string())?;
     NonZeroUsize::new(value).ok_or_else(|| "must be greater than zero".to_owned())
+}
+
+// -----------------------------------------------------------------------------
+// ParseSpeechWorkers: Rejects limits the shared semaphore cannot represent.
+// -----------------------------------------------------------------------------
+
+/// Parse a positive speech job limit within Tokio's semaphore capacity.
+///
+/// # Errors
+/// Returns an invalid integer or an unsupported semaphore capacity.
+fn parse_speech_workers(value: &str) -> Result<NonZeroUsize, String> {
+    let workers = parse_positive_usize(value)?;
+
+    // Reject unsupported capacity before semaphore construction can panic.
+    if workers.get() > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err("exceeds maximum speech worker count".to_owned());
+    }
+    Ok(workers)
 }
 
 // -----------------------------------------------------------------------------
@@ -97,9 +118,26 @@ pub(super) struct ServeArgs {
     )]
     max_history_messages: NonZeroUsize,
 
+    /// Number of async runtime threads (default: Tokio automatic sizing).
+    #[arg(long, value_name = "THREADS", help_heading = "Workers", value_parser = parse_positive_usize)]
+    pub(super) runtime_workers: Option<NonZeroUsize>,
+
+    /// Maximum simultaneous speech jobs across all providers.
+    #[arg(long, value_name = "JOBS", default_value = "2", help_heading = "Workers", value_parser = parse_speech_workers)]
+    speech_workers: NonZeroUsize,
+
     /// Require this key through each provider's native authentication scheme.
     #[arg(long, value_name = "KEY", help_heading = "Security")]
     api_key: Option<ApiKey>,
+
+    /// Enable explicit hosted admission using a JSON policy file.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "api_key",
+        help_heading = "Security"
+    )]
+    hosted_config: Option<PathBuf>,
 
     /// Allow browser requests from any origin using permissive CORS.
     #[arg(long = "allow-any-origin", help_heading = "Security")]
@@ -132,10 +170,27 @@ pub(super) struct ServeArgs {
 impl ServeArgs {
     /// Lower parsed arguments into runtime configuration.
     ///
+    /// # Errors
+    /// Rejects missing secrets and invalid hosted deployment policy.
+    ///
     /// # Panics
     /// Panics if constructed without a chat name; Clap supplies its default.
-    #[must_use]
-    pub(super) fn into_server_config(self) -> ServerConfig {
+    pub(super) fn into_server_config(self) -> miette::Result<ServerConfig> {
+        let hosted = if let Some(path) = self.hosted_config {
+            let bytes = std::fs::read(path)
+                .map_err(|_| miette::miette!("cannot read hosted configuration"))?;
+            let config: HostedConfig = serde_json::from_slice(&bytes)
+                .map_err(|_| miette::miette!("invalid hosted JSON configuration"))?;
+            let ingress = std::env::var("ELIZA_INGRESS_SECRET")
+                .map_err(|_| miette::miette!("ELIZA_INGRESS_SECRET is required"))?;
+            let entitlement = std::env::var("ELIZA_ENTITLEMENT_SECRET")
+                .map_err(|_| miette::miette!("ELIZA_ENTITLEMENT_SECRET is required"))?;
+            Some(Arc::new(Hosted::new(config, HostedSecrets {
+                ingress_secret: ingress, entitlement_secret: entitlement,
+            }).map_err(|message| miette::miette!("{message}"))?))
+        } else {
+            None
+        };
         let limits = RequestLimits::new(self.max_input_chars, self.max_history_messages);
 
         // Retain the first chat name for existing Rust configuration callers.
@@ -155,7 +210,8 @@ impl ServeArgs {
 
         // Assemble route-wide behavior from parsed domain values.
         let routes = RouteConfig::new(chat_model, self.api_key, self.stream_delay_ms, limits)
-            .with_model_aliases(models);
+            .with_model_aliases(models)
+            .with_speech_workers(self.speech_workers);
 
         // Translate simple CLI switches into explicit server modes.
         let cors = if self.should_allow_any_origin {
@@ -169,7 +225,12 @@ impl ServeArgs {
             LogFormat::Text
         };
 
-        ServerConfig::new(self.bind, routes, cors, log)
+        let server = ServerConfig::new(self.bind, routes, cors, log);
+        Ok(if let Some(hosted) = hosted {
+            server.with_hosted(hosted)
+        } else {
+            server
+        })
     }
 }
 

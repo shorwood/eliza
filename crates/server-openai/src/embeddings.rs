@@ -263,6 +263,8 @@ pub(super) fn router() -> ApiRouter<AppState> {
                 .summary("OpenAI embeddings")
                 .tag("openai")
                 .response::<200, Json<OpenAiEmbeddingResponse>>()
+                .response::<429, Json<OpenAiFailureResponse>>()
+                .response::<503, Json<OpenAiFailureResponse>>()
                 .default_response::<Json<OpenAiFailureResponse>>()
         }),
     )

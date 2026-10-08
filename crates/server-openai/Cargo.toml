@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+derive_more = { version = "2.1.1", features = ["from"] }
 aide = { version = "0.15.1", features = ["axum", "axum-json"] }
 axum = "0.8.9"
 base64 = "0.22.1"

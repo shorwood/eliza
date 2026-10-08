@@ -1,0 +1,10 @@
+{
+  "args": [
+    "serve",
+    "--api-key",
+    "test-key",
+    "--hosted-config",
+    "missing.json"
+  ],
+  "code": 2
+}
