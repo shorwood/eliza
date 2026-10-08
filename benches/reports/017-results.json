@@ -1,0 +1,392 @@
+[
+  {
+    "variant": "baseline",
+    "round": 1,
+    "mode": "Closed",
+    "amount": 32,
+    "accepted_rps": 1817.2,
+    "offered": 18204,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 2.032,
+        "p95": 154.23899999999998,
+        "p99": 159.359
+      },
+      "supporter": {
+        "p50": 2.032,
+        "p95": 155.391,
+        "p99": 159.999
+      }
+    },
+    "statuses": {
+      "public/200": 16383,
+      "supporter/200": 1821
+    },
+    "server_cpu_seconds": 56.39000000000001,
+    "client_cpu_seconds": 2.1399999999999997,
+    "peak_sampled_rss_bytes": 202338304,
+    "received_bytes_per_second": 88571218.32608673
+  },
+  {
+    "variant": "baseline",
+    "round": 1,
+    "mode": "Open",
+    "amount": 200,
+    "accepted_rps": 199.9,
+    "offered": 2000,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 1.96,
+        "p95": 53.055,
+        "p99": 53.183
+      },
+      "supporter": {
+        "p50": 1.9480000000000002,
+        "p95": 52.127,
+        "p99": 53.150999999999996
+      }
+    },
+    "statuses": {
+      "public/200": 1800,
+      "supporter/200": 200
+    },
+    "server_cpu_seconds": 5.71,
+    "client_cpu_seconds": 0.27,
+    "peak_sampled_rss_bytes": 102612992,
+    "received_bytes_per_second": 9825482.835447202
+  },
+  {
+    "variant": "baseline",
+    "round": 2,
+    "mode": "Closed",
+    "amount": 32,
+    "accepted_rps": 1798.9,
+    "offered": 18021,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 2.049,
+        "p95": 156.54299999999998,
+        "p99": 161.663
+      },
+      "supporter": {
+        "p50": 2.057,
+        "p95": 155.135,
+        "p99": 161.15099999999998
+      }
+    },
+    "statuses": {
+      "public/200": 16218,
+      "supporter/200": 1803
+    },
+    "server_cpu_seconds": 56.05,
+    "client_cpu_seconds": 2.17,
+    "peak_sampled_rss_bytes": 206680064,
+    "received_bytes_per_second": 87697521.95585361
+  },
+  {
+    "variant": "baseline",
+    "round": 2,
+    "mode": "Open",
+    "amount": 200,
+    "accepted_rps": 199.9,
+    "offered": 2000,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 1.9559999999999997,
+        "p95": 52.255,
+        "p99": 53.247
+      },
+      "supporter": {
+        "p50": 1.955,
+        "p95": 53.119,
+        "p99": 53.214999999999996
+      }
+    },
+    "statuses": {
+      "public/200": 1800,
+      "supporter/200": 200
+    },
+    "server_cpu_seconds": 5.73,
+    "client_cpu_seconds": 0.28,
+    "peak_sampled_rss_bytes": 102793216,
+    "received_bytes_per_second": 9824546.925810149
+  },
+  {
+    "variant": "baseline",
+    "round": 3,
+    "mode": "Closed",
+    "amount": 32,
+    "accepted_rps": 1796.8,
+    "offered": 18000,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 2.043,
+        "p95": 156.415,
+        "p99": 161.53500000000003
+      },
+      "supporter": {
+        "p50": 2.049,
+        "p95": 156.54299999999998,
+        "p99": 161.663
+      }
+    },
+    "statuses": {
+      "public/200": 16200,
+      "supporter/200": 1800
+    },
+    "server_cpu_seconds": 56.050000000000004,
+    "client_cpu_seconds": 2.09,
+    "peak_sampled_rss_bytes": 202731520,
+    "received_bytes_per_second": 87464596.95978986
+  },
+  {
+    "variant": "baseline",
+    "round": 3,
+    "mode": "Open",
+    "amount": 200,
+    "accepted_rps": 199.9,
+    "offered": 2000,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 1.971,
+        "p95": 52.958999999999996,
+        "p99": 53.087
+      },
+      "supporter": {
+        "p50": 1.991,
+        "p95": 52.958999999999996,
+        "p99": 53.055
+      }
+    },
+    "statuses": {
+      "public/200": 1800,
+      "supporter/200": 200
+    },
+    "server_cpu_seconds": 5.76,
+    "client_cpu_seconds": 0.27,
+    "peak_sampled_rss_bytes": 102469632,
+    "received_bytes_per_second": 9824616.136609737
+  },
+  {
+    "variant": "candidate",
+    "round": 1,
+    "mode": "Closed",
+    "amount": 32,
+    "accepted_rps": 656.0,
+    "offered": 62807,
+    "personal_rejections": 0,
+    "shared_rejections": 56236,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 7.759,
+        "p95": 47.999,
+        "p99": 81.535
+      },
+      "supporter": {
+        "p50": 8.222999999999999,
+        "p95": 79.167,
+        "p99": 88.255
+      }
+    },
+    "statuses": {
+      "public/200": 5207,
+      "public/503": 51319,
+      "supporter/200": 1364,
+      "supporter/503": 4917
+    },
+    "server_cpu_seconds": 77.41,
+    "client_cpu_seconds": 3.8499999999999996,
+    "peak_sampled_rss_bytes": 167301120,
+    "received_bytes_per_second": 18987420.002320997
+  },
+  {
+    "variant": "candidate",
+    "round": 1,
+    "mode": "Open",
+    "amount": 200,
+    "accepted_rps": 199.9,
+    "offered": 2000,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 2.1510000000000002,
+        "p95": 53.214999999999996,
+        "p99": 53.407000000000004
+      },
+      "supporter": {
+        "p50": 2.143,
+        "p95": 53.214999999999996,
+        "p99": 53.439
+      }
+    },
+    "statuses": {
+      "public/200": 1800,
+      "supporter/200": 200
+    },
+    "server_cpu_seconds": 6.1899999999999995,
+    "client_cpu_seconds": 0.31000000000000005,
+    "peak_sampled_rss_bytes": 108666880,
+    "received_bytes_per_second": 9825371.687544527
+  },
+  {
+    "variant": "candidate",
+    "round": 2,
+    "mode": "Closed",
+    "amount": 32,
+    "accepted_rps": 664.7,
+    "offered": 62902,
+    "personal_rejections": 0,
+    "shared_rejections": 56245,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 7.815,
+        "p95": 48.031,
+        "p99": 82.623
+      },
+      "supporter": {
+        "p50": 8.019,
+        "p95": 78.399,
+        "p99": 87.103
+      }
+    },
+    "statuses": {
+      "public/200": 5217,
+      "public/503": 51394,
+      "supporter/200": 1440,
+      "supporter/503": 4851
+    },
+    "server_cpu_seconds": 77.49,
+    "client_cpu_seconds": 3.8500000000000005,
+    "peak_sampled_rss_bytes": 167538688,
+    "received_bytes_per_second": 17912243.895039625
+  },
+  {
+    "variant": "candidate",
+    "round": 2,
+    "mode": "Open",
+    "amount": 200,
+    "accepted_rps": 199.9,
+    "offered": 2000,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 2.199,
+        "p95": 53.183,
+        "p99": 53.343
+      },
+      "supporter": {
+        "p50": 2.1710000000000003,
+        "p95": 53.183,
+        "p99": 53.279
+      }
+    },
+    "statuses": {
+      "public/200": 1800,
+      "supporter/200": 200
+    },
+    "server_cpu_seconds": 6.23,
+    "client_cpu_seconds": 0.32000000000000006,
+    "peak_sampled_rss_bytes": 109490176,
+    "received_bytes_per_second": 9825356.551565304
+  },
+  {
+    "variant": "candidate",
+    "round": 3,
+    "mode": "Closed",
+    "amount": 32,
+    "accepted_rps": 662.5,
+    "offered": 62755,
+    "personal_rejections": 0,
+    "shared_rejections": 56121,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 7.731,
+        "p95": 48.735,
+        "p99": 82.239
+      },
+      "supporter": {
+        "p50": 8.119,
+        "p95": 78.911,
+        "p99": 87.167
+      }
+    },
+    "statuses": {
+      "public/200": 5238,
+      "public/503": 51242,
+      "supporter/200": 1396,
+      "supporter/503": 4879
+    },
+    "server_cpu_seconds": 77.45,
+    "client_cpu_seconds": 3.8499999999999996,
+    "peak_sampled_rss_bytes": 171307008,
+    "received_bytes_per_second": 18519576.093082108
+  },
+  {
+    "variant": "candidate",
+    "round": 3,
+    "mode": "Open",
+    "amount": 200,
+    "accepted_rps": 199.9,
+    "offered": 2000,
+    "personal_rejections": 0,
+    "shared_rejections": 0,
+    "failures": 0,
+    "dropped": 0,
+    "successful_latency_ms": {
+      "public": {
+        "p50": 2.165,
+        "p95": 53.311,
+        "p99": 53.375
+      },
+      "supporter": {
+        "p50": 2.1710000000000003,
+        "p95": 52.351,
+        "p99": 53.343
+      }
+    },
+    "statuses": {
+      "public/200": 1800,
+      "supporter/200": 200
+    },
+    "server_cpu_seconds": 6.2,
+    "client_cpu_seconds": 0.2900000000000005,
+    "peak_sampled_rss_bytes": 108929024,
+    "received_bytes_per_second": 9824245.003073957
+  }
+]

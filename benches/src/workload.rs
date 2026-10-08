@@ -1,0 +1,510 @@
+//! Fixed request fixtures shared by load and streaming measurements.
+
+use anyhow::{Result, bail};
+use reqwest::Client;
+use serde::Serialize;
+use serde_json::{Value, json};
+use tokio::time::Instant;
+
+/// Fixed, shared input corpus.
+const FIXTURES: &str = include_str!("../fixtures.json");
+
+// -----------------------------------------------------------------------------
+// Workload: Prepared provider request and its response checks.
+// -----------------------------------------------------------------------------
+
+/// Maximum historical user turns in the long fixture.
+const WORKLOAD_LONG_HISTORY_TURNS: usize = 100;
+
+/// Maximum decoded body accepted by the load generator.
+const WORKLOAD_RESPONSE_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+
+/// Maximum input chunk retained by a paced upload.
+const WORKLOAD_UPLOAD_CHUNK_BYTES: usize = 1024;
+
+/// Prepared provider request and its response checks.
+#[derive(Clone)]
+pub struct Workload {
+    /// Stable workload name used in result artifacts.
+    name: String,
+    /// Whether this request uses the supporter account.
+    is_supporter: bool,
+    /// Verified synthetic public caller address.
+    client_ip: String,
+    /// Delay between received response chunks.
+    read_delay_ms: u64,
+    /// Delay between uploaded input chunks.
+    upload_delay_ms: u64,
+    /// Provider route for this workload.
+    url: String,
+    /// Fixed serialized request input.
+    #[cfg(test)]
+    body: Value,
+    /// Encoded request bytes shared between clients.
+    payload: bytes::Bytes,
+    /// Response validation and payload detection mode.
+    kind: String,
+    /// Expected provider response media type.
+    content_type: &'static str,
+}
+
+impl Workload {
+    /// # Errors
+    /// Returns setup, validation, or I/O failures to the benchmark runner.
+    #[expect(
+        rlib::missing_code_phase_comments,
+        reason = "request construction ends in declarative field mapping rather than sequential phases"
+    )]
+    fn new(name: &str, base: &str) -> Result<Self> {
+        // Media presets share transport preparation with chat.
+        if matches!(name, "image" | "embedding" | "inline-image") {
+            return Self::media(name, Self::new("chat-short", base)?);
+        }
+
+        // Prepare the native request from the fixed corpus.
+        let fixtures: Value = serde_json::from_str(FIXTURES)?;
+        let (path, body, kind, content_type) = if name.starts_with("chat-") {
+            if !["chat-short", "chat-long", "chat-sse", "chat-long-sse"].contains(&name) {
+                bail!("unknown chat workload: {name}");
+            }
+            let long = name.contains("long");
+            let stream = name.ends_with("sse");
+            let count = if long { WORKLOAD_LONG_HISTORY_TURNS } else { 1 };
+            let messages = Self::messages(
+                count,
+                &fixtures["chat"][if long { "long" } else { "short" }],
+            );
+            (
+                "/openai/v1/chat/completions",
+                json!({"model":"eliza-1966", "messages":messages, "stream":stream}),
+                if stream { "chat-sse" } else { "chat" },
+                if stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+            )
+        } else {
+            let fields = name.split('-').collect::<Vec<_>>();
+            if !matches!(
+                fields.as_slice(),
+                ["speech", "short" | "medium" | "long", "pcm" | "wav" | "mp3"]
+                    | [
+                        "speech",
+                        "short" | "medium" | "long",
+                        "pcm" | "wav" | "mp3",
+                        "sse"
+                    ]
+            ) {
+                bail!("unknown speech workload: {name}");
+            }
+            let stream = fields.len() == 4;
+            let format = fields[2];
+            let audio_type = match format {
+                "pcm" => "audio/pcm",
+                "wav" => "audio/wav",
+                _ => "audio/mpeg",
+            };
+            (
+                "/openai/v1/audio/speech",
+                json!({"model":"flite", "input":fixtures["speech"][fields[1]],
+                "voice":"Kore", "speed":1, "response_format":format, "stream_format":if stream {"sse"} else {"audio"}}),
+                if stream { "speech-sse" } else { format },
+                if stream {
+                    "text/event-stream"
+                } else {
+                    audio_type
+                },
+            )
+        };
+
+        // Retain encoded input once for all repeated exchanges.
+        Ok(Self {
+            name: name.to_owned(),
+            is_supporter: false,
+            read_delay_ms: 0,
+            upload_delay_ms: 0,
+            client_ip: "192.0.2.1".into(),
+            url: format!("{base}{path}"),
+            payload: bytes::Bytes::from(serde_json::to_vec(&body)?),
+            #[cfg(test)]
+            body,
+            kind: kind.to_owned(),
+            content_type,
+        })
+    }
+
+    /// Prepare media fixtures using the same bounded request transport.
+    /// # Errors
+    /// Returns fixture serialization failures.
+    fn media(name: &str, mut workload: Self) -> Result<Self> {
+        let base = workload.url.trim_end_matches("/openai/v1/chat/completions");
+        let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABAQAAAADcWUInAAAACklEQVQI12NwAAAAQgBBg7nsrQAAAABJRU5ErkJggg==";
+        let (path, body, kind) = match name {
+            "image" => (
+                "/openai/v1/images/generations",
+                json!({"model":"eliza-retro-image","prompt":"Hello","size":"256x256"}),
+                "image",
+            ),
+            "embedding" => (
+                "/openai/v1/embeddings",
+                json!({"model":"fnv-embed","input":"Hello","dimensions":1024}),
+                "embedding",
+            ),
+            _ => (
+                "/openai/v1/chat/completions",
+                json!({"model":"eliza-1966","messages":[{"role":"user","content":[{"type":"text","text":"Hello"},{"type":"image_url","image_url":{"url":url}}]}]}),
+                "chat",
+            ),
+        };
+        workload.name = name.into();
+        workload.url = format!("{base}{path}");
+        workload.payload = bytes::Bytes::from(serde_json::to_vec(&body)?);
+        workload.kind = kind.into();
+        #[cfg(test)]
+        {
+            workload.body = body;
+        }
+        Ok(workload)
+    }
+
+    /// Build alternating history ending at the latest user input.
+    fn messages(count: usize, text: &Value) -> Vec<Value> {
+        let mut messages = Vec::new();
+        for _ in 0..count {
+            messages.push(json!({"role":"user", "content":text}));
+            messages.push(json!({"role":"assistant", "content":"OK"}));
+        }
+        let _last_assistant = messages.pop();
+        messages
+    }
+
+    /// Detect a complete content delta or the first audio sample.
+    #[allow(
+        rlib::results_converted_to_options,
+        reason = "incomplete SSE JSON is expected until another chunk arrives"
+    )]
+    fn is_meaningful(&self, bytes: &[u8]) -> bool {
+        // Binary content has no SSE record boundary.
+        if !self.kind.ends_with("sse") {
+            return bytes.len() > if self.kind == "wav" { 44 } else { 0 };
+        }
+        let text = String::from_utf8_lossy(bytes);
+        let records = text.lines().filter_map(|line| line.strip_prefix("data: "));
+        records
+            .filter_map(|record| serde_json::from_str::<Value>(record).ok())
+            .any(|record| {
+                if self.kind == "chat-sse" {
+                    record["choices"][0]["delta"]["content"]
+                        .as_str()
+                        .is_some_and(|text| !text.is_empty())
+                } else {
+                    record["type"] == "speech.audio.delta"
+                        && record["audio"]
+                            .as_str()
+                            .is_some_and(|audio| !audio.is_empty())
+                }
+            })
+    }
+
+    /// Require audio content followed by the speech completion record.
+    #[allow(
+        rlib::results_converted_to_options,
+        reason = "malformed terminal JSON means an invalid response"
+    )]
+    fn is_valid_speech_sse(&self, bytes: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(bytes);
+        let last = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .next_back();
+        let terminal = last.and_then(|record| serde_json::from_str::<Value>(record).ok());
+        self.is_meaningful(bytes)
+            && terminal.is_some_and(|record| record["type"] == "speech.audio.done")
+    }
+
+    /// Check complete responses, including their terminal streaming record.
+    #[allow(
+        rlib::results_converted_to_options,
+        reason = "invalid JSON is a failed benchmark response"
+    )]
+    fn is_valid(&self, bytes: &[u8]) -> bool {
+        match self.kind.as_str() {
+            "chat" => serde_json::from_slice::<Value>(bytes)
+                .ok()
+                .is_some_and(|value| {
+                    value["choices"][0]["message"]["content"]
+                        .as_str()
+                        .is_some_and(|text| !text.is_empty())
+                }),
+            "chat-sse" => {
+                self.is_meaningful(bytes)
+                    && String::from_utf8_lossy(bytes)
+                        .trim_end()
+                        .ends_with("data: [DONE]")
+            }
+            "speech-sse" => self.is_valid_speech_sse(bytes),
+            "pcm" => !bytes.is_empty() && bytes.len().is_multiple_of(2),
+            "wav" => bytes.len() > 44 && bytes.starts_with(b"RIFF"),
+            _ => !bytes.is_empty(),
+        }
+    }
+
+    /// Prepare either buffered input or bounded paced upload chunks.
+    fn request_body(&self) -> reqwest::Body {
+        // Ordinary clients send their already encoded input directly.
+        if self.upload_delay_ms == 0 {
+            return reqwest::Body::from(self.payload.clone());
+        }
+        let delay = std::time::Duration::from_millis(self.upload_delay_ms);
+        let chunks =
+            futures_util::stream::unfold(self.payload.clone(), move |mut bytes| async move {
+                // Finishing input ends the upload without a trailing delayed frame.
+                if bytes.is_empty() {
+                    return None;
+                }
+                tokio::time::sleep(delay).await;
+                let chunk = bytes.split_to(bytes.len().min(WORKLOAD_UPLOAD_CHUNK_BYTES));
+                Some((Ok::<_, std::io::Error>(chunk), bytes))
+            });
+        reqwest::Body::wrap_stream(chunks)
+    }
+
+    /// Consume and validate a bounded response, measuring from its offered time.
+    pub async fn perform(&self, client: &Client, offered: Instant) -> Sample {
+        let dispatched = Instant::now();
+        let mut first = None;
+        let mut status = None;
+        let mut received = 0usize;
+        let result = async {
+            let mut request = client
+                .post(&self.url)
+                .body(self.request_body())
+                .header(reqwest::header::CONTENT_TYPE, "application/json");
+            if let Ok(secret) = std::env::var("ELIZA_INGRESS_SECRET") {
+                request = request
+                    .header("x-eliza-ingress-token", secret)
+                    .header("x-eliza-client-ip", &self.client_ip);
+            }
+            if self.is_supporter {
+                request = request.bearer_auth(std::env::var("ELIZA_BENCH_SUPPORTER_KEY")?);
+            }
+            let mut response = request.send().await?;
+            status = Some(response.status().as_u16());
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .ok_or_else(|| anyhow::anyhow!("response lacks Content-Type"))?
+                .to_str()?;
+            let retryable = response
+                .headers()
+                .contains_key(reqwest::header::RETRY_AFTER);
+            let headers_valid =
+                response.status() == 200 && content_type.starts_with(self.content_type);
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                received = received.saturating_add(chunk.len());
+                if self.read_delay_ms != 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(self.read_delay_ms)).await;
+                }
+                if bytes.len() + chunk.len() > WORKLOAD_RESPONSE_LIMIT_BYTES {
+                    bail!("response exceeds benchmark's 32 MiB bound");
+                }
+                bytes.extend_from_slice(&chunk);
+                if first.is_none() && self.is_meaningful(&bytes) {
+                    first = Some(Instant::now().duration_since(offered));
+                }
+            }
+
+            // Hosted overload is a measured native rejection, distinct from transport failure.
+            if matches!(status, Some(429 | 503)) && retryable {
+                let rejection: Value = serde_json::from_slice(&bytes)?;
+                // A complete native rejection is recorded without treating it as generated output.
+                if rejection["error"].is_object() {
+                    return Ok(bytes.len());
+                }
+            }
+            if !headers_valid || !self.is_valid(&bytes) {
+                bail!("invalid status, content type, or response body");
+            }
+            Ok::<_, anyhow::Error>(bytes.len())
+        }
+        .await;
+        let (bytes, error) = match result {
+            Ok(bytes) => (bytes, None),
+            Err(error) => (received, Some(error.to_string())),
+        };
+        Sample {
+            finished_at: Instant::now(),
+            workload: self.name.clone(),
+            tier: if self.is_supporter {
+                "supporter"
+            } else {
+                "public"
+            },
+            status,
+            completion_us: micros(Instant::now().duration_since(offered)),
+            first_us: first.map(micros),
+            dispatch_us: micros(dispatched.duration_since(offered)),
+            bytes,
+            error,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Micros: Benchmark data.
+// -----------------------------------------------------------------------------
+
+/// Express a duration in microseconds for bounded latency histograms.
+fn micros(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+// -----------------------------------------------------------------------------
+// Sample: One bounded HTTP exchange with timing and validation results.
+// -----------------------------------------------------------------------------
+
+/// One bounded HTTP exchange with timing and validation results.
+#[derive(Serialize)]
+pub struct Sample {
+    /// Completion time used to distinguish measurement from drain.
+    #[serde(skip)]
+    pub finished_at: Instant,
+    /// Caller tier, without credentials or account identity.
+    pub tier: &'static str,
+    /// Received HTTP status; absent on transport failure.
+    pub status: Option<u16>,
+    /// Workload that produced this sample.
+    pub workload: String,
+    /// Scheduled arrival to complete body receipt in microseconds.
+    pub completion_us: u64,
+    /// Scheduled arrival to first meaningful payload in microseconds.
+    pub first_us: Option<u64>,
+    /// Arrival scheduling delay in microseconds.
+    pub dispatch_us: u64,
+    /// Received body bytes, including partial failed exchanges.
+    pub bytes: usize,
+    /// Transport or validation failure, when present.
+    pub error: Option<String>,
+}
+
+// -----------------------------------------------------------------------------
+// CallerMix: Deterministic caller distribution.
+// -----------------------------------------------------------------------------
+/// Deterministic public and supporter caller distribution.
+#[derive(Clone, Copy)]
+pub struct CallerMix {
+    /// Percentage of offered work using the supporter key.
+    pub supporter_percent: u32,
+    /// Delay in milliseconds between response chunks.
+    pub read_delay_ms: u64,
+    /// Delay in milliseconds between upload chunks.
+    pub upload_delay_ms: u64,
+    /// Number of distinct verified public addresses.
+    pub public_identities: u32,
+}
+
+// -----------------------------------------------------------------------------
+// Workloads: Prepared corpus and caller mix.
+// -----------------------------------------------------------------------------
+
+/// One workload or the fixed nine-chat/one-speech request mix.
+pub struct Workloads {
+    /// Deterministic caller distribution.
+    callers: CallerMix,
+    /// Prepared provider requests.
+    items: Vec<Workload>,
+}
+
+impl Workloads {
+    /// Prepare the selected request or the fixed mixed corpus.
+    ///
+    /// # Errors
+    /// Returns unknown workload or invalid fixture errors.
+    pub fn new(name: &str, base: &str) -> Result<Self> {
+        let items = if name == "mixed" {
+            vec![
+                Workload::new("chat-short", base)?,
+                Workload::new("speech-medium-pcm", base)?,
+            ]
+        } else {
+            vec![Workload::new(name, base)?]
+        };
+        Ok(Self {
+            items,
+            callers: CallerMix {
+                supporter_percent: 0,
+                read_delay_ms: 0,
+                upload_delay_ms: 0,
+                public_identities: 1,
+            },
+        })
+    }
+
+    /// Configure caller distribution without putting secrets into artifacts.
+    pub fn with_callers(mut self, callers: CallerMix) -> Self {
+        self.callers = callers;
+        self
+    }
+
+    /// Select the next deterministic request by its global sequence number.
+    pub fn selected(&self, iteration: u64) -> Workload {
+        let mut selected =
+            self.items[usize::from(self.items.len() == 2 && iteration % 10 == 9)].clone();
+        selected.read_delay_ms = self.callers.read_delay_ms;
+        selected.upload_delay_ms = self.callers.upload_delay_ms;
+        selected.is_supporter =
+            iteration.wrapping_mul(37) % 100 < u64::from(self.callers.supporter_percent);
+        let identity = iteration % u64::from(self.callers.public_identities);
+        let address =
+            std::net::Ipv4Addr::from(0xc612_0000 + u32::try_from(identity).unwrap_or(u32::MAX));
+        selected.client_ip = address.to_string();
+        selected
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Default server bound on combined request text.
+    const MAX_INPUT_CHARS: usize = 8_000;
+
+    /// Validate benchmark fixtures and response boundaries.
+    ///
+    /// # Panics
+    /// Panics if a fixture or response check regresses.
+    #[test]
+    fn split_events_and_terminal_records_are_validated() {
+        let chat = Workload::new("chat-sse", "http://localhost").unwrap();
+        assert!(!chat.is_meaningful(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi"));
+        let event = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n";
+        assert!(chat.is_meaningful(event));
+        assert!(!chat.is_valid(event));
+        assert!(chat.is_valid(&[event.as_slice(), b"data: [DONE]\n\n"].concat()));
+        let speech = Workload::new("speech-short-pcm-sse", "http://localhost").unwrap();
+        assert!(!speech.is_valid(b"data: {\"type\":\"speech.audio.done\"}\n\n"));
+        assert!(speech.is_valid(b"data: {\"type\":\"speech.audio.delta\",\"audio\":\"AAAA\"}\n\ndata: {\"type\":\"speech.audio.done\"}\n\n"));
+    }
+
+    /// Validate benchmark fixtures and response boundaries.
+    ///
+    /// # Panics
+    /// Panics if a fixture or response check regresses.
+    #[test]
+    fn history_fits_limits_and_unknown_workloads_fail() {
+        let long = Workload::new("chat-long", "http://localhost").unwrap();
+        assert_eq!(long.body["messages"].as_array().unwrap().len(), 199);
+        let messages = long.body["messages"].as_array().unwrap();
+        let chars = messages
+            .iter()
+            .map(|message| {
+                let text = message["content"].as_str().unwrap();
+                text.chars().count()
+            })
+            .sum::<usize>();
+        assert!(chars <= MAX_INPUT_CHARS);
+        assert!(Workload::new("speech-short-flac", "http://localhost").is_err());
+    }
+}

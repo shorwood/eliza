@@ -1,0 +1,8 @@
+{
+  "chat": {"short": "I need help", "long": "I need help"},
+  "speech": {
+    "short": "Hello from Eliza.",
+    "medium": "Hello from Eliza. This is a local speech benchmark. The same words and voice are used for every request so that we can compare generation time and server concurrency.",
+    "long": "Hello from Eliza. This is a local speech benchmark. The same words and voice are used for every request so that we can compare generation time and server concurrency. A quiet room and a steady clock help us measure the work. We keep the text fixed and collect every sample. Several clients can ask for speech at the same time. Some will wait for a worker while others receive audio. We measure that waiting time together with synthesis and encoding. These results describe this computer and this workload."
+  }
+}
