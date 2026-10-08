@@ -3,6 +3,9 @@ fmt:
     hurlfmt --in-place crates/cli/tests/http/*.hurl crates/cli/tests/http/*/*.hurl
     nixfmt flake.nix nix/*.nix
 
+check-public-docs:
+    bash web/tools/check-docs.sh
+
 bench-generation *args:
     cargo bench -p eliza-benches --bench generation --bench completion --bench speech --locked -- {{args}}
 
@@ -14,9 +17,6 @@ bench-e2e *args:
 bench-smoke:
     just bench-generation --test
     just bench-e2e --smoke
-
-check-public-docs:
-    bash web/tools/check-docs.sh
 
 chat:
     sh examples/open-webui/run.sh

@@ -1,8 +1,11 @@
 //! Generated `OpenAPI` and Scalar documentation routes.
 
+use std::sync::Arc;
+
 use aide::axum::ApiRouter;
 use aide::openapi::{Info, License, OpenApi};
 use aide::scalar::Scalar;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 
@@ -11,8 +14,8 @@ use axum::{Extension, Json, Router};
 // -----------------------------------------------------------------------------
 
 /// Return the generated `OpenAPI` document mounted into the router.
-async fn openapi_json(Extension(api): Extension<OpenApi>) -> Json<OpenApi> {
-    Json(api)
+async fn openapi_json(Extension(api): Extension<Arc<OpenApi>>) -> Response {
+    Json(api.as_ref()).into_response()
 }
 
 // -----------------------------------------------------------------------------
@@ -60,6 +63,6 @@ impl ApiDocs for ApiRouter {
         let router = self
             .route("/openapi.json", get(openapi_json))
             .route("/docs", docs);
-        router.finish_api(&mut api).layer(Extension(api))
+        router.finish_api(&mut api).layer(Extension(Arc::new(api)))
     }
 }

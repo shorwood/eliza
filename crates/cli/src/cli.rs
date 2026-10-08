@@ -71,6 +71,14 @@ pub(super) struct ServeArgs {
     )]
     bind: SocketAddr,
 
+    /// Number of async runtime threads (default: Tokio automatic sizing).
+    #[arg(long, value_name = "THREADS", help_heading = "Workers", value_parser = parse_positive_usize)]
+    pub(super) runtime_workers: Option<NonZeroUsize>,
+
+    /// Maximum simultaneous speech jobs across all providers.
+    #[arg(long, value_name = "JOBS", default_value = "2", help_heading = "Workers", value_parser = parse_speech_workers)]
+    speech_workers: NonZeroUsize,
+
     /// Chat model name advertised by provider catalogs (repeatable).
     #[arg(
         long = "model-chat",
@@ -117,14 +125,6 @@ pub(super) struct ServeArgs {
         value_parser = parse_positive_usize
     )]
     max_history_messages: NonZeroUsize,
-
-    /// Number of async runtime threads (default: Tokio automatic sizing).
-    #[arg(long, value_name = "THREADS", help_heading = "Workers", value_parser = parse_positive_usize)]
-    pub(super) runtime_workers: Option<NonZeroUsize>,
-
-    /// Maximum simultaneous speech jobs across all providers.
-    #[arg(long, value_name = "JOBS", default_value = "2", help_heading = "Workers", value_parser = parse_speech_workers)]
-    speech_workers: NonZeroUsize,
 
     /// Require this key through each provider's native authentication scheme.
     #[arg(long, value_name = "KEY", help_heading = "Security")]
@@ -185,9 +185,16 @@ impl ServeArgs {
                 .map_err(|_| miette::miette!("ELIZA_INGRESS_SECRET is required"))?;
             let entitlement = std::env::var("ELIZA_ENTITLEMENT_SECRET")
                 .map_err(|_| miette::miette!("ELIZA_ENTITLEMENT_SECRET is required"))?;
-            Some(Arc::new(Hosted::new(config, HostedSecrets {
-                ingress_secret: ingress, entitlement_secret: entitlement,
-            }).map_err(|message| miette::miette!("{message}"))?))
+            Some(Arc::new(
+                Hosted::new(
+                    config,
+                    HostedSecrets {
+                        ingress_secret: ingress,
+                        entitlement_secret: entitlement,
+                    },
+                )
+                .map_err(|message| miette::miette!("{message}"))?,
+            ))
         } else {
             None
         };

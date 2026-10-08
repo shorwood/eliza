@@ -49,7 +49,7 @@ pub struct Stream {
 /// Maximum rendered duration accepted by the compatibility fixture.
 const SERVICE_MAX_SECONDS: usize = 120;
 
-/// Maximum number of speech jobs allowed to retain audio buffers concurrently.
+/// Default number of speech jobs allowed to retain audio buffers concurrently.
 const SERVICE_WORKERS: usize = 2;
 
 /// Encoded chunks retained between a synthesis worker and its HTTP consumer.
@@ -252,8 +252,14 @@ impl Service {
 
 #[cfg(test)]
 mod tests {
+    use std::future::{Future as _, poll_fn};
+    use std::task::Poll;
+
     use super::*;
     use crate::core::Segment;
+
+    /// Capacity distinct from the production default of two.
+    const TEST_WORKERS: usize = 4;
 
     /// Hosted synthesis fails immediately when its native worker slot is occupied.
     ///
@@ -285,6 +291,43 @@ mod tests {
         drop(occupied);
         let remaining = service.permits.available_permits();
         assert_eq!(remaining, 1);
+    }
+
+    /// A saturated service also blocks jobs submitted through another provider's clone.
+    ///
+    /// # Panics
+    /// Panics if the configured bound is not shared or queued rendering bypasses it.
+    #[tokio::test]
+    async fn configured_limit_is_shared_and_blocks_rendering() {
+        let count = TEST_WORKERS;
+        let service = Service::with_worker_limit(NonZeroUsize::new(count).unwrap());
+        let provider = service.clone();
+        let capacity = Arc::clone(&service.permits);
+        let permits = capacity
+            .acquire_many_owned(u32::try_from(count).unwrap())
+            .await
+            .unwrap();
+        let request = Request {
+            segments: vec![Segment {
+                text: "Hello.".to_owned(),
+                voice: "Kore".to_owned(),
+                style: String::new(),
+                speed: 1.0,
+                pause_after_ms: 0,
+            }],
+            sample_rate: 8_000,
+        };
+        let mut render = Box::pin(provider.render(request, AudioFormat::Pcm, NonZeroUsize::MAX));
+        let is_queued =
+            poll_fn(|context| Poll::Ready(render.as_mut().poll(context).is_pending())).await;
+        assert!(is_queued);
+        drop(permits);
+        let audio = render
+            .await
+            .expect("released capacity should allow rendering");
+        assert!(audio.sample_count > 0);
+        let available = service.permits.available_permits();
+        assert_eq!(available, count);
     }
 
     /// Streaming PCM arrives in multiple chunks and terminates with an exact count.
