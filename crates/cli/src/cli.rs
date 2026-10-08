@@ -156,7 +156,6 @@ pub(super) struct ServeArgs {
     /// Chat model name advertised by provider catalogs (repeatable).
     #[arg(
         long = "model-chat",
-        visible_alias = "chat-model",
         value_name = "ID",
         default_value = "eliza-1966",
         help_heading = "Models"

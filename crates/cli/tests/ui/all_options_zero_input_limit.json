@@ -2,7 +2,7 @@
   "args": [
     "serve",
     "--bind", "127.0.0.1:0",
-    "--chat-model", "ui-doctor",
+    "--model-chat", "ui-doctor",
     "--api-key", "must-not-leak",
     "--cors-mode", "any",
     "--max-input-chars", "0",

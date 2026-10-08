@@ -45,7 +45,7 @@ const HURL_VARIABLE_TOKEN: &[HurlVariable<'static>] = &[HurlVariable::new("token
 const ALIAS_ARGS: &[&str] = &[
     "--api-key",
     "secret",
-    "--chat-model",
+    "--model-chat",
     "chat-one",
     "--model-chat",
     "chat-two",
@@ -262,7 +262,7 @@ fn http_test() -> io::Result<()> {
     drop(server);
 
     // Shared names require an intentional chat/embedding collision.
-    let server = TestServer::spawn(&["--chat-model", "fnv-embed"])?;
+    let server = TestServer::spawn(&["--model-chat", "fnv-embed"])?;
     server.run_hurl("tests/http/**/scenario_alias_shared_*.hurl", &[])?;
     drop(server);
 

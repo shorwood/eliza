@@ -30,7 +30,6 @@ Models:
           Chat model name advertised by provider catalogs (repeatable)
           
           [default: eliza-1966]
-          [aliases: --chat-model]
 
       --model-embeddings <ID>
           Embedding model name accepted by embedding routes (repeatable)

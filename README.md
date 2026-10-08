@@ -88,8 +88,7 @@ eliza serve \
 
 Repeat a model option to advertise several names. Supplied names replace that
 modality's defaults; duplicates keep their first occurrence. These names still
-use the local engines listed above. `--chat-model` remains an alias for
-`--model-chat`. Model arguments accept literal names.
+use the local engines listed above. Model arguments accept literal names.
 
 Chat, embedding, speech, and image-generation routes accept only their configured
 model names. Gemini embedding bodies must name the same model resource as their URL,
@@ -142,7 +141,7 @@ Run `eliza serve --help` for the complete CLI contract. The main options are:
 | `--bind` | `127.0.0.1:8787` | Listener address |
 | `--runtime-workers` | Tokio automatic sizing | Async runtime thread count; explicit flag overrides `TOKIO_WORKER_THREADS` |
 | `--speech-workers` | `2` | Shared limit on simultaneous speech jobs across providers |
-| `--model-chat` | `eliza-1966` | Repeatable chat names; also accepts `--chat-model` |
+| `--model-chat` | `eliza-1966` | Repeatable chat names |
 | `--model-embeddings` | `fnv-embed` | Repeatable embedding names |
 | `--model-images` | `eliza-retro-image` | Repeatable image-generation names |
 | `--model-speech` | `flite` | Repeatable speech names |

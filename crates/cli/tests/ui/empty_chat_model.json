@@ -1,4 +1,4 @@
 {
-  "args": ["serve", "--chat-model", ""],
+  "args": ["serve", "--model-chat", ""],
   "code": 2
 }
