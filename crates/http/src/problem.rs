@@ -20,7 +20,7 @@ pub enum ApiProblem {
     /// Invalid or unsupported provider input.
     #[error("{message}")]
     #[problem(
-        type_uri = "urn:eliza:problem:invalid-request",
+        type_uri = "https://eliza.nwrx.io/docs/errors#invalid-request",
         status = 400,
         detail = "{message}"
     )]
@@ -31,7 +31,7 @@ pub enum ApiProblem {
     /// Provider authentication failed.
     #[error("{message}")]
     #[problem(
-        type_uri = "urn:eliza:problem:authentication",
+        type_uri = "https://eliza.nwrx.io/docs/errors#authentication",
         status = 401,
         detail = "{message}"
     )]
@@ -42,7 +42,7 @@ pub enum ApiProblem {
     /// Input exceeds an explicit request safety bound.
     #[error("{message}")]
     #[problem(
-        type_uri = "urn:eliza:problem:request-too-large",
+        type_uri = "https://eliza.nwrx.io/docs/errors#request-too-large",
         status = 413,
         detail = "{message}"
     )]
@@ -52,7 +52,10 @@ pub enum ApiProblem {
     },
     /// Preserve a framework rejection's validated status.
     #[error("{message}")]
-    #[problem(type_uri = "urn:eliza:problem:extraction", detail = "{message}")]
+    #[problem(
+        type_uri = "https://eliza.nwrx.io/docs/errors#extraction",
+        detail = "{message}"
+    )]
     Extraction {
         /// Original framework status.
         #[problem(status)]
@@ -63,7 +66,7 @@ pub enum ApiProblem {
     /// Private implementation failures expose no diagnostic detail.
     #[error("internal server error")]
     #[problem(
-        type_uri = "urn:eliza:problem:internal",
+        type_uri = "https://eliza.nwrx.io/docs/errors#internal",
         status = 500,
         title = "Internal server error"
     )]
@@ -71,7 +74,7 @@ pub enum ApiProblem {
     /// A caller has exhausted an allowance.
     #[error("{message}")]
     #[problem(
-        type_uri = "urn:eliza:problem:rate-limit",
+        type_uri = "https://eliza.nwrx.io/docs/errors#rate-limit",
         status = 429,
         detail = "{message}"
     )]
@@ -82,7 +85,7 @@ pub enum ApiProblem {
     /// Shared capacity or a required service is unavailable.
     #[error("service temporarily unavailable")]
     #[problem(
-        type_uri = "urn:eliza:problem:unavailable",
+        type_uri = "https://eliza.nwrx.io/docs/errors#unavailable",
         status = 503,
         detail = "Service temporarily unavailable; retry shortly."
     )]
@@ -319,11 +322,15 @@ impl NativeError {
         self.param
     }
 
-    /// Attach metadata while leaving report/native body status unchanged.
+    /// Attach diagnostic and documentation links without changing the error body.
     pub fn write_error_code(&self, headers: &mut HeaderMap) {
         // Diagnostic metadata is omitted only when it cannot form a header.
         if let Ok(value) = HeaderValue::from_str(self.code()) {
             headers.insert("x-eliza-error-code", value);
+        }
+        let type_uri = self.report.problem().definition().type_uri;
+        if let Ok(value) = HeaderValue::from_str(&format!("<{type_uri}>; rel=\"describedby\"")) {
+            headers.insert("link", value);
         }
         if let Some(seconds) = self.retry_after {
             headers.insert("retry-after", HeaderValue::from(seconds));
