@@ -29,14 +29,14 @@ can download the release archive below.
 
 Prebuilt Linux and Windows executables and macOS archives are also attached to
 each [GitHub Release](https://github.com/shorwood/eliza/releases). Linux
-releases include Debian and Alpine packages for both x86_64 and ARM64. Check
-the download against its matching `.sha256` file before installing it. Package
-installs provide the `eliza` command; run `eliza serve` to
-start the server. Direct Linux downloads need `chmod +x` before running.
+releases include Debian and Alpine packages for both x86_64 and ARM64. Use the
+SHA256 digest provided by GitHub to verify a download before installing it.
+Package installs provide the `eliza` command; run `eliza serve` to start the
+server. Direct Linux downloads need `chmod +x` before running.
 
 The release also includes the Nix-built Docker image archives for AMD64 and
-ARM64, each with a checksum. The normal Nix package remains available through
-the versioned flake above; its `default` output is an alias of `eliza`.
+ARM64. The normal Nix package remains available through the versioned flake
+above; its `default` output is an alias of `eliza`.
 
 See the [self-hosting guide](https://eliza.hsjm.io/docs/self-hosting) for a
 Testcontainers test, image pinning, download instructions, and local versus

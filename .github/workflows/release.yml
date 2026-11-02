@@ -58,11 +58,11 @@ jobs:
           test "${GITHUB_REF_NAME#v}" = "$(nix eval --raw .#eliza.version)"
       - name: Check source
         run: nix develop --command just ok
-      - name: Generate changelog
+      - name: Generate release notes
         shell: bash
         run: |
           set -euo pipefail
-          notes="eliza-$GITHUB_REF_NAME-CHANGELOG.md"
+          notes=notes.md
           if [[ "$GITHUB_REF_NAME" == v1.0.0 ]]; then
             cp CHANGELOG.md "$notes"
           else
@@ -71,8 +71,8 @@ jobs:
           test -s "$notes"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-changelog
-          path: eliza-*-CHANGELOG.md
+          name: notes
+          path: notes.md
           if-no-files-found: error
 
   # --- Build and push one Linux image for each container architecture.
@@ -237,7 +237,11 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
-      - name: Verify release matrix and write checksums
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: notes
+          path: release-notes
+      - name: Verify release matrix
         shell: bash
         run: |
           set -euo pipefail
@@ -254,16 +258,12 @@ jobs:
           test -f "eliza-$version-windows-x86_64.exe"
           test -f "eliza-$version-docker-amd64.tar.gz"
           test -f "eliza-$version-docker-arm64.tar.gz"
-          test -s "eliza-$version-CHANGELOG.md"
+          test -s ../release-notes/notes.md
           printf '\nSource: https://github.com/%s/commit/%s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" \
-            >> "eliza-$version-CHANGELOG.md"
-          # Nine platform downloads, both Nix image archives, and a changelog.
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 12
-          # Ship one standard checksum sidecar per downloadable asset.
-          for asset in eliza-*; do
-            sha256sum "$asset" > "$asset.sha256"
-            sha256sum --check "$asset.sha256"
-          done
+            >> ../release-notes/notes.md
+          # Nine platform downloads and both Nix image archives. GitHub
+          # supplies each uploaded asset's SHA-256 digest in its UI and API.
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 11
       - name: Verify public container access
         shell: bash
         env:
@@ -309,7 +309,7 @@ jobs:
             "$IMAGE:$version-arm64"
           docker buildx imagetools inspect "$IMAGE:$version" --raw | \
             jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64", "linux/arm64"]'
-          notes="release-assets/eliza-$GITHUB_REF_NAME-CHANGELOG.md"
+          notes=release-notes/notes.md
 
           # Build a complete draft before making downloads visible. A retry
           # recovers that draft or refreshes a completed release in place.

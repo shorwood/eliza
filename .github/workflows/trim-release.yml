@@ -1,0 +1,69 @@
+# One-time cleanup of v1.0.0 attachments; remove this workflow after success.
+name: Trim release attachments
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/trim-release.yml]
+  workflow_dispatch:
+
+concurrency:
+  group: release-refs/tags/v1.0.0
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  trim:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Remove redundant attachments and refresh notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=v1.0.0
+          source=fb164047baa36b6c589896506e636dcf3ad24686
+          before="$RUNNER_TEMP/before.json"
+          after="$RUNNER_TEMP/after.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$before"
+          # Guard the exact release and its tested source before deleting files.
+          jq -e --arg source "$source" '
+            .id == 431403202 and .tag_name == "v1.0.0" and
+            .draft == false and (.body | contains($source))
+          ' "$before"
+          for arch in x86_64 arm64; do
+            printf 'eliza-%s-linux-%s\n' "$tag" "$arch"
+            printf 'eliza-%s-linux-%s.apk\n' "$tag" "$arch"
+            printf 'eliza-%s-linux-%s.deb\n' "$tag" "$arch"
+            printf 'eliza-%s-macos-%s.tar.gz\n' "$tag" "$arch"
+          done > "$RUNNER_TEMP/expected-unsorted"
+          printf 'eliza-%s-windows-x86_64.exe\neliza-%s-docker-amd64.tar.gz\neliza-%s-docker-arm64.tar.gz\n' \
+            "$tag" "$tag" "$tag" >> "$RUNNER_TEMP/expected-unsorted"
+          sort "$RUNNER_TEMP/expected-unsorted" > "$RUNNER_TEMP/expected"
+          jq -r '.assets[].name | select(endswith(".sha256") or endswith("-CHANGELOG.md") | not)' \
+            "$before" | sort > "$RUNNER_TEMP/retained"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/retained"
+          jq -e '[.assets[] | select(.name | endswith(".sha256") or endswith("-CHANGELOG.md") | not)] |
+            all(.size > 0 and (.digest | test("^sha256:[0-9a-f]{64}$")))' "$before"
+          jq -r '.assets[] | select(.name | endswith(".sha256") or endswith("-CHANGELOG.md")) | .id' \
+            "$before" | while read -r asset_id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done
+          cp CHANGELOG.md "$RUNNER_TEMP/notes.md"
+          printf '\nSource: https://github.com/%s/commit/%s\n' "$GITHUB_REPOSITORY" "$source" \
+            >> "$RUNNER_TEMP/notes.md"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$after"
+          jq -r '.assets[].name' "$after" | sort > "$RUNNER_TEMP/actual"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          # The eleven downloads must keep their original IDs, bytes and hashes.
+          jq -S '[.assets[] | select(.name | endswith(".sha256") or endswith("-CHANGELOG.md") | not) |
+            {id, name, size, digest}] | sort_by(.name)' "$before" > "$RUNNER_TEMP/retained-before"
+          jq -S '[.assets[] | {id, name, size, digest}] | sort_by(.name)' "$after" > "$RUNNER_TEMP/retained-after"
+          diff -u "$RUNNER_TEMP/retained-before" "$RUNNER_TEMP/retained-after"
+          jq -e '.id == 431403202 and .draft == false and (.assets | length == 11)' "$after"
