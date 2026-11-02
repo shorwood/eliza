@@ -311,12 +311,6 @@ jobs:
             jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64", "linux/arm64"]'
           notes="release-assets/eliza-$GITHUB_REF_NAME-CHANGELOG.md"
 
-          # Replace the legacy empty release only after all outputs are ready.
-          # Keep the tag: it already identifies the checked replacement source.
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --json isDraft,assets --jq '(.isDraft | not) and (.assets | length == 0)' | grep -qx true; then
-            gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
-          fi
           # Build a complete draft before making downloads visible. A retry
           # recovers that draft or refreshes a completed release in place.
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
