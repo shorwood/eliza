@@ -20,7 +20,7 @@ pub enum ApiProblem {
     /// Invalid or unsupported provider input.
     #[error("{message}")]
     #[problem(
-        type_uri = "https://eliza.nwrx.io/docs/errors#invalid-request",
+        type_uri = "https://eliza.hsjm.io/docs/errors#invalid-request",
         status = 400,
         detail = "{message}"
     )]
@@ -31,7 +31,7 @@ pub enum ApiProblem {
     /// Provider authentication failed.
     #[error("{message}")]
     #[problem(
-        type_uri = "https://eliza.nwrx.io/docs/errors#authentication",
+        type_uri = "https://eliza.hsjm.io/docs/errors#authentication",
         status = 401,
         detail = "{message}"
     )]
@@ -42,7 +42,7 @@ pub enum ApiProblem {
     /// Input exceeds an explicit request safety bound.
     #[error("{message}")]
     #[problem(
-        type_uri = "https://eliza.nwrx.io/docs/errors#request-too-large",
+        type_uri = "https://eliza.hsjm.io/docs/errors#request-too-large",
         status = 413,
         detail = "{message}"
     )]
@@ -53,7 +53,7 @@ pub enum ApiProblem {
     /// Preserve a framework rejection's validated status.
     #[error("{message}")]
     #[problem(
-        type_uri = "https://eliza.nwrx.io/docs/errors#extraction",
+        type_uri = "https://eliza.hsjm.io/docs/errors#extraction",
         detail = "{message}"
     )]
     Extraction {
@@ -66,7 +66,7 @@ pub enum ApiProblem {
     /// Private implementation failures expose no diagnostic detail.
     #[error("internal server error")]
     #[problem(
-        type_uri = "https://eliza.nwrx.io/docs/errors#internal",
+        type_uri = "https://eliza.hsjm.io/docs/errors#internal",
         status = 500,
         title = "Internal server error"
     )]
@@ -74,7 +74,7 @@ pub enum ApiProblem {
     /// A caller has exhausted an allowance.
     #[error("{message}")]
     #[problem(
-        type_uri = "https://eliza.nwrx.io/docs/errors#rate-limit",
+        type_uri = "https://eliza.hsjm.io/docs/errors#rate-limit",
         status = 429,
         detail = "{message}"
     )]
@@ -85,7 +85,7 @@ pub enum ApiProblem {
     /// Shared capacity or a required service is unavailable.
     #[error("service temporarily unavailable")]
     #[problem(
-        type_uri = "https://eliza.nwrx.io/docs/errors#unavailable",
+        type_uri = "https://eliza.hsjm.io/docs/errors#unavailable",
         status = 503,
         detail = "Service temporarily unavailable; retry shortly."
     )]

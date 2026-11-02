@@ -34,7 +34,7 @@ the download against its matching `.sha256` file before installing it. Package
 installs provide the `eliza` command; run `eliza serve` to
 start the server. Direct Linux downloads need `chmod +x` before running.
 
-See the [self-hosting guide](https://eliza.nwrx.io/docs/self-hosting) for a
+See the [self-hosting guide](https://eliza.hsjm.io/docs/self-hosting) for a
 Testcontainers test, image pinning, download instructions, and local versus
 hosted API URLs.
 Then send an OpenAI Chat Completions request:

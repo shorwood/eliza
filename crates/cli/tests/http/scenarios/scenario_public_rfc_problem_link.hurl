@@ -5,6 +5,6 @@ Content-Type: application/json
 HTTP 413
 [Asserts]
 header "Content-Type" startsWith "application/problem+json"
-header "Link" == "<https://eliza.nwrx.io/docs/errors#request-too-large>; rel=\"describedby\""
-jsonpath "$.type" == "https://eliza.nwrx.io/docs/errors#request-too-large"
+header "Link" == "<https://eliza.hsjm.io/docs/errors#request-too-large>; rel=\"describedby\""
+jsonpath "$.type" == "https://eliza.hsjm.io/docs/errors#request-too-large"
 jsonpath "$.status" == 413
