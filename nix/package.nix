@@ -44,6 +44,8 @@ rustPlatform.buildRustPackage (
     ];
     # Embedded Hurl is large enough to crash LLVM during release-profile tests.
     checkType = "debug";
+    # HTTP fixtures start a loopback server inside the Darwin build sandbox.
+    __darwinAllowLocalNetworking = stdenv.buildPlatform.isDarwin;
 
     # --- Supply native libraries used by Rust dependencies and test fixtures.
     # Bindgen needs libclang; Linux also needs the libc headers at build time.
@@ -65,11 +67,11 @@ rustPlatform.buildRustPackage (
       libxml2
     ];
 
-    # Embedded Hurl links libcurl during tests and HTTPS fixtures need CA roots.
-    nativeCheckInputs = [
-      cacert
-      curl
-    ];
+    # Embedded Hurl links libcurl into test executables. Host libraries belong
+    # in checkInputs so Darwin's linker receives their Nix library paths.
+    checkInputs = [ curl ];
+    # HTTPS fixtures need CA roots while the tests run.
+    nativeCheckInputs = [ cacert ];
     SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
     # --- Advertise only the systems with an exposed normal Nix package.
