@@ -9,6 +9,11 @@ on:
     tags:
       - "v*.*.*"
 
+# Serialize retries so two runs cannot replace the same release concurrently.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -98,6 +103,14 @@ jobs:
           docker load --input result
           # Check the loaded image before it is tagged and pushed to GHCR.
           docker run --rm "eliza:$version" --help
+          test "$(docker image inspect "eliza:$version" --format '{{.Architecture}}')" = '${{ matrix.architecture }}'
+          mkdir release-assets
+          cp -L result "release-assets/eliza-$GITHUB_REF_NAME-docker-${{ matrix.architecture }}.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-docker-${{ matrix.architecture }}
+          path: release-assets/*
+          if-no-files-found: error
       - name: Log in to GHCR
         shell: bash
         env:
@@ -162,7 +175,13 @@ jobs:
       - name: Smoke-test release downloads
         if: matrix.platform != 'windows'
         shell: bash
-        run: nix build .#releaseCheck --no-link
+        run: |
+          nix build .#releaseCheck --no-link
+          # Linux image jobs build the normal package. ARM macOS exposes one
+          # too; Intel macOS intentionally exposes only portable downloads.
+          if [[ '${{ matrix.platform }}' == macos && '${{ matrix.architecture }}' == arm64 ]]; then
+            nix build .#eliza --no-link
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-${{ matrix.platform }}-${{ matrix.architecture }}
@@ -210,6 +229,9 @@ jobs:
       contents: write
       packages: write
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-*
@@ -221,6 +243,8 @@ jobs:
           set -euo pipefail
           cd release-assets
           version="${GITHUB_REF_NAME}"
+          # DEBT: expose filenames from Nix so this manifest cannot drift from
+          # nix/release when a future download format or architecture is added.
           for arch in x86_64 arm64; do
             test -f "eliza-$version-linux-$arch"
             test -f "eliza-$version-macos-$arch.tar.gz"
@@ -228,9 +252,13 @@ jobs:
             test -f "eliza-$version-linux-$arch.apk"
           done
           test -f "eliza-$version-windows-x86_64.exe"
+          test -f "eliza-$version-docker-amd64.tar.gz"
+          test -f "eliza-$version-docker-arm64.tar.gz"
           test -s "eliza-$version-CHANGELOG.md"
-          # Expect nine platform downloads and their shared changelog.
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 10
+          printf '\nSource: https://github.com/%s/commit/%s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" \
+            >> "eliza-$version-CHANGELOG.md"
+          # Nine platform downloads, both Nix image archives, and a changelog.
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 12
           # Ship one standard checksum sidecar per downloadable asset.
           for asset in eliza-*; do
             sha256sum "$asset" > "$asset.sha256"
@@ -248,6 +276,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
+          # Refuse a stale run if somebody moved the tag while builds ran.
+          remote_tag=$(git ls-remote origin "refs/tags/$GITHUB_REF_NAME^{}" | cut -f1)
+          if [[ -z "$remote_tag" ]]; then
+            remote_tag=$(git ls-remote origin "refs/tags/$GITHUB_REF_NAME" | cut -f1)
+          fi
+          test "$remote_tag" = "$GITHUB_SHA"
           # Point the public tags at the two images pushed by the image jobs.
           docker buildx imagetools create \
             --tag "$IMAGE:$version" \
@@ -257,13 +291,21 @@ jobs:
           docker buildx imagetools inspect "$IMAGE:$version" --raw | \
             jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64", "linux/arm64"]'
           notes="release-assets/eliza-$GITHUB_REF_NAME-CHANGELOG.md"
-          # A retry should refresh the body and assets without another release.
+
+          # Replace the legacy empty release only after all outputs are ready.
+          # Keep the tag: it already identifies the checked replacement source.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,assets --jq '(.isDraft | not) and (.assets | length == 0)' | grep -qx true; then
+            gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
+          fi
+          # Build a complete draft before making downloads visible. A retry
+          # recovers that draft or refreshes a completed release in place.
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
               --notes-file "$notes" \
-              --verify-tag
+              --target "$GITHUB_SHA" --verify-tag --draft
           else
             gh release edit "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
@@ -271,3 +313,9 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" release-assets/* \
             --repo "$GITHUB_REPOSITORY" --clobber
+          # Check the exact uploaded names before publishing the draft.
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort > "$RUNNER_TEMP/expected-assets"
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/published-assets"
+          diff -u "$RUNNER_TEMP/expected-assets" "$RUNNER_TEMP/published-assets"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

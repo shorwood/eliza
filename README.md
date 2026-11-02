@@ -34,6 +34,10 @@ the download against its matching `.sha256` file before installing it. Package
 installs provide the `eliza` command; run `eliza serve` to
 start the server. Direct Linux downloads need `chmod +x` before running.
 
+The release also includes the Nix-built Docker image archives for AMD64 and
+ARM64, each with a checksum. The normal Nix package remains available through
+the versioned flake above; its `default` output is an alias of `eliza`.
+
 See the [self-hosting guide](https://eliza.hsjm.io/docs/self-hosting) for a
 Testcontainers test, image pinning, download instructions, and local versus
 hosted API URLs.
