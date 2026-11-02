@@ -332,3 +332,5 @@ jobs:
             --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/published-assets"
           diff -u "$RUNNER_TEMP/expected-assets" "$RUNNER_TEMP/published-assets"
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body | \
+            jq -e --rawfile notes "$notes" '(.body | rtrimstr("\n")) == ($notes | rtrimstr("\n"))'
