@@ -1,8 +1,4 @@
 //! Typed public problem contracts with provider-native projections.
-#![expect(
-    rlib::undocumented_items,
-    reason = "problems 0.1.1 generates undocumented definition constants in a sibling impl; handwritten items below are documented"
-)]
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};

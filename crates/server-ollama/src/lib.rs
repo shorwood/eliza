@@ -1,8 +1,5 @@
 //! Ollama-compatible routes.
 
-#![feature(register_tool)]
-#![register_tool(rlib)]
-
 mod chat;
 mod context;
 mod embeddings;

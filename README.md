@@ -222,8 +222,7 @@ nix develop
 just ok
 ```
 
-The gate checks formatting, Nix, compilation, tests, HTTP contracts, Clippy,
-and Dylint.
+The gate checks formatting, Nix, compilation, tests, HTTP contracts, and Clippy.
 
 ## License
 

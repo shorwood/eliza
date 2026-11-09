@@ -1,8 +1,5 @@
 //! Standalone classic ELIZA compatibility server.
 
-#![feature(register_tool)]
-#![register_tool(rlib)]
-
 mod cli;
 
 use clap::{CommandFactory as _, FromArgMatches as _};

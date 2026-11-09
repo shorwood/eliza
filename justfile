@@ -16,7 +16,7 @@ smoke:
     sh examples/with-eliza.sh cargo run -p example-rust-rig --locked
 
 # --- Reject static issues before running tests.
-# Check Rust, Hurl, and Nix formatting plus Clippy and Dylint without edits.
+# Check Rust, Hurl, and Nix formatting plus Clippy without edits.
 lint:
     cargo-fmt fmt --all -- --check
     find crates/cli/tests/http -type f -name '*.hurl' -exec hurlfmt --check {} +
@@ -25,7 +25,6 @@ lint:
     deadnix --fail flake.nix nix
     statix check .
     cargo-clippy clippy --workspace --all-targets --locked -- -D warnings
-    cargo-rlib rlib --workspace --all-targets --locked -- -D warnings
 
 # --- Prove behavior across the Rust workspace.
 # Run the workspace tests, including CLI and HTTP contract fixtures.

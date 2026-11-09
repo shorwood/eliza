@@ -4,7 +4,7 @@
   description = "1966 ELIZA through AI provider-compatible HTTP APIs";
 
   # --- Pin external inputs so local and CI builds resolve the same dependencies.
-  # `follows` makes Fenix and rlib reuse our nixpkgs/Rust inputs instead of
+  # `follows` makes Fenix reuse our nixpkgs input instead of
   # pulling separate copies into the dependency graph.
   # The separate Darwin pins retain x86_64 macOS support for release downloads.
   inputs = {
@@ -18,13 +18,6 @@
       url = "github:nix-community/fenix/1635a532f6778304adfac2044c82992ece8a99d8";
       inputs.nixpkgs.follows = "nixpkgsDarwin";
     };
-    rlib = {
-      url = "github:shorwood/rlib/v1.0.0";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        fenix.follows = "fenix";
-      };
-    };
   };
 
   # outputs is a function of the pinned inputs. Its returned attribute sets
@@ -36,7 +29,6 @@
       fenixDarwin,
       nixpkgs,
       nixpkgsDarwin,
-      rlib,
       ...
     }:
     let
@@ -65,9 +57,20 @@
             else
               nixpkgs.legacyPackages.${system};
           scalarJs = pkgs.callPackage ./nix/scalar.nix { };
+          rustToolchain =
+            (fenix.packages.${system}.toolchainOf {
+              channel = "nightly";
+              date = "2026-04-16";
+              sha256 = "1kbgfwz1hd2z6fkq97650in4fwa13y9n6rhjankh5hbmis8mqkn3";
+            }).withComponents
+              [
+                "cargo"
+                "clippy"
+                "rustc"
+                "rustfmt"
+              ];
           package = pkgs.callPackage ./nix/package.nix {
-            rustToolchain = rlib.packages.${system}.rust-toolchain;
-            inherit scalarJs;
+            inherit rustToolchain scalarJs;
             supportedSystems = systems;
           };
           release = import ./nix/release {
@@ -87,8 +90,7 @@
         // {
           inherit package;
           devShell = pkgs.callPackage ./nix/dev/shell.nix {
-            rlibShell = rlib.devShells.${system}.consumer;
-            inherit scalarJs;
+            inherit rustToolchain scalarJs;
           };
         };
     in

@@ -265,10 +265,6 @@ impl fmt::Display for Analysis {
 
 impl Analysis {
     /// Analyze cell centers on the fixed grid.
-    #[expect(
-        rlib::missing_code_phase_comments,
-        reason = "the final phase is a flat mapping from named statistics to output fields"
-    )]
     fn from_pixels(number: usize, width: u32, height: u32, image: &DynamicImage) -> Self {
         let mut red_sum = 0_u64;
         let mut blue_sum = 0_u64;

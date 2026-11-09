@@ -388,14 +388,6 @@ struct Compiler {
     clippy::missing_errors_doc,
     reason = "private compiler phases share the documented public compilation contract"
 )]
-#[expect(
-    rlib::misordered_inherent_impl_items,
-    reason = "the compiler entry point precedes its private parse-and-solve phases"
-)]
-#[expect(
-    rlib::undocumented_early_returns,
-    reason = "schema guard branches return diagnostics that state each rejection policy"
-)]
 impl Compiler {
     /// Compile one root object through every validation phase.
     fn compile(root: Map<String, Value>) -> Result<Template, StructuredOutputError> {
@@ -408,10 +400,6 @@ impl Compiler {
     }
 
     /// Parse one schema object and all physical child schemas.
-    #[expect(
-        rlib::missing_code_phase_comments,
-        reason = "normalized assertion fields are clearest as contiguous declarative groups"
-    )]
     fn parse_node(
         &mut self,
         value: Value,
@@ -961,7 +949,7 @@ impl Compiler {
     /// Solve one conjunction, selecting `anyOf` branches in request order.
     #[expect(
         clippy::manual_ok_err,
-        reason = "the explicit match documents deliberate branch-error suppression required by rlib"
+        reason = "the explicit match documents deliberate branch-error suppression"
     )]
     fn solve(&self, clauses: &[Clause]) -> Result<Template, StructuredOutputError> {
         if let Some((index, target)) = clauses.iter().enumerate().find_map(|(index, clause)| {
@@ -1003,10 +991,6 @@ impl Compiler {
     }
 
     /// Construct a witness after references and alternatives are expanded.
-    #[expect(
-        rlib::missing_code_phase_comments,
-        reason = "the exhaustive witness match is clearer kept as one complete decision table"
-    )]
     fn solve_assertions(&self, clauses: &[Clause]) -> Result<Template, StructuredOutputError> {
         // Prefer explicit primitive witnesses before synthesizing a type default.
         let kind = self.combined_type(clauses)?;
@@ -1179,10 +1163,6 @@ fn is_primitive(value: &Value) -> bool {
 // -----------------------------------------------------------------------------
 
 /// Append one escaped token to an RFC 6901 pointer.
-#[expect(
-    rlib::ambiguous_primitive_parameters,
-    reason = "the private two-term pointer operation is explicit at every call site"
-)]
 fn pointer_join(pointer: &str, token: &str) -> String {
     let token = token.replace('~', "~0").replace('/', "~1");
     format!("{pointer}/{token}")
@@ -1197,10 +1177,6 @@ fn pointer_join(pointer: &str, token: &str) -> String {
 /// # Errors
 ///
 /// Returns a classified schema error for external or malformed references.
-#[expect(
-    rlib::ambiguous_primitive_parameters,
-    reason = "reference text and diagnostic path are named and never interchangeable at callers"
-)]
 fn local_reference_pointer(reference: &str, path: &str) -> Result<String, StructuredOutputError> {
     // Reject references outside the deliberately local-only subset.
     let Some(fragment) = reference.strip_prefix('#') else {

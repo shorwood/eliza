@@ -354,7 +354,6 @@ pub(super) struct ChatMessage {
 /// Ollama reasoning selector accepted as a boolean or named level.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
-#[allow(rlib::undocumented_items)]
 pub(super) enum ChatThink {
     /// Enable or disable thinking directly.
     Boolean(bool),

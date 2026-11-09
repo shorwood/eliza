@@ -1,8 +1,5 @@
 //! OpenAI-compatible provider adapter.
 
-#![feature(register_tool)]
-#![register_tool(rlib)]
-
 mod chat_completions;
 mod compatibility;
 mod context;

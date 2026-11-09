@@ -1,5 +1,5 @@
-# Local `nix develop` environment. rlib supplies the pinned Rust compiler and
-# lint tooling; this file adds tools and libraries used by ELIZA itself.
+# Local `nix develop` environment with the pinned Rust compiler, standard lint
+# tools, and libraries used by ELIZA itself.
 {
   curl,
   deadnix,
@@ -16,7 +16,7 @@
   openssl,
   pkg-config,
   pnpm,
-  rlibShell,
+  rustToolchain,
   scalarJs,
   shellcheck,
   statix,
@@ -29,9 +29,7 @@ mkShell {
   LIBCLANG_PATH = "${libclang.lib}/lib";
   BINDGEN_EXTRA_CLANG_ARGS = lib.optionalString stdenv.isLinux "-isystem ${stdenv.cc.libc.dev}/include";
 
-  # --- Extend rlib's shell with ELIZA's workflow tools.
-  # inputsFrom reuses its compiler and lint setup without listing it again.
-  inputsFrom = [ rlibShell ];
+  # --- Supply the compiler and ELIZA's workflow tools directly.
   packages = [
     curl
     deadnix
@@ -45,6 +43,7 @@ mkShell {
     openssl
     pnpm
     pkg-config
+    rustToolchain
     shellcheck
     statix
     stdenv.cc

@@ -1,16 +1,5 @@
 //! Exercise ELIZA through Rig's provider clients.
 
-#![feature(register_tool)]
-#![register_tool(rlib)]
-#![allow(
-    rlib::foreign_type_method_like_free_functions,
-    rlib::missing_code_phase_comments,
-    rlib::missing_section_dividers,
-    rlib::undocumented_items,
-    rlib::unseparated_module_items,
-    reason = "small private examples favor SDK-shaped code over library API ceremony"
-)]
-
 mod catalogs;
 mod chat;
 mod embeddings;

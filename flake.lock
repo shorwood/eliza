@@ -1,22 +1,5 @@
 {
   "nodes": {
-    "dylint-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1779817571,
-        "narHash": "sha256-SteI8+BZ5ej38goCOD+PRJozt7qVSTp/IFJXyeBblAw=",
-        "owner": "trailofbits",
-        "repo": "dylint",
-        "rev": "cd83640eb1882c309fc58edd9806882262fd1c6b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "trailofbits",
-        "ref": "v6.0.1",
-        "repo": "dylint",
-        "type": "github"
-      }
-    },
     "fenix": {
       "inputs": {
         "nixpkgs": [
@@ -92,38 +75,12 @@
         "type": "github"
       }
     },
-    "rlib": {
-      "inputs": {
-        "dylint-src": "dylint-src",
-        "fenix": [
-          "fenix"
-        ],
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1790952333,
-        "narHash": "sha256-HSD5ODWVtWzi+twu9qUvEhPrTHQI052cEoEebBzP/NY=",
-        "owner": "shorwood",
-        "repo": "rlib",
-        "rev": "781ec6f2dbdbafad66626fc4e483b1e1a17c23a4",
-        "type": "github"
-      },
-      "original": {
-        "owner": "shorwood",
-        "ref": "v1.0.0",
-        "repo": "rlib",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
         "fenix": "fenix",
         "fenixDarwin": "fenixDarwin",
         "nixpkgs": "nixpkgs",
-        "nixpkgsDarwin": "nixpkgsDarwin",
-        "rlib": "rlib"
+        "nixpkgsDarwin": "nixpkgsDarwin"
       }
     },
     "rust-analyzer-src": {

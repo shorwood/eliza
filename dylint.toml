@@ -1,5 +1,0 @@
-[rlib-lint]
-declarations-per-section-threshold = 12
-error-implementation-provider = "thiserror_error"
-error-variant-conversion-provider = "thiserror_from"
-enum-string-parsing-provider = "derive_more_from_str"

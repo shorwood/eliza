@@ -1,8 +1,5 @@
 //! Deterministic provider-neutral chat execution.
 
-#![feature(register_tool)]
-#![register_tool(rlib)]
-
 mod eliza;
 pub mod errors;
 pub mod json;

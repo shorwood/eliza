@@ -1,8 +1,5 @@
 //! Gemini-compatible provider adapter.
 
-#![feature(register_tool)]
-#![register_tool(rlib)]
-
 mod context;
 mod embeddings;
 pub mod errors;

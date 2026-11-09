@@ -1,13 +1,5 @@
 //! Universal request bounds, independent of caller identity or deployment.
 
-// These two narrow exceptions keep the middleware's Axum entry point and
-// provider-specific error envelopes together without extra wrapper types.
-#![allow(
-    rlib::axum_ad_hoc_response_wrappers,
-    rlib::foreign_type_method_like_free_functions,
-    rlib::misordered_module_declarations
-)]
-
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
