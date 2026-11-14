@@ -312,7 +312,13 @@ async fn handle(
     };
 
     // The shared engine owns prompt and count validation.
-    match lowered.complete(state.config.limits.max_input_chars()) {
+    let limit = state.config.limits.max_input_chars();
+    let completed = eliza_http::execution::image_work(true, move || lowered.complete(limit)).await;
+    let completed = match completed {
+        Ok(result) => result,
+        Err(error) => return OpenAiRejection::from(error).into_response(),
+    };
+    match completed {
         Ok(response) => Json(response).into_response(),
         Err(error) => OpenAiRejection::from(&error).into_response(),
     }

@@ -32,7 +32,10 @@ runCommand "eliza-release-check"
     # --- Locate the executable inside the downloaded artifact.
     ${
       if isLinux then
-        "binary=${assets}/eliza-v${version}-linux-${arch}"
+        ''
+          tar -xzf ${assets}/eliza-v${version}-linux-${arch}.tar.gz
+          binary=./eliza-v${version}-linux-${arch}/eliza
+        ''
       else
         ''
           tar -xzf ${assets}/eliza-v${version}-macos-${arch}.tar.gz
@@ -43,6 +46,12 @@ runCommand "eliza-release-check"
     # --- Start the executable before inspecting portability or package payloads.
     # This catches missing runtime libraries that a successful build may miss.
     "$binary" --help >/dev/null
+    stem=eliza-v${version}-${if isLinux then "linux" else "macos"}-${arch}
+    test -s "$stem/LICENSE"
+    test -s "$stem/licences/flite-rs/LICENSE"
+    grep -q 'Carnegie Mellon University' "$stem/licences/flite-rs/NOTICE"
+    grep -q 'CMU license' "$stem/licences/flite-rs/THIRD-PARTY-LICENSES.md"
+    test -s "$stem/licences/scalar/LICENSE"
     ${
       if isLinux then
         ''
@@ -56,6 +65,13 @@ runCommand "eliza-release-check"
             ${assets}/eliza-v${version}-linux-${arch}.apk
           deb-root/usr/bin/eliza --help >/dev/null
           apk-root/usr/bin/eliza --help >/dev/null
+          for root in deb-root apk-root; do
+            test -s "$root/usr/share/doc/eliza/LICENSE"
+            test -s "$root/usr/share/doc/eliza/licences/flite-rs/NOTICE"
+            test -s "$root/usr/share/doc/eliza/licences/flite-rs/THIRD-PARTY-LICENSES.md"
+            test -s "$root/usr/share/doc/eliza/licences/scalar/LICENSE"
+          done
+          cmp "$binary" ${assets}/eliza-v${version}-linux-${arch}
         ''
       else
         ''

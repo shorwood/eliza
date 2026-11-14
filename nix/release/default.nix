@@ -53,10 +53,11 @@ let
 
   # --- Name downloads consistently while preserving package-manager metadata.
   # runCommand creates a store output whose files CI later copies as downloads.
-  releaseLinuxExecutable = pkgs.runCommand "eliza-v${version}-linux-${arch}-executable" { } ''
-    mkdir -p "$out"
-    cp ${portable}/bin/eliza "$out/eliza-v${version}-linux-${arch}"
-  '';
+  releaseLinuxExecutable = pkgs.callPackage ./portable.nix {
+    binary = portable;
+    inherit arch version;
+    platform = "linux";
+  };
   releaseDeb = pkgs.callPackage ./deb.nix {
     binary = portable;
     inherit arch version;
@@ -105,10 +106,11 @@ let
         rustToolchain = toolchainFor "x86_64-pc-windows-gnu";
       };
     in
-    pkgs.runCommand "eliza-v${version}-windows-x86_64-executable" { } ''
-      mkdir -p "$out"
-      cp ${binary}/bin/eliza.exe "$out/eliza-v${version}-windows-x86_64.exe"
-    '';
+    pkgs.callPackage ./portable.nix {
+      inherit binary version;
+      arch = "x86_64";
+      platform = "windows";
+    };
 in
 {
   inherit releaseAssets releaseCheck;

@@ -22,6 +22,7 @@ runCommand "${stem}-archive"
     # --- Stage the executable under a predictable directory name.
     mkdir -p "$out" "${stem}"
     cp ${binary}/bin/eliza "${stem}/"
+    cp -R ${binary}/share/doc/eliza/. "${stem}/"
 
     # --- Create the single file that CI publishes as a download.
     tar -czf "$out/${stem}.tar.gz" "${stem}"

@@ -8,10 +8,17 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release to repair without moving its tag
+        required: true
+        default: v1.0.0
+        type: string
 
 # Serialize retries so two runs cannot replace the same release concurrently.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -19,6 +26,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/shorwood/eliza
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   # --- Check the source and publication destinations before making artifacts.
@@ -26,6 +34,8 @@ jobs:
   # promised public release inaccessible, so either condition stops the run.
   check:
     runs-on: ubuntu-24.04
+    outputs:
+      tag_commit: ${{ steps.version.outputs.tag_commit }}
     permissions:
       contents: read
       packages: read
@@ -50,12 +60,17 @@ jobs:
           fi
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
       - name: Verify release version
+        id: version
         shell: bash
         run: |
           set -euo pipefail
           # Require a plain version tag matching the version built by Nix.
-          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "${GITHUB_REF_NAME#v}" = "$(nix eval --raw .#eliza.version)"
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "${RELEASE_TAG#v}" = "$(nix eval --raw .#eliza.version)"
+          tag_commit=$(git rev-parse "$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$tag_commit" "$GITHUB_SHA"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then test "$tag_commit" = "$GITHUB_SHA"; fi
+          echo "tag_commit=$tag_commit" >> "$GITHUB_OUTPUT"
       - name: Check source
         run: nix develop --command just ok
       - name: Generate release notes
@@ -63,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           notes=notes.md
-          if [[ "$GITHUB_REF_NAME" == v1.0.0 ]]; then
+          if [[ "$RELEASE_TAG" == v1.0.0 ]]; then
             cp CHANGELOG.md "$notes"
           else
             nix develop --command git-cliff --current --config cliff.toml --output "$notes"
@@ -98,14 +113,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           nix build .#dockerImage
           docker load --input result
           # Check the loaded image before it is tagged and pushed to GHCR.
           docker run --rm "eliza:$version" --help
           test "$(docker image inspect "eliza:$version" --format '{{.Architecture}}')" = '${{ matrix.architecture }}'
+          container=$(docker create "eliza:$version")
+          docker export "$container" | tar -tf - | grep '/share/doc/eliza/licences/flite-rs/NOTICE' >/dev/null
+          docker rm "$container"
           mkdir release-assets
-          cp -L result "release-assets/eliza-$GITHUB_REF_NAME-docker-${{ matrix.architecture }}.tar.gz"
+          cp -L result "release-assets/eliza-$RELEASE_TAG-docker-${{ matrix.architecture }}.tar.gz"
+          find release-assets -maxdepth 1 -type f ! -name 'MANIFEST-*' -printf '%f\n' > release-assets/MANIFEST-docker-${{ matrix.architecture }}.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-docker-${{ matrix.architecture }}
@@ -120,10 +139,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           # Keep each image under its own tag until the manifest is ready.
-          docker tag "eliza:$version" "$IMAGE:$version-${{ matrix.architecture }}"
-          docker push "$IMAGE:$version-${{ matrix.architecture }}"
+          docker tag "eliza:$version" "$IMAGE:build-$GITHUB_SHA-${{ matrix.architecture }}"
+          docker push "$IMAGE:build-$GITHUB_SHA-${{ matrix.architecture }}"
       - name: Report published package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -172,6 +191,7 @@ jobs:
           nix build -o result-assets '.#${{ matrix.output }}'
           # Artifacts must contain files, not links into the runner's Nix store.
           cp -L result-assets/* release-assets/
+          find release-assets -maxdepth 1 -type f ! -name 'MANIFEST-*' -printf '%f\n' > release-assets/MANIFEST-${{ matrix.platform }}-${{ matrix.architecture }}.txt
       - name: Smoke-test release downloads
         if: matrix.platform != 'windows'
         shell: bash
@@ -202,7 +222,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $binary = Get-ChildItem release-assets/*.exe | Select-Object -First 1
+          $archive = Get-ChildItem release-assets/*.zip | Select-Object -First 1
+          if (-not $archive) { throw 'Windows archive missing' }
+          Expand-Archive $archive.FullName -DestinationPath unpacked
+          $notice = Get-ChildItem unpacked -Recurse -Filter NOTICE | Select-Object -First 1
+          if (-not $notice -or -not (Select-String -Quiet -Path $notice.FullName -Pattern 'Carnegie Mellon')) { throw 'Speech notice missing' }
+          $binary = Get-ChildItem unpacked -Recurse -Filter eliza.exe | Select-Object -First 1
           if (-not $binary) { throw 'eliza.exe missing' }
           & $binary.FullName --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'eliza.exe --help failed' }
@@ -223,7 +248,7 @@ jobs:
   # --- Publish only after every image, download, and smoke test succeeds.
   # Re-runs replace existing assets and update the release for the same tag.
   release:
-    needs: [image, assets, windows-smoke]
+    needs: [check, image, assets, windows-smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -245,25 +270,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir release-manifests
+          mv release-assets/MANIFEST-*.txt release-manifests/
+          cat release-manifests/*.txt | sort > "$RUNNER_TEMP/expected-primary"
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort > "$RUNNER_TEMP/actual-primary"
+          diff -u "$RUNNER_TEMP/expected-primary" "$RUNNER_TEMP/actual-primary"
+          test -s release-notes/notes.md
+          printf '\nBuild source: https://github.com/%s/commit/%s\nOriginal tag source: https://github.com/%s/commit/%s\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REPOSITORY" "${{ needs.check.outputs.tag_commit }}" >> release-notes/notes.md
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            printf '\nThis release was repaired without moving its Git tag. Replacement downloads and container tags use the build source above and have new digests. Use that commit for matching Nix source builds. Archives include required notices; bare executables require their companion notices archive. Verify downloads with SHA256SUMS.\n' >> release-notes/notes.md
+          fi
+          jq -n --arg tag "$RELEASE_TAG" --arg source "$GITHUB_SHA" \
+            --arg original "${{ needs.check.outputs.tag_commit }}" \
+            '{tag: $tag, build_commit: $source, original_tag_commit: $original}' > release-assets/SOURCE.json
           cd release-assets
-          version="${GITHUB_REF_NAME}"
-          # DEBT: expose filenames from Nix so this manifest cannot drift from
-          # nix/release when a future download format or architecture is added.
-          for arch in x86_64 arm64; do
-            test -f "eliza-$version-linux-$arch"
-            test -f "eliza-$version-macos-$arch.tar.gz"
-            test -f "eliza-$version-linux-$arch.deb"
-            test -f "eliza-$version-linux-$arch.apk"
-          done
-          test -f "eliza-$version-windows-x86_64.exe"
-          test -f "eliza-$version-docker-amd64.tar.gz"
-          test -f "eliza-$version-docker-arm64.tar.gz"
-          test -s ../release-notes/notes.md
-          printf '\nSource: https://github.com/%s/commit/%s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" \
-            >> ../release-notes/notes.md
-          # Nine platform downloads and both Nix image archives. GitHub
-          # supplies each uploaded asset's SHA-256 digest in its UI and API.
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 11
+          while IFS= read -r asset; do
+            sha256sum "$asset" > "$RUNNER_TEMP/checksum"
+            cp "$RUNNER_TEMP/checksum" "$asset.sha256"
+          done < "$RUNNER_TEMP/expected-primary"
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/SHA256SUMS"
+          cp "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
       - name: Verify public container access
         shell: bash
         env:
@@ -294,43 +321,43 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           # Refuse a stale run if somebody moved the tag while builds ran.
-          remote_tag=$(git ls-remote origin "refs/tags/$GITHUB_REF_NAME^{}" | cut -f1)
+          remote_tag=$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | cut -f1)
           if [[ -z "$remote_tag" ]]; then
-            remote_tag=$(git ls-remote origin "refs/tags/$GITHUB_REF_NAME" | cut -f1)
+            remote_tag=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | cut -f1)
           fi
-          test "$remote_tag" = "$GITHUB_SHA"
+          test "$remote_tag" = "${{ needs.check.outputs.tag_commit }}"
           # Point the public tags at the two images pushed by the image jobs.
           docker buildx imagetools create \
             --tag "$IMAGE:$version" \
             --tag "$IMAGE:latest" \
-            "$IMAGE:$version-amd64" \
-            "$IMAGE:$version-arm64"
+            "$IMAGE:build-$GITHUB_SHA-amd64" \
+            "$IMAGE:build-$GITHUB_SHA-arm64"
           docker buildx imagetools inspect "$IMAGE:$version" --raw | \
             jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64", "linux/arm64"]'
           notes=release-notes/notes.md
 
           # Build a complete draft before making downloads visible. A retry
           # recovers that draft or refreshes a completed release in place.
-          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" \
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "$GITHUB_REF_NAME" \
+              --title "$RELEASE_TAG" \
               --notes-file "$notes" \
               --target "$GITHUB_SHA" --verify-tag --draft
           else
-            gh release edit "$GITHUB_REF_NAME" \
+            gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --notes-file "$notes"
           fi
-          gh release upload "$GITHUB_REF_NAME" release-assets/* \
+          gh release upload "$RELEASE_TAG" release-assets/* \
             --repo "$GITHUB_REPOSITORY" --clobber
           # Check the exact uploaded names before publishing the draft.
           find release-assets -maxdepth 1 -type f -printf '%f\n' | sort > "$RUNNER_TEMP/expected-assets"
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/published-assets"
           diff -u "$RUNNER_TEMP/expected-assets" "$RUNNER_TEMP/published-assets"
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body | \
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body | \
             jq -e --rawfile notes "$notes" '(.body | rtrimstr("\n")) == ($notes | rtrimstr("\n"))'

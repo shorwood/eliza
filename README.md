@@ -21,22 +21,31 @@ docker run --rm -p 127.0.0.1:8787:8787 ghcr.io/shorwood/eliza:latest
 Or run the flake directly without Docker:
 
 ```sh
-nix run github:shorwood/eliza/v1.0.0 -- serve
+nix run github:shorwood/eliza/main -- serve
 ```
 
 The Nix package supports Linux x86_64/ARM64 and macOS ARM64. Intel macOS users
 can download the release archive below.
 
-Prebuilt Linux and Windows executables and macOS archives are also attached to
+Prebuilt Linux and Windows executables and portable archives are also attached to
 each [GitHub Release](https://github.com/shorwood/eliza/releases). Linux
 releases include Debian and Alpine packages for both x86_64 and ARM64. Use the
 SHA256 digest provided by GitHub to verify a download before installing it.
+Prefer the Linux `.tar.gz`, Windows `.zip`, or macOS `.tar.gz` archives: each includes
+the executable, ELIZA's license, and required dependency notices. If downloading a
+bare executable, also download and retain its matching `-notices.tar.gz` archive.
+Packages and container images include these notices under `share/doc/eliza`.
 Package installs provide the `eliza` command; run `eliza serve` to start the
 server. Direct Linux downloads need `chmod +x` before running.
 
 The release also includes the Nix-built Docker image archives for AMD64 and
-ARM64. The normal Nix package remains available through the versioned flake
+ARM64. The normal Nix package remains available through the flake
 above; its `default` output is an alias of `eliza`.
+
+Release repairs preserve existing Git tags. `SOURCE.json` identifies the original
+tag commit and the actual build commit; `SHA256SUMS` and individual `.sha256`
+files verify replacement downloads. Pin the build commit for matching Nix source
+builds and pin the container digest for reproducible image pulls.
 
 See the [self-hosting guide](https://eliza.hsjm.io/docs/self-hosting) for a
 Testcontainers test, image pinning, download instructions, and local versus
@@ -178,6 +187,9 @@ values must be HTTP(S) origins without paths, queries, or fragments.
 The server applies universal 8 MiB request, 32 MiB response, and 180-second
 response bounds. Hosted account and rate policies belong to the site that
 forwards requests to ELIZA; the public binary requires no hosted secrets.
+Image generation and analysis share two blocking workers across providers;
+excess image work receives 503. Disconnecting does not free a busy worker until
+its computation finishes. Text-only requests do not consume image workers.
 
 Container arguments replace its default command. Start custom arguments with
 `serve --bind 0.0.0.0:8787` so the mapped port remains reachable.
@@ -223,6 +235,8 @@ just ok
 ```
 
 The gate checks formatting, Nix, compilation, tests, HTTP contracts, and Clippy.
+CI also audits Rust dependencies and checks release workflows. Weekly scheduled
+audits detect advisories published after a release.
 
 ## License
 

@@ -12,3 +12,11 @@ First public release of ELIZA as a repeatable, local fixture for AI client devel
 - Verify release downloads with the SHA256 digests provided by GitHub.
 
 See the [README](https://github.com/shorwood/eliza#readme) for the API scope and quick start.
+
+### Release repair
+
+- Preserve the original v1.0.0 Git tag and identify the replacement build's source in `SOURCE.json`.
+- Include required notices in packages, containers, and portable archives; retain bare executables with companion notice archives.
+- Provide Linux tar.gz and Windows zip archives, per-download checksums, and `SHA256SUMS`.
+- Bound shared image workers across providers without blocking async HTTP work, including after client cancellation.
+- Update affected Rust dependencies and run recurring dependency audits.

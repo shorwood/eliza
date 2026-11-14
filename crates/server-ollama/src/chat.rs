@@ -277,10 +277,16 @@ async fn chat(
 
     // Enforce shared request bounds after provider-specific lowering.
     // Complete one neutral turn before rendering Ollama output.
-    let response = match request.complete(
-        state.config.limits.max_input_chars(),
-        state.config.limits.max_history_messages(),
-    ) {
+    let limits = state.config.limits;
+    let completed = eliza_http::execution::image_work(request.has_images(), move || {
+        request.complete(limits.max_input_chars(), limits.max_history_messages())
+    })
+    .await;
+    let completed = match completed {
+        Ok(result) => result,
+        Err(error) => return OllamaRejection::from(error).into_response(),
+    };
+    let response = match completed {
         Ok(response) => response,
         // Shared execution failures still render as Ollama errors.
         Err(error) => {

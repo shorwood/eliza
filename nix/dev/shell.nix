@@ -1,7 +1,9 @@
 # Local `nix develop` environment with the pinned Rust compiler, standard lint
 # tools, and libraries used by ELIZA itself.
 {
+  actionlint,
   curl,
+  cargo-audit,
   deadnix,
   git-cliff,
   hurl,
@@ -31,6 +33,8 @@ mkShell {
 
   # --- Supply the compiler and ELIZA's workflow tools directly.
   packages = [
+    actionlint
+    cargo-audit
     curl
     deadnix
     git-cliff

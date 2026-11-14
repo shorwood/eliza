@@ -16,6 +16,8 @@ runCommand "eliza-v${version}-linux-${arch}-deb"
       # --- Stage the executable in Debian's directory layout.
       mkdir -p "$out" package/DEBIAN package/usr/bin
       cp ${binary}/bin/eliza package/usr/bin/eliza
+      mkdir -p package/usr/share/doc
+      cp -R ${binary}/share/doc/eliza package/usr/share/doc/
 
       # --- Tell dpkg which package and CPU architecture these files belong to.
       cat > package/DEBIAN/control <<EOF

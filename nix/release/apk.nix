@@ -16,6 +16,8 @@ runCommand "eliza-v${version}-linux-${arch}-apk"
     # --- Stage the executable in Alpine's directory layout.
     mkdir -p "$out" package/usr/bin
     cp ${binary}/bin/eliza package/usr/bin/eliza
+    mkdir -p package/usr/share/doc
+    cp -R ${binary}/share/doc/eliza package/usr/share/doc/
 
     # --- Write package metadata and turn the staged tree into one .apk file.
     apk mkpkg --compat 2.14.0 \

@@ -366,6 +366,14 @@ pub struct Request {
 }
 
 impl Request {
+    /// Whether this request needs bounded image decoding and analysis work.
+    #[must_use]
+    pub fn has_images(&self) -> bool {
+        self.turns
+            .iter()
+            .any(|turn| matches!(turn, Turn::User { images, .. } if !images.is_empty()))
+    }
+
     /// Construct a request from provider-normalized conversation parts.
     #[must_use]
     pub fn new(

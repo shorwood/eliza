@@ -325,7 +325,7 @@ pub(super) enum ImageTransport {
 
 impl ImageTransport {
     /// Generate one Gemini image response or complete stream record.
-    pub(super) fn generate(
+    pub(super) async fn generate(
         state: &AppState,
         model: ModelId,
         delivery: GenerateDelivery,
@@ -351,9 +351,17 @@ impl ImageTransport {
         }
 
         // Provider validation and both local engines share one rejection path.
-        let completed = LoweredImage::from_payload(payload, composition)
-            .map_err(|error| GeminiRejection::from_error(&error))
-            .and_then(|lowered| lowered.complete(state));
+        let worker_state = state.clone();
+        let completed = eliza_http::execution::image_work(true, move || {
+            LoweredImage::from_payload(payload, composition)
+                .map_err(|error| GeminiRejection::from_error(&error))
+                .and_then(|lowered| lowered.complete(&worker_state))
+        })
+        .await;
+        let completed = match completed {
+            Ok(result) => result,
+            Err(error) => return Self::Rejected(GeminiRejection::from(error)),
+        };
 
         // Resolve the shared result before selecting a wire transport.
         let completed = match completed {

@@ -722,7 +722,8 @@ async fn generate(
         // Image generation owns its provider-native multipart response.
         GenerateRequestMode::Image { composition } => {
             let transport =
-                ImageTransport::generate(&state, action.model, delivery, payload, composition);
+                ImageTransport::generate(&state, action.model, delivery, payload, composition)
+                    .await;
             return transport.into_response();
         }
         GenerateRequestMode::Text => {}
@@ -740,20 +741,33 @@ async fn generate(
 
     // Apply shared resource bounds to the lowered request.
     // Complete one neutral turn before rendering Gemini output.
-    let response = match request.complete(
-        state.config.limits.max_input_chars(),
-        state.config.limits.max_history_messages(),
-    ) {
+    let response = match complete_text(request, state.config.limits).await {
         Ok(response) => response,
         // Shared execution failures still render as Gemini errors.
         Err(error) => {
-            return GeminiRejection::from(&error).into_response();
+            return error.into_response();
         }
     };
 
     // Hand the completed turn back to the selected Gemini transport.
     GenerateTransport::new(action, query.alt, response, state.config.stream_delay_ms)
         .into_response()
+}
+
+/// Execute image-bearing text input on the shared blocking workers.
+///
+/// # Errors
+/// Returns a native rejection for invalid input, saturated capacity, or worker failure.
+async fn complete_text(
+    request: chat::turn::Request,
+    limits: eliza_http::context::RequestLimits,
+) -> Result<chat::turn::Response, GeminiRejection> {
+    eliza_http::execution::image_work(request.has_images(), move || {
+        request.complete(limits.max_input_chars(), limits.max_history_messages())
+    })
+    .await
+    .map_err(GeminiRejection::from)?
+    .map_err(|error| GeminiRejection::from(&error))
 }
 
 /// Join a nested model name before using the normal generation handler.

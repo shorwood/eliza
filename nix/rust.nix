@@ -17,6 +17,8 @@
     fileset = lib.fileset.unions [
       (projectRoot + "/Cargo.toml")
       (projectRoot + "/Cargo.lock")
+      (projectRoot + "/LICENSE")
+      (projectRoot + "/licences")
       (projectRoot + "/crates")
       (projectRoot + "/examples/rust-rig")
     ];
@@ -37,6 +39,13 @@
   RUSTFLAGS = "--remap-path-prefix=${rustToolchain}=/rust-toolchain";
   # build.rs uses this hash-pinned file to embed Scalar into the server binary.
   ELIZA_SCALAR_JS = scalarJs;
+
+  # Notices travel with normal packages, containers, and portable binaries.
+  postInstall = ''
+    mkdir -p "$out/share/doc/eliza"
+    cp LICENSE "$out/share/doc/eliza/"
+    cp -R licences "$out/share/doc/eliza/"
+  '';
 
   # Nix consumers use this metadata for descriptions, licenses, and the CLI name.
   meta = {
